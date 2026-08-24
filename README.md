@@ -129,6 +129,25 @@ macOS). Everything runs client-side.
      "Draw window" tool for now (the angle lock + hover cursor from
      earlier make this quick) — happy to build dedicated bay-window
      detection if it comes up often enough to be worth it.
+
+   **"Auto-detect doors"** (same section, needs an API key — see AI Detect
+   below) does the shape-recognition step the paragraph above pointed to.
+   Position-finding purely from wall geometry (no AI) was tried first and
+   tested against a real 11-wall trace before being adopted — it found
+   zero usable doors, because door gaps decorated with a swing arc almost
+   always get bridged into a continuous wall (the same mechanism as the
+   window/doorway confusion above), so genuinely unbridged gaps are rare.
+   Instead, one AI call per floor reads the whole image for doors,
+   reporting just two points per door (the hinge, and the leaf's open
+   tip) rather than guessing a rotation/hinge-side/swing-direction
+   triple directly — then each reported door is *snapped onto its
+   nearest pixel-confirmed wall* and its hinge/swing derived from the
+   two points relative to that wall's true angle, so a rough AI position
+   still lands as an exactly axis-true door once a confirmed wall is
+   nearby, and a reported door nowhere near any confirmed wall is
+   dropped rather than placed floating. Review with Select afterward —
+   the "Flip hinge side"/"Flip swing direction" buttons fix a wrong
+   reading without needing to redraw the door.
 10. **AI Detect (beta)** — paste an Anthropic API key (from
    console.anthropic.com; stored only in this browser's local storage, never
    written into the project JSON). Two buttons:
@@ -476,3 +495,34 @@ sessions so they don't get lost.
   density cutoff. Also documented why a bay window isn't found at all: it
   sits in the gap *between* two wall segments that step outward at an
   angle, not within either one, which this scanner doesn't examine.
+- 2026-08-24 — added door detection (workflow step 9, continued), following
+  on from the paragraph above. First design tried finding door *positions*
+  purely from structural gaps between separate wall segments (no AI needed
+  for position, mirroring the window detector's approach) — tested this
+  directly against the real 11-wall trace from 12 West Street's ground
+  floor before writing a single line of orchestration code, and it found
+  **zero** usable candidates. Root cause: `bridgeWallSegments`'s density
+  check (the thing responsible for the stairwell false positives above)
+  already merges almost every arc-decorated door gap back into one
+  continuous wall on real drawings — genuine *unbridged* structural gaps
+  are the rare exception, not the rule, so a detector that only looks for
+  those misses nearly every real door. Recognising "there's a door here"
+  is exactly the shape-recognition problem pixel statistics can't solve
+  (per the paragraph above) — so that job now goes to a single whole-image
+  AI call per floor, reporting only two points per door (hinge, leaf tip)
+  rather than a rotation/hinge-side/swing-direction guess directly (the
+  same "give the model the easiest possible visual task, do the geometry
+  yourself" principle used everywhere else in this tool). The reported
+  position is never trusted on its own though: each door gets snapped
+  onto its *nearest pixel-confirmed wall* (within ~4 wall-thicknesses),
+  and hinge/swing are derived from the two AI points relative to that
+  wall's true angle, not any rotation the AI reported — so a rough AI
+  guess still lands as an exactly axis-true door once there's a confirmed
+  wall nearby, and a reported "door" nowhere near any confirmed wall is
+  discarded rather than placed floating. Verified: the hinge/swing vector
+  math against synthetic points on both a horizontal and a vertical wall
+  (all four hinge-side/swing-direction combinations), and the full
+  candidate→snap→orient pipeline against the real wall list with a
+  simulated AI report for the dining/sitting door, matching the expected
+  hinge/swing/rotation exactly. Existing wall/window regression tests
+  (11 walls, 7 windows) unaffected.
