@@ -1,0 +1,2627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Floorplan Tool</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#1e2126; --panel:#262a31; --panel-border:#383d46; --text:#e8eaed; --text-dim:#9aa1ac;
+    --accent:#4f8cff; --accent-text:#ffffff; --danger:#e5484d; --field-bg:#1a1d22;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  #topbar{
+    flex:0 0 auto; height:46px; display:flex; align-items:center; gap:8px; padding:0 10px;
+    background:var(--panel); border-bottom:1px solid var(--panel-border);
+  }
+  #floorTabs{display:flex; gap:6px; flex:1; overflow-x:auto; height:100%; align-items:center;}
+  .floorTab{
+    display:flex; align-items:center; gap:7px; padding:6px 10px; border-radius:6px; background:var(--field-bg);
+    border:1px solid var(--panel-border); font-size:12.5px; cursor:pointer; white-space:nowrap; user-select:none;
+  }
+  .floorTab:hover{border-color:var(--accent);}
+  .floorTab.active{background:var(--accent); color:var(--accent-text); border-color:var(--accent);}
+  .floorTabClose{opacity:.55; padding:0 3px; border-radius:3px; line-height:1;}
+  .floorTabClose:hover{opacity:1; background:rgba(0,0,0,0.25);}
+  #btnAddFloor{flex:0 0 auto; white-space:nowrap;}
+  #viewControls{margin-left:auto; flex:0 0 auto; display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-dim); white-space:nowrap;}
+  #viewControls input[type=range]{width:110px; accent-color:var(--accent);}
+  .chk{display:flex; align-items:center; gap:4px; cursor:pointer;}
+  #zoomPct{width:36px; text-align:right;}
+  #btnZoomReset{padding:4px 8px; font-size:11.5px;}
+  #mainRow{flex:1; display:flex; overflow:hidden; min-height:0;}
+  #sidebar{
+    width:280px; min-width:280px; background:var(--panel); border-right:1px solid var(--panel-border);
+    overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:14px;
+  }
+  h1{font-size:15px; margin:0 0 2px; font-weight:600;}
+  .sub{font-size:11px; color:var(--text-dim); margin:0 0 4px;}
+  section{display:flex; flex-direction:column; gap:6px;}
+  section h2{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); margin:0 0 2px; font-weight:600;}
+  .row{display:flex; gap:6px; flex-wrap:wrap;}
+  button{
+    font:inherit; font-size:12.5px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border);
+    border-radius:6px; padding:7px 10px; cursor:pointer; text-align:left;
+  }
+  button:hover{border-color:var(--accent);}
+  button:disabled{opacity:.4; cursor:default;}
+  button:disabled:hover{border-color:var(--panel-border);}
+  button.active{background:var(--accent); color:var(--accent-text); border-color:var(--accent);}
+  button.wide{width:100%;}
+  button.danger:hover{border-color:var(--danger); color:var(--danger);}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:6px;}
+  .field{display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--text-dim);}
+  .field input{
+    font:inherit; font-size:13px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border);
+    border-radius:5px; padding:6px 7px;
+  }
+  .field input:focus{outline:none; border-color:var(--accent);}
+  #scaleStatus{font-size:12px; padding:8px; border-radius:6px; background:var(--field-bg); border:1px solid var(--panel-border); line-height:1.4;}
+  #scaleStatus.ok{border-color:#2f7d4f; color:#7fd8a0;}
+  #selPanel{border-top:1px solid var(--panel-border); padding-top:12px; display:none; flex-direction:column; gap:8px;}
+  #selPanel.show{display:flex;}
+  #hint{font-size:11.5px; color:var(--text-dim); line-height:1.4; background:var(--field-bg); border:1px solid var(--panel-border); border-radius:6px; padding:8px;}
+  #canvasWrap{flex:1; position:relative; background:#111317; min-width:0; overflow:auto;}
+  canvas{display:block; width:100%; height:100%; cursor:default;}
+  #fileInput, #loadInput{display:none;}
+  footer{margin-top:auto; font-size:10.5px; color:var(--text-dim); line-height:1.5;}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <div id="floorTabs"></div>
+  <button id="btnAddFloor">+ Add floor</button>
+  <button id="btnUndo" title="Undo (Ctrl/Cmd+Z)" disabled>↶ Undo</button>
+  <button id="btnRedo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>↷ Redo</button>
+  <div id="viewControls">
+    <label for="fldOpacity">Image opacity</label>
+    <input type="range" id="fldOpacity" min="0" max="100" value="100">
+    <label class="chk"><input type="checkbox" id="fldShowLabels" checked> Text layer</label>
+    <label class="chk"><input type="checkbox" id="fldShowOverlay" checked> Traced floorplan</label>
+    <label for="fldZoom">Zoom</label>
+    <input type="range" id="fldZoom" min="25" max="400" value="100">
+    <span id="zoomPct">100%</span>
+    <button id="btnZoomReset" title="Reset zoom to fit the window">Fit</button>
+  </div>
+</div>
+
+<div id="mainRow">
+  <div id="sidebar">
+    <div>
+      <h1>Floorplan Tool</h1>
+      <p class="sub">Personal-use floorplan editor</p>
+    </div>
+
+    <section>
+      <h2>Image (this floor)</h2>
+      <div class="row">
+        <button class="wide" id="btnOpenImage">Open / paste floorplan image</button>
+      </div>
+      <div id="scaleStatus">Not calibrated</div>
+      <button class="wide" id="btnCalibrate">📏 Calibrate scale</button>
+    </section>
+
+    <section>
+      <h2>Structure</h2>
+      <div class="row">
+        <button id="btnWall">🧱 Draw wall</button>
+        <button id="btnWindow">🪟 Draw window</button>
+        <button id="btnDoor">🚪 Add door</button>
+        <button id="btnSelect" class="active">↖ Select / move</button>
+      </div>
+      <div class="grid2">
+        <div class="field">
+          <label>New wall thickness (cm)</label>
+          <input type="number" id="fldNewWallThickness" min="1" value="10">
+        </div>
+        <div class="field">
+          <label>New window thickness (cm)</label>
+          <input type="number" id="fldNewWindowThickness" min="1" value="10">
+        </div>
+      </div>
+      <label class="chk" style="font-size:11.5px;color:var(--text-dim);"><input type="checkbox" id="fldLockWallAngles" checked> 🔒 Lock wall angles when resizing (drag an endpoint to change length only — hold Shift to bypass)</label>
+    </section>
+
+    <section>
+      <h2>Auto-detect (pixel-based)</h2>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">No AI, no cost, fully deterministic — traces actual solid black lines in the image rather than guessing coordinates. Pick a reference wall first (use the THINNEST wall you care about, usually an interior partition — exterior walls are often drawn thicker, and a threshold set from those alone misses thinner ones).</p>
+      <button class="wide" id="btnPickWallThickness">📏 Pick wall thickness</button>
+      <button class="wide" id="btnPixelWallDetect">🧱 Auto-detect walls from image</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Once the walls above look right, this scans along <em>them</em> for windows — no separate calibration needed, and every result sits exactly on a confirmed wall's line.</p>
+      <button class="wide" id="btnPixelWindowDetect">🪟 Auto-detect windows along walls</button>
+    </section>
+
+    <section>
+      <h2>AI Detect (beta)</h2>
+      <div class="field">
+        <label>Anthropic API key</label>
+        <input type="password" id="fldApiKey" placeholder="sk-ant-...">
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <select id="fldModel">
+          <option value="claude-opus-5">Claude Opus 5 (most accurate)</option>
+          <option value="claude-sonnet-5">Claude Sonnet 5 (cheaper)</option>
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 (cheapest)</option>
+        </select>
+      </div>
+      <button class="wide" id="btnSplitFloors">🏢 Split multi-floor image into tabs</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">If this floor's image still shows more than one level (e.g. a listing image with Ground/First/Cellar together), run Split first — the two buttons below detect only within whatever image is on this tab, and can't tell your intended floor apart from another one shown in the same picture.</p>
+      <button class="wide" id="btnDetect">🤖 Detect walls, doors &amp; dimensions</button>
+      <button class="wide" id="btnDetectTiled" title="Splits the image into 4 overlapping tiles and detects each at full resolution, then merges the results — more accurate on large/detailed plans, at roughly 2x the cost of a normal pass. Works best on an image that's already just one floor.">🔍 High-accuracy detect (tiled, ~2x cost)</button>
+      <div id="detectStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;"></div>
+    </section>
+
+    <section>
+      <h2>Furniture</h2>
+      <div class="row" id="furniturePalette"></div>
+      <button class="wide" id="btnCustom">+ Custom item…</button>
+    </section>
+
+    <section>
+      <h2>Project</h2>
+      <div class="grid2">
+        <button id="btnSave">💾 Save</button>
+        <button id="btnLoad">📂 Load</button>
+        <button id="btnExportPng">🖼 Export PNG</button>
+        <button id="btnClear" class="danger">🗑 New / Clear all</button>
+      </div>
+    </section>
+
+    <div id="selPanel">
+      <h2 style="text-transform:none;font-size:12px;color:var(--text);">Selected</h2>
+      <div class="field" id="fldLabelWrap">
+        <label>Label</label>
+        <input type="text" id="fldLabel">
+      </div>
+      <div class="grid2" id="fldSizeWrap">
+        <div class="field"><label>Width (cm)</label><input type="number" id="fldW" min="1"></div>
+        <div class="field"><label>Depth (cm)</label><input type="number" id="fldD" min="1"></div>
+      </div>
+      <div class="field" id="fldRotWrap">
+        <label>Rotation (°)</label>
+        <input type="number" id="fldRot" step="1">
+      </div>
+      <div class="field" id="fldLenWrap" style="display:none;">
+        <label>Length</label>
+        <input type="text" id="fldLen" readonly>
+      </div>
+      <div class="field" id="fldWallThicknessWrap" style="display:none;">
+        <label id="lblWallThickness">Wall thickness (cm)</label>
+        <input type="number" id="fldWallThickness" min="1">
+      </div>
+      <div class="row" id="fldDoorSwingWrap" style="display:none;">
+        <button id="btnFlipHinge">⇄ Flip hinge side</button>
+        <button id="btnFlipSwing">⇅ Flip swing direction</button>
+      </div>
+      <button class="wide danger" id="btnDelete">Delete</button>
+    </div>
+
+    <div id="hint"></div>
+
+    <footer>
+      Autosaves to this browser's local storage. Use Save to export a .json file (all floors) you can back up or reopen later. See README.md for ideas on what to add next.
+    </footer>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="cv"></canvas>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept="image/*">
+<input type="file" id="loadInput" accept="application/json">
+
+<script>
+"use strict";
+
+/* =========================================================================
+   FLOORPLAN TOOL — single-file personal editor.
+   No build step, no dependencies, no backend. Everything lives in this file
+   plus whatever the user Saves/Loads as .json, and an autosave copy in
+   localStorage.
+
+   Data model: a project is a list of FLOORS. Each floor has its own image,
+   scale calibration, walls, doors and furniture — only the active floor is
+   drawn/edited at a time, switched via the tab strip at the top.
+
+   IDEAS FOR LATER (add as they come to mind — see README.md too):
+   - Industry-recommended clearance/gaps (e.g. min walking space around a
+     dining table, distance from sofa to TV) — could render as a warning
+     outline when two boxes are closer than a configurable threshold.
+   - Snapping: wall-to-wall angle/endpoint snapping, furniture-to-wall snap.
+   - Room labels & area calculation.
+   - Pan & zoom (currently the whole image is fit to the canvas, no zoom).
+   - Undo/redo history.
+   - Furniture catalog with brand/model presets instead of generic boxes.
+   - Reordering / duplicating floors.
+   ========================================================================= */
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const WALL_THICKNESS_CM = 10;
+const FURNITURE_TYPES = [
+  {key:"sofa",     label:"Sofa",          wCm:200, dCm:90,  color:"#4f8cff"},
+  {key:"armchair", label:"Armchair",      wCm:90,  dCm:90,  color:"#7c6fe0"},
+  {key:"dining",   label:"Dining table",  wCm:140, dCm:90,  color:"#e0a23c"},
+  {key:"coffee",   label:"Coffee table",  wCm:100, dCm:50,  color:"#d98a3d"},
+  {key:"beddbl",   label:"Bed (double)",  wCm:140, dCm:190, color:"#e0637c"},
+  {key:"bedsgl",   label:"Bed (single)",  wCm:90,  dCm:190, color:"#e0637c"},
+  {key:"wardrobe", label:"Wardrobe",      wCm:120, dCm:60,  color:"#8a8f98"},
+  {key:"desk",     label:"Desk",          wCm:120, dCm:60,  color:"#3ea08a"},
+  {key:"kitchen",  label:"Kitchen unit",  wCm:60,  dCm:60,  color:"#5fb3a3"},
+];
+const DOOR_DEFAULT = {wCm:80, dCm:10, color:"#c9a227"};
+const WINDOW_THICKNESS_CM = 10;
+
+// AI wall/door/window/dimension detection and multi-floor splitting
+// (optional, calls the Anthropic API directly from the browser with a key
+// you provide — see README.md).
+const DETECT_PROMPT = `You are analyzing ONE FLOOR of a floorplan image to help trace it in an editor. Assume this image shows a single floor only.
+
+Identify these categories separately — walls, windows and doors are drawn very differently on a floorplan and must not be confused with each other:
+
+1. WALLS: a wall is a SOLID, filled black (or solid dark) band. Trace each one as a straight centreline segment in normalized image coordinates (0,0 = top-left corner of the image, 1,1 = bottom-right). Break curved or angled walls into multiple straight segments. Follow only the actual drawn black band — stop a wall segment exactly where the black band stops. Do NOT draw a wall across a doorway opening (a gap in the black band, usually with a door swing arc) or across a window (see below) — both interrupt the wall and must be left as gaps between separate wall segments, not bridged. Estimate each wall's real-world thickness in centimetres from how thick it's drawn relative to the rest of the plan (typical interior walls are around 10cm, exterior walls around 20-30cm).
+
+2. WINDOWS: a window sits inside an exterior wall line but looks visually distinct from a wall — it is mostly WHITE/unfilled (not solid black), usually drawn as a thick band or a pair of thin parallel lines with small black tick marks or cross-lines at the frame and mullions, sitting flush with the wall it interrupts. A bay window steps outward from the main wall line in a shallow polygon (angled or curved) — trace it as one window segment per straight side of that step, following the outward step rather than the original wall line. For each window segment report the same straight centreline (x1,y1,x2,y2) as a wall, plus thicknessCm (use the thickness of the wall it sits in). Never report the same span as both a wall and a window — if a band is a window, it is NOT also a wall.
+
+3. DOORS: a door is marked by a gap in a wall plus a quarter-circle swing arc showing the leaf's travel path — treat any such arc as strong evidence of a door even if the wall gap itself is subtle or hard to see. For each door report:
+   - x, y: the centre of the door opening (the gap in the wall), not the arc or leaf.
+   - rotationDeg: rotation of the opening in degrees, 0 = the opening's gap runs horizontally (left-right).
+   - widthCm: the opening width, typically 70-100cm.
+   - hingeSide: with rotationDeg treated as 0 (i.e. before rotating), is the arc's pivot point — where the door leaf is attached, and around which it swings — at the "left" or "right" end of the opening?
+   - swingDirection: with rotationDeg treated as 0, does the leaf/arc sweep "up" (toward negative Y / up the image) or "down" (toward positive Y / down the image) from the hinge?
+   Look carefully at the arc for each door: its pivot end gives hingeSide, and which way it bulges gives swingDirection.
+
+4. TEXT LABELS: every piece of printed text that is a room name (e.g. "Bedroom 1", "Kitchen") or a dimension/measurement figure (e.g. "4.2m" or "13'9\\""). For each, report its approximate centre point and the exact text as printed.
+
+5. DIMENSIONS: many rooms show a width and/or depth measurement (e.g. "4.2m" with a matching imperial figure like "13'9\\""), each flanked by two small black arrows pointing inward at the two walls the measurement spans (a vertical/depth measurement has arrows at 12 and 6 o'clock; a horizontal/width measurement has arrows at 3 and 9 o'clock). For every such measurement you can read, add one entry to "dimensions": the normalized coordinates of the two arrow tips (the points on the walls the measurement spans, NOT the room centre) and the length in metres — prefer the printed metric figure; only convert from feet/inches if no metric figure is given. Each entry must be ONE measurement between its OWN pair of arrows — adjacent rooms along the same wall often have their dimension lines drawn collinear with each other, but they are still separate readings; never combine two different rooms' arrows (or two different printed figures) into a single entry even if their lines appear continuous. Report as many as you can find across the whole floor — more is better, they'll be combined to calibrate scale. Set "room" to a short room label if one is visible nearby, else "".
+
+Only report what is visually present in the image. All coordinates must be fractions between 0 and 1.`;
+
+// Appended only for tiled/high-accuracy detection, where each call sees a
+// cropped quadrant rather than the whole floor image. A crop can pick up a
+// thin sliver of a genuinely different floor (a different level's plan
+// bleeding in at the very edge, or its printed name like "Cellar"/
+// "First Floor") that would be easy to ignore in full-image context but
+// becomes disproportionately prominent once zoomed into a tile — without
+// this warning the model has no way to know it should discard that sliver.
+const TILE_DETECT_PROMPT_SUFFIX = `
+
+Note: this image is one cropped tile from a larger floorplan, not the whole floor. Its majority content is the floor you should report on — but a tile taken near an edge can include a thin sliver of a genuinely different floor level (e.g. part of a "Cellar" or "First Floor" plan, possibly with its own printed label) if that neighbouring plan happens to sit just past this floor's boundary in the source image. Only report walls/windows/doors/labels/dimensions that belong to the same continuous floor as the majority of this tile — ignore any separate, differently-labelled floor plan even if partially visible.`;
+const DETECT_SCHEMA = {
+  type: "object",
+  properties: {
+    walls: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          x1: {type:"number", description:"Start X, 0-1 fraction of image width"},
+          y1: {type:"number", description:"Start Y, 0-1 fraction of image height"},
+          x2: {type:"number", description:"End X, 0-1 fraction of image width"},
+          y2: {type:"number", description:"End Y, 0-1 fraction of image height"},
+          thicknessCm: {type:"number", description:"Estimated real-world wall thickness in centimetres"},
+        },
+        required: ["x1","y1","x2","y2","thicknessCm"],
+        additionalProperties: false,
+      },
+    },
+    windows: {
+      type: "array",
+      description: "Window segments — visually distinct from walls: mostly white/unfilled with black frame/mullion details, not a solid black band.",
+      items: {
+        type: "object",
+        properties: {
+          x1: {type:"number", description:"Start X, 0-1 fraction of image width"},
+          y1: {type:"number", description:"Start Y, 0-1 fraction of image height"},
+          x2: {type:"number", description:"End X, 0-1 fraction of image width"},
+          y2: {type:"number", description:"End Y, 0-1 fraction of image height"},
+          thicknessCm: {type:"number", description:"Estimated real-world thickness in centimetres, i.e. the thickness of the wall it sits in"},
+        },
+        required: ["x1","y1","x2","y2","thicknessCm"],
+        additionalProperties: false,
+      },
+    },
+    doors: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          x: {type:"number", description:"Door opening centre X, 0-1 fraction of image width"},
+          y: {type:"number", description:"Door opening centre Y, 0-1 fraction of image height"},
+          rotationDeg: {type:"number", description:"Rotation of the door opening in degrees, 0 = horizontal"},
+          widthCm: {type:"number", description:"Door opening width in centimetres"},
+          hingeSide: {type:"string", enum:["left","right"], description:"Before applying rotationDeg: which end of the opening the swing arc pivots from"},
+          swingDirection: {type:"string", enum:["up","down"], description:"Before applying rotationDeg: which way the swing arc/leaf sweeps from the hinge"},
+        },
+        required: ["x","y","rotationDeg","widthCm","hingeSide","swingDirection"],
+        additionalProperties: false,
+      },
+    },
+    labels: {
+      type: "array",
+      description: "Printed room names and dimension/measurement text, for an optional reference text layer.",
+      items: {
+        type: "object",
+        properties: {
+          x: {type:"number", description:"Text centre X, 0-1 fraction of image width"},
+          y: {type:"number", description:"Text centre Y, 0-1 fraction of image height"},
+          text: {type:"string", description:"The text exactly as printed"},
+        },
+        required: ["x","y","text"],
+        additionalProperties: false,
+      },
+    },
+    dimensions: {
+      type: "array",
+      description: "Printed room measurements, read from their arrow-marked wall-to-wall spans, for scale calibration.",
+      items: {
+        type: "object",
+        properties: {
+          x1: {type:"number", description:"First arrow tip X, 0-1 fraction of image width"},
+          y1: {type:"number", description:"First arrow tip Y, 0-1 fraction of image height"},
+          x2: {type:"number", description:"Second arrow tip X, 0-1 fraction of image width"},
+          y2: {type:"number", description:"Second arrow tip Y, 0-1 fraction of image height"},
+          lengthMeters: {type:"number", description:"The real-world length this measurement represents, in metres"},
+          room: {type:"string", description:"Short room label if identifiable, else empty string"},
+        },
+        required: ["x1","y1","x2","y2","lengthMeters","room"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["walls","windows","doors","labels","dimensions"],
+  additionalProperties: false,
+};
+
+const SPLIT_PROMPT = `This image contains floorplans for MULTIPLE floors of one property, laid out side by side or stacked, each usually labelled by its own name (e.g. "Ground Floor", "First Floor", "Second Floor") printed near the bottom of that floor's drawing.
+Identify each individual floor's plan as a separate region. For each one report its printed label (if no label is visible, use "Floor N" numbered left-to-right then top-to-bottom) and a tight bounding box in normalized image coordinates (0,0 = top-left of the whole image, 1,1 = bottom-right) around just that floor's drawing and its own dimension labels — excluding any neighbouring floor, the property's overall title, or a shared legend/compass.
+If the image only contains a single floor, return one entry covering the whole plan.`;
+const SPLIT_SCHEMA = {
+  type: "object",
+  properties: {
+    floors: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: {type:"string", description:"The floor's printed name, e.g. \"Ground Floor\""},
+          x1: {type:"number", description:"Left edge, 0-1 fraction of image width"},
+          y1: {type:"number", description:"Top edge, 0-1 fraction of image height"},
+          x2: {type:"number", description:"Right edge, 0-1 fraction of image width"},
+          y2: {type:"number", description:"Bottom edge, 0-1 fraction of image height"},
+        },
+        required: ["label","x1","y1","x2","y2"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["floors"],
+  additionalProperties: false,
+};
+
+const AI_API_KEY_STORAGE = "floorplanTool.apiKey";
+const AI_MODEL_STORAGE = "floorplanTool.model";
+
+const HANDLE_SCREEN_PX = 7;
+const ROTATE_HANDLE_DIST_PX = 28;
+const HIT_TOLERANCE_PX = 6;
+const SNAP_SCREEN_PX = 12; // wall/window endpoint & door snap threshold, in screen pixels
+const AUTOSAVE_KEY = "floorplanTool.autosave.v2";
+const AUTOSAVE_DEBOUNCE_MS = 500;
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let idCounter = 1;
+function newId(){ return idCounter++; }
+
+function makeFloor(name){
+  return {
+    id: newId(), name: name || "Floor",
+    image: null,          // {dataURL, naturalWidth, naturalHeight}
+    worldWidth: 1200,
+    worldHeight: 800,
+    calibration: null,    // {metersPerWorldUnit}
+    walls: [],            // {id, x1,y1,x2,y2, thicknessCm, type:'wall'|'window'}
+    boxes: [],            // {id, kind:'furniture'|'door', type, label, x, y, wCm, dCm, rotation, color, hinge, swing}
+    labels: [],           // {id, x, y, text} — optional AI-read room names/dimension text, toggleable layer
+  };
+}
+function makeInitialState(){
+  const f = makeFloor("Floor 1");
+  return { floors: [f], activeFloorId: f.id };
+}
+let state = makeInitialState();
+
+function activeFloor(){
+  return state.floors.find(f => f.id === state.activeFloorId) || state.floors[0];
+}
+
+// ---------------------------------------------------------------------------
+// Undo / redo — snapshot-based, covering the whole `state` object (all
+// floors), so undo also switches back to whichever floor was active at that
+// point. Each undo-stack entry is the state as it was BEFORE a change.
+// ---------------------------------------------------------------------------
+const UNDO_LIMIT = 100;
+let undoStack = [];
+let redoStack = [];
+let suppressHistory = false; // guards applyLoadedState() calls made BY undo/redo itself
+let historyBurstActive = false, historyBurstTimer = null; // groups a rapid-fire burst (typing, slider drag) into one undo step
+let dragUndoSnapshot = null; // pre-drag snapshot, captured at pointerdown, committed at pointerup only if something actually changed
+
+function snapshotState(){ return JSON.stringify(state); }
+
+function commitUndoSnapshot(beforeSnapshot){
+  if (suppressHistory) return;
+  undoStack.push(beforeSnapshot);
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+// For a single discrete action (button click, add/delete, AI detect, load) —
+// call BEFORE the mutation happens.
+function pushUndoSnapshot(){
+  if (suppressHistory) return;
+  commitUndoSnapshot(snapshotState());
+}
+// For a field that fires many events in quick succession (typing in a text
+// field, dragging a number input) — call on every input event; only the
+// first event of a burst actually records history, so a whole burst of
+// keystrokes undoes as one step.
+function pushUndoSnapshotDebounced(){
+  if (suppressHistory) return;
+  if (!historyBurstActive){
+    commitUndoSnapshot(snapshotState());
+    historyBurstActive = true;
+  }
+  clearTimeout(historyBurstTimer);
+  historyBurstTimer = setTimeout(()=>{ historyBurstActive = false; }, 600);
+}
+function updateUndoRedoButtons(){
+  const u = document.getElementById("btnUndo"), r = document.getElementById("btnRedo");
+  if (u) u.disabled = undoStack.length === 0;
+  if (r) r.disabled = redoStack.length === 0;
+}
+function undo(){
+  if (!undoStack.length) return;
+  const current = snapshotState();
+  const prev = undoStack.pop();
+  redoStack.push(current);
+  suppressHistory = true;
+  applyLoadedState(JSON.parse(prev));
+  suppressHistory = false;
+  scheduleAutosave();
+  updateUndoRedoButtons();
+}
+function redo(){
+  if (!redoStack.length) return;
+  const current = snapshotState();
+  const next = redoStack.pop();
+  undoStack.push(current);
+  suppressHistory = true;
+  applyLoadedState(JSON.parse(next));
+  suppressHistory = false;
+  scheduleAutosave();
+  updateUndoRedoButtons();
+}
+
+let imgEl = null; // cached Image() for the active floor's image, rebuilt on floor switch/load
+
+let activeTool = "select"; // 'select' | 'wall' | 'window' | 'calibrate'
+let selection = null;      // {kind:'wall'|'box', id}
+let drag = null;
+let newWallThicknessCm = WALL_THICKNESS_CM;     // used for walls drawn from here on
+let newWindowThicknessCm = WINDOW_THICKNESS_CM; // used for windows drawn from here on
+let bgOpacity = 1;   // 0-1, background floorplan image opacity (view-only, not saved in the project)
+let showLabels = true;  // view-only toggle for the AI text-label layer
+let showOverlay = true; // view-only toggle for traced walls/windows/doors/furniture, to compare against the bare image
+let zoomLevel = 1;      // 1 = fit the window (default); <1 zooms out within the same viewport (reveals content drawn outside the image bounds); >1 grows the canvas so the browser's native scroll can pan around it
+let lockWallAngles = true; // dragging a wall/window endpoint changes its length along the existing angle only, by default (most walls in a floor plan are already correctly angled — it's the length that needs trimming)
+
+let canvasW = 0, canvasH = 0; // logical (CSS) pixel size of the canvas itself (grows past the viewport when zoomed in, for native scrolling)
+let baseCanvasW = 0, baseCanvasH = 0; // logical size of the visible viewport (canvasWrap), independent of zoom — what "fit" is computed against
+let fitScale = 1, offsetX = 0, offsetY = 0;
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const wrap = document.getElementById("canvasWrap");
+
+// ---------------------------------------------------------------------------
+// Scale helpers (all relative to the active floor)
+// ---------------------------------------------------------------------------
+function metersPerWorldUnit(){
+  const f = activeFloor();
+  if (f.calibration) return f.calibration.metersPerWorldUnit;
+  // Rough guess so things look plausible before calibrating: assume the
+  // floor's image/canvas spans about 10 metres across.
+  return 10 / f.worldWidth;
+}
+function cmToWorld(cm){ return (cm/100) / metersPerWorldUnit(); }
+function worldToCm(w){ return w * metersPerWorldUnit() * 100; }
+function worldLenToMeters(w){ return w * metersPerWorldUnit(); }
+
+// ---------------------------------------------------------------------------
+// Coordinate transforms (world = image-pixel space; screen = CSS px on canvas)
+// ---------------------------------------------------------------------------
+function computeFit(){
+  const f = activeFloor();
+  // Always fit against the visible viewport size, not the (possibly zoom-
+  // enlarged) canvas — so zoomLevel is one consistent multiplier on top of
+  // "fit the window" in both directions: <1 shrinks the content within the
+  // still-fully-visible viewport (useful for finding something drawn
+  // outside the image bounds, which otherwise renders off-canvas and is
+  // literally impossible to see); >1 grows it past the viewport, and the
+  // canvas itself grows to match (see resizeCanvas) so native scrolling
+  // reaches the rest.
+  const sx = baseCanvasW / f.worldWidth;
+  const sy = baseCanvasH / f.worldHeight;
+  fitScale = Math.min(sx, sy) * zoomLevel;
+  offsetX = (canvasW - f.worldWidth*fitScale) / 2;
+  offsetY = (canvasH - f.worldHeight*fitScale) / 2;
+}
+function toScreen(x, y){ return {x: offsetX + x*fitScale, y: offsetY + y*fitScale}; }
+function toWorld(x, y){ return {x: (x-offsetX)/fitScale, y: (y-offsetY)/fitScale}; }
+function rotate(vx, vy, ang){
+  const c=Math.cos(ang), s=Math.sin(ang);
+  return {x: vx*c - vy*s, y: vx*s + vy*c};
+}
+// Orthogonal projection of p onto the infinite line through `origin` at
+// angle `ang` — used to keep a wall/window endpoint drag on the wall's
+// existing line (length changes, angle doesn't).
+function projectPointOntoLine(p, origin, ang){
+  const dirx = Math.cos(ang), diry = Math.sin(ang);
+  const t = (p.x-origin.x)*dirx + (p.y-origin.y)*diry;
+  return {x: origin.x + dirx*t, y: origin.y + diry*t};
+}
+
+// ---------------------------------------------------------------------------
+// Data helpers (scoped to the active floor)
+// ---------------------------------------------------------------------------
+function getBox(id){ return activeFloor().boxes.find(b=>b.id===id) || null; }
+function getWall(id){ return activeFloor().walls.find(w=>w.id===id) || null; }
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+let autosaveTimer = null;
+function scheduleAutosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(()=>{
+    try{ localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(state)); }catch(e){ /* ignore quota errors */ }
+  }, AUTOSAVE_DEBOUNCE_MS);
+}
+function restoreAutosave(){
+  try{
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return false;
+    applyLoadedState(JSON.parse(raw));
+    return true;
+  }catch(e){ console.warn("Could not restore autosave", e); return false; }
+}
+function normalizeFloor(f){
+  return {
+    id: (typeof f.id === "number") ? f.id : newId(),
+    name: f.name || "Floor",
+    image: f.image || null,
+    worldWidth: f.worldWidth || 1200,
+    worldHeight: f.worldHeight || 800,
+    calibration: f.calibration || null,
+    walls: f.walls || [],
+    boxes: f.boxes || [],
+    labels: f.labels || [],
+  };
+}
+function applyLoadedState(data){
+  let floors, activeFloorId;
+  if (data && Array.isArray(data.floors) && data.floors.length){
+    floors = data.floors.map(normalizeFloor);
+    activeFloorId = floors.some(f=>f.id===data.activeFloorId) ? data.activeFloorId : floors[0].id;
+  } else if (data && (data.image || data.walls || data.boxes || data.worldWidth)) {
+    // migrate old single-floor save format
+    const f = normalizeFloor({...data, name:"Floor 1"});
+    floors = [f];
+    activeFloorId = f.id;
+  } else {
+    const init = makeInitialState();
+    floors = init.floors; activeFloorId = init.activeFloorId;
+  }
+  state = {floors, activeFloorId};
+
+  let maxId = 0;
+  floors.forEach(f=>{
+    if (f.id>maxId) maxId=f.id;
+    [...f.walls, ...f.boxes].forEach(o=>{ if (o.id>maxId) maxId=o.id; });
+  });
+  idCounter = Math.max(idCounter, maxId+1);
+
+  selection = null;
+  setTool("select");
+  loadImageElementForActiveFloor();
+  updateScaleStatus();
+  updateSelPanel();
+  renderFloorTabs();
+  resizeCanvas();
+}
+function saveProject(){
+  const data = JSON.stringify(state);
+  const blob = new Blob([data], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "floorplan.json"; a.click();
+  URL.revokeObjectURL(url);
+}
+function loadProjectFile(file){
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const parsed = JSON.parse(reader.result);
+      pushUndoSnapshot();
+      applyLoadedState(parsed);
+    }
+    catch(e){ alert("Could not read that file: " + e.message); }
+  };
+  reader.readAsText(file);
+}
+function exportPng(){
+  const prevSel = selection;
+  selection = null;
+  render();
+  const url = cv.toDataURL("image/png");
+  selection = prevSel;
+  render();
+  const a = document.createElement("a");
+  a.href = url; a.download = (activeFloor().name || "floorplan") + ".png"; a.click();
+}
+
+// ---------------------------------------------------------------------------
+// Floors
+// ---------------------------------------------------------------------------
+function loadImageElementForActiveFloor(){
+  const f = activeFloor();
+  if (f && f.image){
+    const img = new Image();
+    img.onload = render;
+    img.onerror = ()=>{
+      console.error("Could not decode this floor's saved image.", f.image.dataURL.slice(0,60)+"…");
+      alert(`Could not display "${f.name}"'s image — the browser couldn't decode it. It may be corrupted, or too large for this browser to handle.`);
+    };
+    img.src = f.image.dataURL;
+    imgEl = img;
+  } else {
+    imgEl = null;
+  }
+}
+function switchFloor(id){
+  if (id === state.activeFloorId) return;
+  state.activeFloorId = id;
+  selection = null;
+  drag = null;
+  updateSelPanel();
+  loadImageElementForActiveFloor();
+  updateScaleStatus();
+  renderFloorTabs();
+  resizeCanvas();
+}
+function addFloor(){
+  pushUndoSnapshot();
+  const f = makeFloor("Floor " + (state.floors.length+1));
+  state.floors.push(f);
+  switchFloor(f.id);
+  scheduleAutosave();
+}
+function renameFloor(id){
+  const f = state.floors.find(x=>x.id===id);
+  if (!f) return;
+  const name = prompt("Floor name", f.name);
+  if (name && name.trim()){
+    pushUndoSnapshot();
+    f.name = name.trim();
+    renderFloorTabs();
+    scheduleAutosave();
+  }
+}
+function deleteFloor(id){
+  if (state.floors.length <= 1){ alert("You need at least one floor."); return; }
+  const f = state.floors.find(x=>x.id===id);
+  if (!f) return;
+  if (!confirm(`Delete "${f.name}"? (Ctrl/Cmd+Z will undo this.)`)) return;
+  pushUndoSnapshot();
+  const wasActive = id === state.activeFloorId;
+  state.floors = state.floors.filter(x=>x.id!==id);
+  if (wasActive) switchFloor(state.floors[0].id);
+  else { renderFloorTabs(); scheduleAutosave(); }
+}
+function renderFloorTabs(){
+  const el = document.getElementById("floorTabs");
+  el.innerHTML = "";
+  state.floors.forEach(f=>{
+    const tab = document.createElement("div");
+    tab.className = "floorTab" + (f.id===state.activeFloorId ? " active" : "");
+    tab.title = "Click to switch • double-click to rename";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = f.name;
+    tab.appendChild(nameSpan);
+
+    const closeBtn = document.createElement("span");
+    closeBtn.className = "floorTabClose";
+    closeBtn.textContent = "×";
+    closeBtn.title = "Delete floor";
+    closeBtn.addEventListener("click", (e)=>{ e.stopPropagation(); deleteFloor(f.id); });
+    tab.appendChild(closeBtn);
+
+    tab.addEventListener("click", ()=>switchFloor(f.id));
+    tab.addEventListener("dblclick", ()=>renameFloor(f.id));
+    el.appendChild(tab);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Image loading (into the active floor)
+// ---------------------------------------------------------------------------
+async function loadImageFile(file){
+  if (!file || !file.type.startsWith("image/")) return;
+  // Property-listing sites sometimes export a PDF floorplan but name the
+  // download .jpg/.png — the browser's own image decoder fails on that
+  // with a generic, unhelpful error (see README history), so check for a
+  // PDF's own signature upfront and give a specific, actionable message.
+  try{
+    const head = await file.slice(0, 5).text();
+    if (head.startsWith("%PDF")){
+      alert(`"${file.name}" is actually a PDF file, just named .${file.name.split(".").pop()} — browsers can't display a PDF as an image directly. Convert it to PNG/JPEG first (open it in Preview and use File > Export, or ask Claude to convert it), then open the converted file here.`);
+      return;
+    }
+  }catch(e){ /* sniffing is best-effort — fall through to the normal load attempt regardless */ }
+  const f = activeFloor();
+  if ((f.walls.length || f.boxes.length) &&
+      !confirm(`Loading a new image will clear "${f.name}"'s walls, doors and furniture. Continue?`)) return;
+  const reader = new FileReader();
+  reader.onerror = ()=>{
+    console.error("FileReader failed to read the chosen file.", reader.error);
+    alert("Could not read that file — " + (reader.error ? reader.error.message : "unknown error") + ". Try a smaller image or a different format (JPEG/PNG).");
+  };
+  reader.onload = ()=>{
+    const img = new Image();
+    let settled = false;
+    const timeoutId = setTimeout(()=>{
+      if (settled) return;
+      settled = true;
+      console.error("Image never fired load or error within 20s — browser appears to be stuck decoding it.", file.name, file.type, file.size+" bytes");
+      alert(`"${file.name}" is taking too long to load and may be stuck — the browser started reading it but never finished. Try a smaller image, or a different format (JPEG/PNG) if this one is unusual.`);
+    }, 20000);
+    img.onload = ()=>{
+      if (settled) return;
+      settled = true; clearTimeout(timeoutId);
+      pushUndoSnapshot();
+      f.image = {dataURL: reader.result, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight};
+      f.worldWidth = img.naturalWidth;
+      f.worldHeight = img.naturalHeight;
+      f.calibration = null;
+      f.walls = [];
+      f.boxes = [];
+      imgEl = img;
+      selection = null;
+      updateScaleStatus();
+      updateSelPanel();
+      resizeCanvas();
+      scheduleAutosave();
+    };
+    img.onerror = ()=>{
+      if (settled) return;
+      settled = true; clearTimeout(timeoutId);
+      console.error("Browser could not decode the loaded file as an image.", file.name, file.type, file.size+" bytes");
+      alert(`Could not display "${file.name}" — the browser couldn't decode it as an image. It may be corrupted, an unsupported format, or too large for this browser to handle (${(file.size/1024/1024).toFixed(1)}MB).`);
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function resizeCanvas(){
+  const rect = wrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  // A 0×0 (or otherwise degenerate) measurement means the browser hasn't
+  // finished laying out the wrapper yet (seen on some WebKit/Safari builds
+  // right after a flex-layout change, e.g. #canvasWrap's overflow:auto) —
+  // never let that propagate into fitScale=0 (a canvas that silently draws
+  // nothing). Keep the last known-good size and retry shortly instead.
+  if (rect.width > 0 && rect.height > 0){
+    baseCanvasW = rect.width; baseCanvasH = rect.height;
+  } else if (baseCanvasW === 0 || baseCanvasH === 0){
+    // No good size yet at all (first paint) — try again next frame rather
+    // than rendering at zero size.
+    requestAnimationFrame(resizeCanvas);
+    return;
+  } else {
+    console.warn("resizeCanvas: canvasWrap measured 0×0, reusing last known size", baseCanvasW, baseCanvasH);
+  }
+  const growFactor = Math.max(1, zoomLevel); // only grows the canvas past the viewport when zoomed in; zooming out keeps it at viewport size (see computeFit)
+  canvasW = baseCanvasW * growFactor;
+  canvasH = baseCanvasH * growFactor;
+  cv.width = Math.round(canvasW*dpr);
+  cv.height = Math.round(canvasH*dpr);
+  cv.style.width = canvasW+"px";
+  cv.style.height = canvasH+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  computeFit();
+  render();
+  // Keep the view centred by default whenever the canvas is resized (new
+  // floor/image, zoom change, window resize) — matches how the content was
+  // already always centred within the canvas even before zoom existed.
+  wrap.scrollLeft = (canvasW - baseCanvasW) / 2;
+  wrap.scrollTop = (canvasH - baseCanvasH) / 2;
+}
+window.addEventListener("resize", resizeCanvas);
+
+function render(){
+  computeFit();
+  const f = activeFloor();
+  ctx.clearRect(0,0,canvasW,canvasH);
+  ctx.fillStyle = "#111317";
+  ctx.fillRect(0,0,canvasW,canvasH);
+
+  if (imgEl && imgEl.complete){
+    const p0 = toScreen(0,0), p1 = toScreen(f.worldWidth, f.worldHeight);
+    ctx.save();
+    ctx.globalAlpha = bgOpacity;
+    ctx.drawImage(imgEl, p0.x, p0.y, p1.x-p0.x, p1.y-p0.y);
+    ctx.restore();
+  } else if (f.calibration) {
+    drawGrid();
+  }
+
+  if (showOverlay){
+    drawWalls();
+    drawBoxes();
+  }
+  if (showLabels) drawLabelsLayer();
+
+  if (drag && (drag.type === "draw-wall" || drag.type === "draw-window")) drawWallPreview(drag);
+  if (drag && (drag.type === "calibrate" || drag.type === "pick-thickness")) drawCalibratePreview(drag);
+
+  if (selection && showOverlay) drawSelectionHandles();
+}
+
+function drawGrid(){
+  const f = activeFloor();
+  const spacingM = 1;
+  const spacingWorld = spacingM / metersPerWorldUnit();
+  if (spacingWorld < 4) return;
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = 1;
+  for (let x=0; x<=f.worldWidth; x+=spacingWorld){
+    const a = toScreen(x,0), b = toScreen(x,f.worldHeight);
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  for (let y=0; y<=f.worldHeight; y+=spacingWorld){
+    const a = toScreen(0,y), b = toScreen(f.worldWidth,y);
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+}
+
+function drawWalls(){
+  activeFloor().walls.forEach(w=>{
+    const isSel = selection && selection.kind==="wall" && selection.id===w.id;
+    if ((w.type||"wall") === "window") drawWindowSegment(w, isSel);
+    else {
+      const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
+      ctx.strokeStyle = isSel ? "#ffffff" : "#c9ccd3";
+      ctx.lineWidth = Math.max(cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3);
+      ctx.lineCap = "square";
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+  });
+}
+
+function drawWindowSegment(w, isSel){
+  // Windows are drawn as a thick, mostly-white band (with a dark centre
+  // line for the pane split and dark end caps for the frame) rather than a
+  // solid black wall band — visually distinct on the canvas, matching how
+  // they're printed on real floorplans.
+  const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
+  const thickness = Math.max(cmToWorld(w.thicknessCm||WINDOW_THICKNESS_CM)*fitScale, 5);
+  const dx = b.x-a.x, dy = b.y-a.y, len = Math.hypot(dx,dy) || 1;
+  const nx = -dy/len, ny = dx/len, hw = thickness/2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(a.x+nx*hw, a.y+ny*hw);
+  ctx.lineTo(b.x+nx*hw, b.y+ny*hw);
+  ctx.lineTo(b.x-nx*hw, b.y-ny*hw);
+  ctx.lineTo(a.x-nx*hw, a.y-ny*hw);
+  ctx.closePath();
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = isSel ? "#4f8cff" : "#111317";
+  ctx.lineWidth = isSel ? 2 : 1.25;
+  ctx.stroke();
+  // frame end caps + centre pane line
+  ctx.strokeStyle = "#111317";
+  ctx.lineWidth = 1.25;
+  [a,b].forEach(p=>{
+    ctx.beginPath(); ctx.moveTo(p.x+nx*hw,p.y+ny*hw); ctx.lineTo(p.x-nx*hw,p.y-ny*hw); ctx.stroke();
+  });
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.restore();
+}
+
+function drawWallPreview(d){
+  const a = toScreen(d.x1,d.y1), b = toScreen(d.x2,d.y2);
+  const isWindow = d.type === "draw-window";
+  const thicknessCm = isWindow ? newWindowThicknessCm : newWallThicknessCm;
+  ctx.strokeStyle = isWindow ? "rgba(255,255,255,0.9)" : "rgba(79,140,255,0.8)";
+  ctx.lineWidth = Math.max(cmToWorld(thicknessCm)*fitScale, 3);
+  ctx.setLineDash([6,4]);
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.setLineDash([]);
+  drawLengthLabel(a,b, worldLenToMeters(Math.hypot(d.x2-d.x1,d.y2-d.y1)));
+}
+
+function drawCalibratePreview(d){
+  const a = toScreen(d.x1,d.y1), b = toScreen(d.x2,d.y2);
+  ctx.strokeStyle = "#e0a23c";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6,4]);
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawLengthLabel(a,b,meters){
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  ctx.font = "12px sans-serif";
+  const text = meters.toFixed(2)+" m";
+  const wpx = ctx.measureText(text).width;
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(mx-wpx/2-4, my-18, wpx+8, 16);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(text, mx-wpx/2, my-6);
+}
+
+function drawBoxes(){
+  activeFloor().boxes.forEach(b=>{
+    const c = toScreen(b.x,b.y);
+    const wScreen = cmToWorld(b.wCm)*fitScale;
+    const dScreen = cmToWorld(b.dCm)*fitScale;
+    ctx.save();
+    ctx.translate(c.x,c.y);
+    ctx.rotate(b.rotation);
+
+    if (b.kind === "door"){
+      drawDoorSymbol(wScreen, dScreen, b.hinge || -1, b.swing || -1);
+    } else {
+      const isSel = selection && selection.kind==="box" && selection.id===b.id;
+      ctx.fillStyle = b.color + "cc";
+      ctx.strokeStyle = isSel ? "#ffffff" : "#00000055";
+      ctx.lineWidth = isSel ? 2 : 1;
+      ctx.beginPath();
+      ctx.rect(-wScreen/2, -dScreen/2, wScreen, dScreen);
+      ctx.fill(); ctx.stroke();
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (wScreen > 30 && dScreen > 16) ctx.fillText(b.label, 0, 0);
+    }
+    ctx.restore();
+  });
+}
+
+function drawDoorSymbol(wScreen, dScreen, hingeSign, swingSign){
+  // Local frame: opening runs along the x axis, centred at 0.
+  // hingeSign: -1 = hinge at the left end of the opening, +1 = right end.
+  // swingSign: -1 = leaf swings up (-y), +1 = leaf swings down (+y).
+  const hw = wScreen/2;
+  const hingeX = hingeSign*hw;
+  ctx.strokeStyle = "#c9a227";
+  ctx.lineWidth = Math.max(dScreen, 2);
+  ctx.beginPath(); ctx.moveTo(-hw,0); ctx.lineTo(hw,0); ctx.stroke();
+  // swing leaf: from the hinge out to its open position
+  const leafY = swingSign*wScreen;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(hingeX,0); ctx.lineTo(hingeX, leafY); ctx.stroke();
+  // arc between the leaf's open position and the far jamb, both at radius
+  // wScreen from the hinge — always a quarter circle since they're
+  // perpendicular. Pick the matching 90° span for each hinge/swing combo.
+  let start, end;
+  if (hingeSign<0 && swingSign<0){ start=-Math.PI/2; end=0; }
+  else if (hingeSign<0 && swingSign>0){ start=0; end=Math.PI/2; }
+  else if (hingeSign>0 && swingSign<0){ start=Math.PI; end=3*Math.PI/2; }
+  else { start=Math.PI/2; end=Math.PI; }
+  ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.arc(hingeX, 0, wScreen, start, end); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawLabelsLayer(){
+  const f = activeFloor();
+  if (!f.labels || !f.labels.length) return;
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  f.labels.forEach(l=>{
+    const p = toScreen(l.x, l.y);
+    const wpx = ctx.measureText(l.text).width;
+    ctx.fillStyle = "rgba(20,60,90,0.7)";
+    ctx.fillRect(p.x-wpx/2-4, p.y-8, wpx+8, 16);
+    ctx.fillStyle = "#8fd6ff";
+    ctx.fillText(l.text, p.x, p.y);
+  });
+}
+
+function drawSelectionHandles(){
+  if (selection.kind === "box"){
+    const b = getBox(selection.id);
+    if (!b) return;
+    const c = toScreen(b.x,b.y);
+    const hw = cmToWorld(b.wCm)/2*fitScale, hh = cmToWorld(b.dCm)/2*fitScale;
+    const corners = [{x:-hw,y:-hh},{x:hw,y:-hh},{x:hw,y:hh},{x:-hw,y:hh}];
+    ctx.save();
+    ctx.translate(c.x,c.y);
+    ctx.rotate(b.rotation);
+    ctx.fillStyle = "#4f8cff";
+    corners.forEach(p=>{
+      ctx.beginPath(); ctx.arc(p.x,p.y,HANDLE_SCREEN_PX/2,0,Math.PI*2); ctx.fill();
+    });
+    // rotate handle
+    const rp = {x:0, y:-hh-ROTATE_HANDLE_DIST_PX};
+    ctx.strokeStyle = "#4f8cff"; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(0,-hh); ctx.lineTo(rp.x,rp.y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(rp.x,rp.y,HANDLE_SCREEN_PX/2,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  } else if (selection.kind === "wall"){
+    const w = getWall(selection.id);
+    if (!w) return;
+    [[w.x1,w.y1],[w.x2,w.y2]].forEach(([x,y])=>{
+      const p = toScreen(x,y);
+      ctx.fillStyle = "#4f8cff";
+      ctx.beginPath(); ctx.arc(p.x,p.y,HANDLE_SCREEN_PX/2,0,Math.PI*2); ctx.fill();
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hit testing (all against the active floor)
+// ---------------------------------------------------------------------------
+function hitTestBoxHandles(box, mouseScreen){
+  const c = toScreen(box.x,box.y);
+  const hw = cmToWorld(box.wCm)/2*fitScale, hh = cmToWorld(box.dCm)/2*fitScale;
+  const local = rotate(mouseScreen.x-c.x, mouseScreen.y-c.y, -box.rotation);
+  const corners = [
+    {name:"tl", x:-hw,y:-hh},{name:"tr", x:hw,y:-hh},
+    {name:"br", x:hw,y:hh},{name:"bl", x:-hw,y:hh},
+  ];
+  for (const p of corners){
+    if (Math.hypot(local.x-p.x, local.y-p.y) <= HANDLE_SCREEN_PX+3) return {type:"resize", corner:p.name};
+  }
+  const rp = {x:0,y:-hh-ROTATE_HANDLE_DIST_PX};
+  if (Math.hypot(local.x-rp.x, local.y-rp.y) <= HANDLE_SCREEN_PX+3) return {type:"rotate"};
+  return null;
+}
+function hitTestWallEndpoints(wall, mouseScreen){
+  const a = toScreen(wall.x1,wall.y1), b = toScreen(wall.x2,wall.y2);
+  if (Math.hypot(mouseScreen.x-a.x, mouseScreen.y-a.y) <= HANDLE_SCREEN_PX+3) return "1";
+  if (Math.hypot(mouseScreen.x-b.x, mouseScreen.y-b.y) <= HANDLE_SCREEN_PX+3) return "2";
+  return null;
+}
+function pointInBoxScreen(box, mouseScreen){
+  const c = toScreen(box.x,box.y);
+  const hw = cmToWorld(box.wCm)/2*fitScale, hh = cmToWorld(box.dCm)/2*fitScale;
+  const local = rotate(mouseScreen.x-c.x, mouseScreen.y-c.y, -box.rotation);
+  return Math.abs(local.x)<=hw && Math.abs(local.y)<=hh;
+}
+function hitTestBoxes(mouseScreen){
+  const boxes = activeFloor().boxes;
+  for (let i=boxes.length-1; i>=0; i--){
+    if (pointInBoxScreen(boxes[i], mouseScreen)) return boxes[i];
+  }
+  return null;
+}
+function distToSegmentScreen(p, a, b){
+  const l2 = (b.x-a.x)**2 + (b.y-a.y)**2;
+  if (l2===0) return Math.hypot(p.x-a.x,p.y-a.y);
+  let t = ((p.x-a.x)*(b.x-a.x) + (p.y-a.y)*(b.y-a.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const proj = {x:a.x+t*(b.x-a.x), y:a.y+t*(b.y-a.y)};
+  return Math.hypot(p.x-proj.x, p.y-proj.y);
+}
+function hitTestWalls(mouseScreen){
+  const walls = activeFloor().walls;
+  for (let i=walls.length-1; i>=0; i--){
+    const w = walls[i];
+    const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
+    const thickness = Math.max(cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3);
+    if (distToSegmentScreen(mouseScreen,a,b) <= thickness/2 + HIT_TOLERANCE_PX) return w;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Hover cursor — shows a directional resize cursor (matching the CSS/macOS
+// family: ns/ew/nwse/nesw-resize) over anything a drag would resize, and a
+// move cursor over anything a drag would reposition, so it's clear which
+// you're about to do before you commit to the drag.
+// ---------------------------------------------------------------------------
+function angleToResizeCursor(angleRad){
+  // Bucket a line's angle (screen space, y-down) into the nearest of the
+  // 4 directional resize cursors CSS provides. Angle is direction-agnostic
+  // (a line and its reverse look identical), so only mod-180° matters.
+  let deg = (angleRad*180/Math.PI) % 180;
+  if (deg < 0) deg += 180;
+  if (deg < 22.5 || deg >= 157.5) return "ew-resize";
+  if (deg < 67.5) return "nwse-resize";
+  if (deg < 112.5) return "ns-resize";
+  return "nesw-resize";
+}
+function boxCornerCursor(box, cornerName){
+  const localDir = {tl:[-1,-1], tr:[1,-1], br:[1,1], bl:[-1,1]}[cornerName];
+  const rotated = rotate(localDir[0], localDir[1], box.rotation);
+  return angleToResizeCursor(Math.atan2(rotated.y, rotated.x));
+}
+function updateHoverCursor(e){
+  if (activeTool !== "select"){ return; } // other tools keep the fixed cursor setTool() already applies (crosshair etc.)
+  const ms = getMouseScreen(e);
+  let cursor = "default";
+
+  if (selection && selection.kind === "wall"){
+    const wall = getWall(selection.id);
+    if (wall){
+      const ep = hitTestWallEndpoints(wall, ms);
+      if (ep) cursor = angleToResizeCursor(Math.atan2(wall.y2-wall.y1, wall.x2-wall.x1));
+      else if (hitTestWalls(ms) === wall) cursor = "move";
+    }
+  }
+  if (cursor === "default" && selection && selection.kind === "box"){
+    const box = getBox(selection.id);
+    if (box){
+      const h = hitTestBoxHandles(box, ms);
+      if (h && h.type === "resize") cursor = boxCornerCursor(box, h.corner);
+      else if (h && h.type === "rotate") cursor = "grab";
+      else if (pointInBoxScreen(box, ms)) cursor = "move";
+    }
+  }
+  if (cursor === "default"){
+    if (hitTestBoxes(ms) || hitTestWalls(ms)) cursor = "move";
+  }
+  cv.style.cursor = cursor;
+}
+
+// ---------------------------------------------------------------------------
+// Selection / tool state
+// ---------------------------------------------------------------------------
+function select(kind, id){ selection = {kind, id}; updateSelPanel(); render(); }
+function deselect(){ selection = null; updateSelPanel(); render(); }
+
+function setTool(tool){
+  activeTool = tool;
+  ["btnSelect","btnWall","btnWindow","btnDoor","btnCalibrate","btnPickWallThickness"].forEach(id=>document.getElementById(id).classList.remove("active"));
+  if (tool==="select") document.getElementById("btnSelect").classList.add("active");
+  if (tool==="wall") document.getElementById("btnWall").classList.add("active");
+  if (tool==="window") document.getElementById("btnWindow").classList.add("active");
+  if (tool==="calibrate") document.getElementById("btnCalibrate").classList.add("active");
+  if (tool==="pick-thickness") document.getElementById("btnPickWallThickness").classList.add("active");
+  updateHint();
+  cv.style.cursor = tool==="select" ? "default" : "crosshair";
+}
+
+function updateHint(){
+  const hints = {
+    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate. Delete/Backspace removes the selection. Dragging a door snaps it onto the nearest wall — hold Shift to bypass. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom.",
+    wall: "Click and drag across a wall in the image to trace it. Hold Shift to snap to 0/45/90°; otherwise endpoints snap to nearby wall/window ends and edges when close.",
+    window: "Click and drag across a window in the image to trace it (windows draw as a white band with dark frame details, distinct from solid wall lines). Same snapping as walls.",
+    calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
+    "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
+  };
+  document.getElementById("hint").textContent = hints[activeTool] || "";
+}
+
+// ---------------------------------------------------------------------------
+// Add furniture / doors (into the active floor)
+// ---------------------------------------------------------------------------
+function addBox(spec){
+  pushUndoSnapshot();
+  const f = activeFloor();
+  const box = {
+    id: newId(),
+    kind: spec.kind || "furniture",
+    type: spec.type,
+    label: spec.label,
+    x: f.worldWidth/2,
+    y: f.worldHeight/2,
+    wCm: spec.wCm,
+    dCm: spec.dCm,
+    rotation: 0,
+    color: spec.color || "#4f8cff",
+  };
+  if (spec.kind === "door"){ box.hinge = spec.hinge || -1; box.swing = spec.swing || -1; }
+  f.boxes.push(box);
+  select("box", box.id);
+  setTool("select");
+  scheduleAutosave();
+}
+
+function addCustomItem(){
+  const label = prompt("Item name (e.g. \"Piano\")");
+  if (!label) return;
+  const wCm = parseFloat(prompt("Width in cm", "60"));
+  const dCm = parseFloat(prompt("Depth in cm", "60"));
+  if (!wCm || !dCm || wCm<=0 || dCm<=0) return;
+  addBox({kind:"furniture", type:"custom", label, wCm, dCm, color:"#6c7280"});
+}
+
+// ---------------------------------------------------------------------------
+// AI-assisted wall/door detection
+// Calls the Anthropic API directly from the browser with a key the user
+// supplies (stored only in this browser's localStorage — never written into
+// the project JSON, so it's never included in Save/Load or shared files).
+// ---------------------------------------------------------------------------
+function clampNum(v, min, max, fallback){
+  if (typeof v !== "number" || !isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, v));
+}
+
+// Real floorplans are almost always orthogonal, but a vision model's raw
+// pixel-coordinate estimate for a wall/window is often a couple of degrees
+// off true horizontal/vertical even when it's identified the right wall —
+// that's what shows up as "close but not quite lined up with the image".
+// Snap anything within AXIS_SNAP_DEG of an axis to exactly that axis,
+// rotating about the segment's own midpoint so its length and position are
+// otherwise undisturbed. Segments already further off (genuinely angled
+// walls, e.g. a bay window's angled sides) are left alone.
+const AXIS_SNAP_DEG = 4;
+function regularizeAxisAligned(segments){
+  const thresholdRad = AXIS_SNAP_DEG * Math.PI/180;
+  segments.forEach(s=>{
+    const dx = s.x2-s.x1, dy = s.y2-s.y1;
+    const len = Math.hypot(dx,dy);
+    if (len < 1e-6) return;
+    const angle = Math.atan2(dy,dx);
+    const nearestAxis = Math.round(angle/(Math.PI/2)) * (Math.PI/2);
+    const diff = Math.atan2(Math.sin(angle-nearestAxis), Math.cos(angle-nearestAxis));
+    if (Math.abs(diff) > thresholdRad) return;
+    const mx = (s.x1+s.x2)/2, my = (s.y1+s.y2)/2;
+    const hx = Math.cos(nearestAxis)*len/2, hy = Math.sin(nearestAxis)*len/2;
+    s.x1 = mx-hx; s.y1 = my-hy;
+    s.x2 = mx+hx; s.y2 = my+hy;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pixel-based automatic wall detection — no AI, no API cost, fully
+// deterministic. Tracing solid black lines is a mechanical pattern-match,
+// not a judgment call, so it belongs to classic image processing rather
+// than a vision model's guess: threshold the image for dark pixels, keep
+// only regions at least as thick as a user-picked reference wall, split
+// what survives into long horizontal/vertical runs, bridge gaps that still
+// have faint dark content (a window's glazing lines interrupt a wall's
+// *solid* fill without actually breaking it) while leaving genuinely blank
+// gaps alone (a real doorway or open-plan connection), and read off the
+// exact pixel extents as wall segments.
+//
+// Two floors' worth of testing against a real 2100x3000px listing PDF (see
+// project memory) found this needs the reference thickness to come from
+// the THINNEST wall the user cares about, not the thickest — this drawing
+// used ~35px exterior walls but ~17px interior partitions, and a threshold
+// tuned to the exterior walls silently missed every interior one.
+// ---------------------------------------------------------------------------
+function slidingMin1D(arr, k, useMax){
+  // Monotonic-deque sliding window min (or max, if useMax) over a 1D
+  // typed array, O(n) regardless of k. Window is roughly centered on each
+  // output position (floor(k/2) before, ceil(k/2) after).
+  const n = arr.length;
+  const out = new (arr.constructor)(n);
+  const before = Math.floor(k/2), after = k - before - 1;
+  const deque = new Int32Array(n); // holds indices
+  let head = 0, tail = 0; // [head, tail)
+  const better = useMax ? (a,b)=>a>=b : (a,b)=>a<=b;
+  for (let i=0; i<n+after; i++){
+    if (i < n){
+      while (tail>head && better(arr[i], arr[deque[tail-1]])) tail--;
+      deque[tail++] = i;
+    }
+    const outIdx = i - after;
+    if (outIdx>=0 && outIdx<n){
+      while (deque[head] < outIdx-before) head++;
+      out[outIdx] = arr[deque[head]];
+    }
+  }
+  return out;
+}
+function morphPass(mask, w, h, kw, kh, useMax){
+  // Separable rectangular erosion (useMax=false) or dilation (useMax=true).
+  let result = new Uint8Array(mask.length);
+  if (kw>1){
+    const row = new Uint8Array(w);
+    for (let y=0; y<h; y++){
+      row.set(mask.subarray(y*w, y*w+w));
+      result.set(slidingMin1D(row, kw, useMax), y*w);
+    }
+  } else result.set(mask);
+  if (kh>1){
+    const col = new Uint8Array(h);
+    const out2 = new Uint8Array(mask.length);
+    for (let x=0; x<w; x++){
+      for (let y=0; y<h; y++) col[y] = result[y*w+x];
+      const filtered = slidingMin1D(col, kh, useMax);
+      for (let y=0; y<h; y++) out2[y*w+x] = filtered[y];
+    }
+    result = out2;
+  }
+  return result;
+}
+function morphOpen(mask, w, h, kw, kh){
+  return morphPass(morphPass(mask, w, h, kw, kh, false), w, h, kw, kh, true);
+}
+function connectedComponents(mask, w, h){
+  // 4-connectivity flood fill, iterative (no recursion → no stack overflow
+  // on a big filled region). Returns array of {minX,minY,maxX,maxY,count}.
+  const labeled = new Int32Array(mask.length).fill(-1);
+  const comps = [];
+  const stack = new Int32Array(mask.length);
+  for (let start=0; start<mask.length; start++){
+    if (!mask[start] || labeled[start]!==-1) continue;
+    let sp = 0;
+    stack[sp++] = start;
+    labeled[start] = comps.length;
+    let minX=start%w, maxX=minX, minY=(start/w)|0, maxY=minY, count=0;
+    while (sp>0){
+      const idx = stack[--sp];
+      const x = idx%w, y = (idx/w)|0;
+      count++;
+      if (x<minX) minX=x; if (x>maxX) maxX=x;
+      if (y<minY) minY=y; if (y>maxY) maxY=y;
+      if (x>0 && mask[idx-1] && labeled[idx-1]===-1){ labeled[idx-1]=comps.length; stack[sp++]=idx-1; }
+      if (x<w-1 && mask[idx+1] && labeled[idx+1]===-1){ labeled[idx+1]=comps.length; stack[sp++]=idx+1; }
+      if (y>0 && mask[idx-w] && labeled[idx-w]===-1){ labeled[idx-w]=comps.length; stack[sp++]=idx-w; }
+      if (y<h-1 && mask[idx+w] && labeled[idx+w]===-1){ labeled[idx+w]=comps.length; stack[sp++]=idx+w; }
+    }
+    comps.push({minX,minY,maxX,maxY,count});
+  }
+  return comps;
+}
+function extractWallSegments(mask, w, h, horizontal, minArea){
+  const comps = connectedComponents(mask, w, h);
+  const segs = [];
+  comps.forEach(c=>{
+    if (c.count < minArea) return;
+    if (horizontal){
+      const thickness = c.maxY-c.minY+1, length = c.maxX-c.minX+1;
+      if (length < thickness) return;
+      const yc = Math.round((c.minY+c.maxY)/2);
+      segs.push({x1:c.minX, y1:yc, x2:c.maxX, y2:yc, thicknessPx:thickness});
+    } else {
+      const thickness = c.maxX-c.minX+1, length = c.maxY-c.minY+1;
+      if (length < thickness) return;
+      const xc = Math.round((c.minX+c.maxX)/2);
+      segs.push({x1:xc, y1:c.minY, x2:xc, y2:c.maxY, thicknessPx:thickness});
+    }
+  });
+  return segs;
+}
+function darkFractionInRegion(dark, w, h, x1, y1, x2, y2){
+  x1=Math.max(0,x1); y1=Math.max(0,y1); x2=Math.min(w,x2); y2=Math.min(h,y2);
+  if (x2<=x1 || y2<=y1) return 0;
+  let count=0, total=0;
+  for (let y=y1; y<y2; y++) for (let x=x1; x<x2; x++){ total++; if (dark[y*w+x]) count++; }
+  return total ? count/total : 0;
+}
+// Tried requiring the gap's MINIMUM sub-window density (not just its
+// average) to exceed the threshold before bridging, hoping to catch a
+// real doorway hiding next to a solid pier without falsely averaging it
+// away. Reverted: tested against the real image, a real window's density
+// ranges 0.09-0.51 depending on the window, while an arc-decorated doorway
+// (confirmed genuinely blank via direct pixel inspection) measured 0.30 —
+// squarely inside that range. No single density threshold, average or
+// minimum, strict or loose mask, can include every real window while
+// excluding every arc-decorated doorway; the ranges overlap. This is a
+// shape-recognition problem (a curved arc vs. straight glazing bars), not
+// a threshold-tuning one — see the doors roadmap item in project memory.
+function bridgeWallSegments(segs, horizontal, dark, w, h){
+  const GAP_DARK_FRACTION_THRESHOLD = 0.16;
+  const MAX_BRIDGE_GAP_PX = 500;
+  segs = segs.map(s=>({...s}));
+  let mergedSomething = true;
+  while (mergedSomething){
+    mergedSomething = false;
+    outer:
+    for (let i=0; i<segs.length; i++){
+      for (let j=i+1; j<segs.length; j++){
+        const a = segs[i], b = segs[j];
+        let frac, mergedSeg;
+        if (horizontal){
+          if (Math.abs(a.y1-b.y1) > Math.max(a.thicknessPx,b.thicknessPx)*0.6) continue;
+          const left = a.x1<b.x1 ? a : b, right = a.x1<b.x1 ? b : a;
+          const gapLo = left.x2, gapHi = right.x1;
+          if (gapHi <= gapLo) frac = 1;
+          else if (gapHi-gapLo > MAX_BRIDGE_GAP_PX) continue;
+          else {
+            const yc = Math.round((a.y1+b.y1)/2), halfT = Math.max(3, Math.round(Math.max(a.thicknessPx,b.thicknessPx)*0.35));
+            frac = darkFractionInRegion(dark, w, h, gapLo, yc-halfT, gapHi, yc+halfT);
+          }
+          if (frac > GAP_DARK_FRACTION_THRESHOLD || gapHi<=gapLo){
+            const yc = Math.round((a.y1+b.y1)/2);
+            mergedSeg = {x1:Math.min(a.x1,b.x1), x2:Math.max(a.x2,b.x2), y1:yc, y2:yc, thicknessPx:Math.max(a.thicknessPx,b.thicknessPx)};
+          }
+        } else {
+          if (Math.abs(a.x1-b.x1) > Math.max(a.thicknessPx,b.thicknessPx)*0.6) continue;
+          const top = a.y1<b.y1 ? a : b, bot = a.y1<b.y1 ? b : a;
+          const gapLo = top.y2, gapHi = bot.y1;
+          if (gapHi <= gapLo) frac = 1;
+          else if (gapHi-gapLo > MAX_BRIDGE_GAP_PX) continue;
+          else {
+            const xc = Math.round((a.x1+b.x1)/2), halfT = Math.max(3, Math.round(Math.max(a.thicknessPx,b.thicknessPx)*0.35));
+            frac = darkFractionInRegion(dark, w, h, xc-halfT, gapLo, xc+halfT, gapHi);
+          }
+          if (frac > GAP_DARK_FRACTION_THRESHOLD || gapHi<=gapLo){
+            const xc = Math.round((a.x1+b.x1)/2);
+            mergedSeg = {x1:xc, x2:xc, y1:Math.min(a.y1,b.y1), y2:Math.max(a.y2,b.y2), thicknessPx:Math.max(a.thicknessPx,b.thicknessPx)};
+          }
+        }
+        if (mergedSeg){
+          segs[i] = mergedSeg; segs.splice(j,1);
+          mergedSomething = true; break outer;
+        }
+      }
+    }
+  }
+  return segs;
+}
+
+// ---------------------------------------------------------------------------
+// Pixel-based automatic WINDOW detection — scans along already-confirmed
+// wall segments (not the whole image) rather than re-deriving geometry:
+// a window interrupts a wall's otherwise-solid fill without leaving it
+// truly blank (its glazing lines still show up as faint dark content) —
+// exactly the density signal `bridgeWallSegments` above already uses to
+// tell a window-interrupted wall apart from a genuine doorway gap. Reusing
+// that same signal here, but scoped to a specific wall's own corridor,
+// means every detected window sits exactly on that wall's line by
+// construction — no separate coordinate guess to drift out of alignment.
+// ---------------------------------------------------------------------------
+function sampleDensityInBand(dark, w, h, cx, cy, dirx, diry, perpx, perpy, halfAlong, halfPerp){
+  let count=0, total=0;
+  for (let a=-halfAlong; a<=halfAlong; a++){
+    for (let p=-halfPerp; p<=halfPerp; p++){
+      const x = Math.round(cx + a*dirx + p*perpx);
+      const y = Math.round(cy + a*diry + p*perpy);
+      if (x<0||x>=w||y<0||y>=h) continue;
+      total++;
+      if (dark[y*w+x]) count++;
+    }
+  }
+  return total ? count/total : 0;
+}
+// Fills a short run of `false` back to `true` if it's sandwiched between
+// two `true` runs — absorbs a brief interruption (a window's mullion post)
+// without merging genuinely separate features far apart along the wall.
+function mergeBooleanRunsShortGaps(bools, maxGapCount){
+  const out = bools.slice();
+  let i = 0;
+  while (i < out.length){
+    if (out[i]){ i++; continue; }
+    let j = i;
+    while (j < out.length && !out[j]) j++;
+    const hasBefore = i>0 && out[i-1];
+    const hasAfter = j<out.length && out[j];
+    if (hasBefore && hasAfter && (j-i) <= maxGapCount){
+      for (let k=i;k<j;k++) out[k] = true;
+    }
+    i = j;
+  }
+  return out;
+}
+const WINDOW_BLANK_DENSITY = 0.05; // below this = genuinely open (a doorway), not a window
+const WINDOW_SOLID_DENSITY = 0.55; // above this = still just the wall's own normal solid fill
+function scanWallForWindowSpans(wall, dark, w, h){
+  const dx = wall.x2-wall.x1, dy = wall.y2-wall.y1;
+  const length = Math.hypot(dx,dy);
+  if (length < 20) return [];
+  const dirx = dx/length, diry = dy/length;
+  const perpx = -diry, perpy = dirx;
+  const thicknessPx = Math.max(4, cmToWorld(wall.thicknessCm||WALL_THICKNESS_CM));
+  const halfT = Math.max(2, Math.round(thicknessPx/2));
+  const step = Math.max(2, Math.round(thicknessPx*0.3));
+  const samples = [];
+  for (let d=0; d<=length; d+=step){
+    const cx = wall.x1+dirx*d, cy = wall.y1+diry*d;
+    const density = sampleDensityInBand(dark, w, h, cx, cy, dirx, diry, perpx, perpy, Math.ceil(step/2), halfT);
+    samples.push({d, density});
+  }
+  const isCandidate = samples.map(s=>s.density>WINDOW_BLANK_DENSITY && s.density<WINDOW_SOLID_DENSITY);
+  const maxGapCount = Math.round(15/step)+1; // bridge interruptions up to ~15px (a single mullion post)
+  const merged = mergeBooleanRunsShortGaps(isCandidate, maxGapCount);
+  const minSpanPx = Math.max(24, thicknessPx*1.2);
+  const spans = [];
+  let i = 0;
+  while (i < merged.length){
+    if (!merged[i]){ i++; continue; }
+    let j = i;
+    while (j < merged.length && merged[j]) j++;
+    const dStart = samples[i].d, dEnd = samples[Math.min(j,samples.length)-1].d;
+    if (dEnd-dStart >= minSpanPx){
+      spans.push({
+        x1: wall.x1+dirx*dStart, y1: wall.y1+diry*dStart,
+        x2: wall.x1+dirx*dEnd, y2: wall.y1+diry*dEnd,
+        thicknessPx,
+      });
+    }
+    i = j;
+  }
+  return spans;
+}
+function detectWindowsFromImageData(imgData, walls){
+  // Window glazing bars/frame details are light-to-mid grey, not black —
+  // reuse the wall detector's strict DARK_THRESHOLD here and every window
+  // reads as empty. See WINDOW_CONTENT_THRESHOLD above.
+  const {dark, w, h} = computeDarkMask(imgData, WINDOW_CONTENT_THRESHOLD);
+  const windows = [];
+  walls.forEach(wall=>{
+    if ((wall.type||"wall") !== "wall") return;
+    windows.push(...scanWallForWindowSpans(wall, dark, w, h));
+  });
+  return windows;
+}
+
+async function runPixelWindowDetect(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load an image on this floor first."); return; }
+  const wallCount = floor.walls.filter(w=>(w.type||"wall")==="wall").length;
+  if (!wallCount){
+    alert("Detect (or trace) walls on this floor first — window detection scans along confirmed walls to find them, so it needs at least one to anchor to.");
+    return;
+  }
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  statusEl.textContent = "Analyzing image pixels for windows along confirmed walls…";
+  try{
+    await new Promise(r=>setTimeout(r, 10));
+    const img = await loadImageEl(floor.image.dataURL);
+    const c = document.createElement("canvas");
+    c.width = floor.worldWidth; c.height = floor.worldHeight;
+    const cctx = c.getContext("2d");
+    cctx.drawImage(img, 0, 0, floor.worldWidth, floor.worldHeight);
+    const imgData = cctx.getImageData(0, 0, floor.worldWidth, floor.worldHeight);
+    const spans = detectWindowsFromImageData(imgData, floor.walls);
+    pushUndoSnapshot();
+    const newWindows = spans.map(s=>({
+      id: newId(), type: "window",
+      x1:s.x1, y1:s.y1, x2:s.x2, y2:s.y2,
+      thicknessCm: clampNum(worldToCm(s.thicknessPx), 3, 60, WINDOW_THICKNESS_CM),
+    }));
+    floor.walls.push(...newWindows);
+    statusEl.textContent = `Pixel-detected ${newWindows.length} window${newWindows.length===1?"":"s"} along the confirmed walls (no AI used). Review and correct with the Select tool — nothing was deleted. Known limitation: text, dimension arrows, or a door's hinge line running close to a wall can occasionally read as window-like density and get flagged as a window that isn't one — same tradeoff as wall detection's known false positive, easy to spot and delete.`;
+    scheduleAutosave();
+    render();
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("Pixel window detection failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
+// Runs the full pipeline against an ImageData-like {data,width,height} and
+// a reference wall thickness in pixels. Returns {x1,y1,x2,y2,thicknessPx}
+// segments in the SAME pixel space as the image (i.e. already "world"
+// coordinates for this floor — no normalization needed).
+const DARK_THRESHOLD = 120;         // solid black wall fill — deliberately strict, so text/thin marks/window glazing don't pass as "wall"
+const WINDOW_CONTENT_THRESHOLD = 210; // window glazing bars/frame details — these render as light-to-mid grey (measured ~150-190 in a real listing image), nowhere near black, but well below plain white background/gaps (~230-255)
+function computeDarkMask(imgData, threshold){
+  const t = threshold===undefined ? DARK_THRESHOLD : threshold;
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  const dark = new Uint8Array(w*h);
+  for (let i=0, p=0; i<data.length; i+=4, p++){
+    const lum = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+    dark[p] = lum < t ? 1 : 0;
+  }
+  return {dark, w, h};
+}
+
+function detectWallsFromImageData(imgData, refThicknessPx){
+  const {dark, w, h} = computeDarkMask(imgData);
+  const k = Math.max(3, Math.round(refThicknessPx*0.6));
+  const thickEnough = morphOpen(dark, w, h, k, k);
+  const L = Math.max(40, Math.round(refThicknessPx*3.5));
+  const horizMask = morphOpen(thickEnough, w, h, L, 1);
+  const vertMask = morphOpen(thickEnough, w, h, 1, L);
+  const minArea = k*L*0.5;
+  let hSegs = extractWallSegments(horizMask, w, h, true, minArea);
+  let vSegs = extractWallSegments(vertMask, w, h, false, minArea);
+  hSegs = bridgeWallSegments(hSegs, true, dark, w, h);
+  vSegs = bridgeWallSegments(vSegs, false, dark, w, h);
+  const minLength = Math.max(80, Math.round(refThicknessPx*6));
+  hSegs = hSegs.filter(s=>(s.x2-s.x1)>=minLength);
+  vSegs = vSegs.filter(s=>(s.y2-s.y1)>=minLength);
+  return hSegs.concat(vSegs);
+}
+
+let autoWallRefThicknessPx = null; // set by the "pick reference wall thickness" tool
+
+async function runPixelWallDetect(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load an image on this floor first."); return; }
+  if (!autoWallRefThicknessPx){
+    alert("Pick a reference wall thickness first — use \"📏 Pick wall thickness\" and drag across the THINNEST wall you want detected (usually an interior partition, not an exterior wall).");
+    return;
+  }
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  statusEl.textContent = "Analyzing image pixels for walls…";
+  try{
+    await new Promise(r=>setTimeout(r, 10)); // let the status text paint before the (synchronous, CPU-bound) pipeline runs
+    const img = await loadImageEl(floor.image.dataURL);
+    const c = document.createElement("canvas");
+    c.width = floor.worldWidth; c.height = floor.worldHeight;
+    const cctx = c.getContext("2d");
+    cctx.drawImage(img, 0, 0, floor.worldWidth, floor.worldHeight);
+    const imgData = cctx.getImageData(0, 0, floor.worldWidth, floor.worldHeight);
+    const segs = detectWallsFromImageData(imgData, autoWallRefThicknessPx);
+    pushUndoSnapshot();
+    const newWalls = segs.map(s=>({
+      id: newId(), type: "wall",
+      x1:s.x1, y1:s.y1, x2:s.x2, y2:s.y2,
+      thicknessCm: clampNum(worldToCm(s.thicknessPx), 3, 60, WALL_THICKNESS_CM),
+    }));
+    floor.walls.push(...newWalls);
+    statusEl.textContent = `Pixel-detected ${newWalls.length} wall${newWalls.length===1?"":"s"} from the image (no AI used). Review and correct with the Select tool — nothing was deleted. Known limitation: an open-plan gap decorated with symbols (a door swing arc, a level-change mark) can occasionally get bridged into a wall if it looks "dark enough" — delete it if so. Once these look right, try "Auto-detect windows" below — it scans along these confirmed walls, so it only works well once the walls themselves are correct.`;
+    scheduleAutosave();
+    render();
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("Pixel wall detection failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
+async function callClaudeStructured(base64Data, mediaType, apiKey, model, promptText, schema){
+  let resp;
+  try{
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        // Defensive: some direct-browser-access paths require this; harmless if ignored.
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 16000,
+        // Opus 5 / Sonnet 5 think by default, and thinking shares the same
+        // max_tokens budget as the answer — for a mechanical extraction task
+        // like this, keep thinking shallow so there's always room left for
+        // the actual JSON output (a low max_tokens here previously produced
+        // "no response text": all the budget spent thinking, none writing).
+        output_config: (model==="claude-opus-5" || model==="claude-sonnet-5")
+          ? {format: {type:"json_schema", schema}, effort: "low"}
+          : {format: {type:"json_schema", schema}},
+        messages: [{
+          role: "user",
+          content: [
+            {type:"image", source:{type:"base64", media_type: mediaType, data: base64Data}},
+            {type:"text", text: promptText},
+          ],
+        }],
+      }),
+    });
+  }catch(networkErr){
+    throw new Error("Could not reach the Anthropic API (network or CORS error). Check your connection and try again.");
+  }
+  const data = await resp.json();
+  if (!resp.ok){
+    const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
+    throw new Error(msg);
+  }
+  if (data.stop_reason === "refusal"){
+    const category = data.stop_details && data.stop_details.category;
+    throw new Error("Claude declined to analyze this image" + (category ? ` (${category})` : "") + ".");
+  }
+  const textBlock = (data.content || []).find(b=>b.type==="text");
+  if (!textBlock) throw new Error(`No response text from Claude (stop_reason: ${data.stop_reason || "unknown"}). Try again — if it repeats, try a different model.`);
+  try{ return JSON.parse(textBlock.text); }
+  catch(e){ throw new Error("Could not parse Claude's response as JSON."); }
+}
+
+function parseDataUrl(dataURL){
+  const match = dataURL.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
+  if (!match) throw new Error("Could not read the image data.");
+  return {mediaType: match[1], base64Data: match[2]};
+}
+function readImageDataUrl(floor){
+  return parseDataUrl(floor.image.dataURL);
+}
+function setAIButtonsDisabled(disabled){
+  ["btnDetect","btnDetectTiled","btnSplitFloors","btnPixelWallDetect","btnPixelWindowDetect"].forEach(id=>{
+    document.getElementById(id).disabled = disabled;
+  });
+}
+
+function applyDetection(result, floor){
+  const newWalls = (result.walls || []).map(w=>({
+    id: newId(), type: "wall",
+    x1: w.x1*floor.worldWidth, y1: w.y1*floor.worldHeight,
+    x2: w.x2*floor.worldWidth, y2: w.y2*floor.worldHeight,
+    thicknessCm: clampNum(w.thicknessCm, 3, 60, WALL_THICKNESS_CM),
+  }));
+  const newWindows = (result.windows || []).map(w=>({
+    id: newId(), type: "window",
+    x1: w.x1*floor.worldWidth, y1: w.y1*floor.worldHeight,
+    x2: w.x2*floor.worldWidth, y2: w.y2*floor.worldHeight,
+    thicknessCm: clampNum(w.thicknessCm, 3, 60, WINDOW_THICKNESS_CM),
+  }));
+  regularizeAxisAligned([...newWalls, ...newWindows]);
+  const newDoors = (result.doors || []).map(d=>({
+    id: newId(), kind:"door", type:"door", label:"Door",
+    x: d.x*floor.worldWidth, y: d.y*floor.worldHeight,
+    wCm: clampNum(d.widthCm, 40, 150, DOOR_DEFAULT.wCm),
+    dCm: DOOR_DEFAULT.dCm,
+    rotation: (clampNum(d.rotationDeg, -3600, 3600, 0)) * Math.PI/180,
+    hinge: d.hingeSide === "right" ? 1 : -1,
+    swing: d.swingDirection === "down" ? 1 : -1,
+    color: DOOR_DEFAULT.color,
+  }));
+  const newLabels = (result.labels || [])
+    .filter(l=>l.text && l.text.trim())
+    .map(l=>({
+      id: newId(),
+      x: l.x*floor.worldWidth, y: l.y*floor.worldHeight,
+      text: l.text.trim(),
+    }));
+  floor.walls.push(...newWalls, ...newWindows);
+  floor.boxes.push(...newDoors);
+  floor.labels.push(...newLabels);
+
+  // Each printed room dimension gives one metres-per-pixel reading; combine
+  // them (median, robust to a misread arrow or two) into one calibration
+  // rather than relying on a single manually-picked line.
+  const ratios = [];
+  (result.dimensions || []).forEach(d=>{
+    const p1 = {x:d.x1*floor.worldWidth, y:d.y1*floor.worldHeight};
+    const p2 = {x:d.x2*floor.worldWidth, y:d.y2*floor.worldHeight};
+    const pxLen = Math.hypot(p2.x-p1.x, p2.y-p1.y);
+    if (pxLen > 2 && d.lengthMeters > 0) ratios.push(d.lengthMeters/pxLen);
+  });
+  let calibrationApplied = false;
+  if (ratios.length){
+    ratios.sort((a,b)=>a-b);
+    const median = ratios[Math.floor(ratios.length/2)];
+    const spreadPct = ratios.length>1 ? Math.round(((ratios[ratios.length-1]-ratios[0])/median)*100) : 0;
+    const spreadNote = spreadPct>8 ? ` (readings varied by ~${spreadPct}% — worth spot-checking a wall length afterwards)` : "";
+    if (confirm(`Claude read ${ratios.length} room dimension${ratios.length===1?"":"s"} off this floor${spreadNote}. Use them to calibrate this floor's scale?`)){
+      floor.calibration = {metersPerWorldUnit: median};
+      calibrationApplied = true;
+    }
+  }
+  return {
+    wallCount:newWalls.length, windowCount:newWindows.length, doorCount:newDoors.length,
+    labelCount:newLabels.length, dimensionCount:ratios.length, calibrationApplied,
+  };
+}
+
+async function runAIDetect(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load an image on this floor first."); return; }
+  const apiKey = document.getElementById("fldApiKey").value.trim();
+  if (!apiKey){
+    alert("Enter your Anthropic API key first (get one at console.anthropic.com). It's stored only in this browser.");
+    document.getElementById("fldApiKey").focus();
+    return;
+  }
+  const model = document.getElementById("fldModel").value;
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  statusEl.textContent = "Analyzing image with Claude… this can take up to a minute.";
+  try{
+    const {mediaType, base64Data} = readImageDataUrl(floor);
+    const result = await callClaudeStructured(base64Data, mediaType, apiKey, model, DETECT_PROMPT, DETECT_SCHEMA);
+    pushUndoSnapshot();
+    const {wallCount, windowCount, doorCount, labelCount, dimensionCount, calibrationApplied} = applyDetection(result, floor);
+    statusEl.textContent = `Added ${wallCount} wall${wallCount===1?"":"s"}, ${windowCount} window${windowCount===1?"":"s"}, ${doorCount} door${doorCount===1?"":"s"}` +
+      (labelCount ? `, ${labelCount} text label${labelCount===1?"":"s"}` : "") +
+      (dimensionCount ? `, read ${dimensionCount} dimension${dimensionCount===1?"":"s"}${calibrationApplied?" (calibrated)":""}` : "") +
+      `. Review and correct with the Select tool — nothing was deleted.`;
+    updateScaleStatus();
+    scheduleAutosave();
+    render();
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("AI detection failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// High-accuracy tiled detection: splits the floor image into a 2x2 grid of
+// overlapping crops, runs the same wall/window/door/label/dimension
+// detection on each tile at full resolution (rather than one downscaled
+// whole-image pass), remaps each tile's normalized coordinates back into
+// full-image space, de-duplicates the overlap zones, then feeds the merged
+// result through the same applyDetection() used by the single-pass button —
+// so thickness clamping, axis regularization, door hinge/swing mapping and
+// the calibration prompt all behave identically either way. Costs roughly
+// 2x a single pass (4 API calls, but most of the extra cost is the fixed
+// prompt/schema overhead repeated per tile, not the image data itself).
+// ---------------------------------------------------------------------------
+const TILE_OVERLAP_FRAC = 0.08; // each tile's crop reaches this far past the midline, purely so it can see a wall that dips slightly past its own owned quadrant
+
+// Each tile is cropped with a bit of overlap (so a wall near a boundary
+// isn't cut off with no surrounding context), but only OWNS a quadrant with
+// no overlap — a detection is kept only if its centre falls inside the
+// tile that reported it. This is the primary de-duplication mechanism:
+// since two adjacent tiles essentially never report a feature centred at
+// the exact same point, ownership naturally keeps each real-world feature
+// exactly once, without needing to guess "are these two nearby detections
+// the same thing" after the fact — which is unreliable in a specific way
+// that bit us: two DIFFERENT rooms' width dimensions are often drawn
+// collinear along a shared wall, just adjacent to each other, and a
+// same-line "merge nearby fragments" pass can't tell that apart from one
+// wall's own fragments split across a boundary — it fused two distinct
+// dimension readings into one bogus span while keeping only one of their
+// lengths, corrupting the scale calibration.
+function computeTileRegions(){
+  const tiles = [];
+  for (let row=0; row<2; row++){
+    for (let col=0; col<2; col++){
+      const coreX1 = col===0 ? 0 : 0.5, coreX2 = col===0 ? 0.5 : 1;
+      const coreY1 = row===0 ? 0 : 0.5, coreY2 = row===0 ? 0.5 : 1;
+      tiles.push({
+        x1: col===0 ? 0 : 0.5-TILE_OVERLAP_FRAC, x2: col===0 ? 0.5+TILE_OVERLAP_FRAC : 1,
+        y1: row===0 ? 0 : 0.5-TILE_OVERLAP_FRAC, y2: row===0 ? 0.5+TILE_OVERLAP_FRAC : 1,
+        coreX1, coreY1, coreX2, coreY2,
+      });
+    }
+  }
+  return tiles;
+}
+
+function remapResultToFullImage(result, tile){
+  const tw = tile.x2-tile.x1, th = tile.y2-tile.y1;
+  const mapX = x => tile.x1 + x*tw, mapY = y => tile.y1 + y*th;
+  return {
+    walls: (result.walls||[]).map(w=>({...w, x1:mapX(w.x1), y1:mapY(w.y1), x2:mapX(w.x2), y2:mapY(w.y2)})),
+    windows: (result.windows||[]).map(w=>({...w, x1:mapX(w.x1), y1:mapY(w.y1), x2:mapX(w.x2), y2:mapY(w.y2)})),
+    doors: (result.doors||[]).map(d=>({...d, x:mapX(d.x), y:mapY(d.y)})),
+    labels: (result.labels||[]).map(l=>({...l, x:mapX(l.x), y:mapY(l.y)})),
+    dimensions: (result.dimensions||[]).map(d=>({...d, x1:mapX(d.x1), y1:mapY(d.y1), x2:mapX(d.x2), y2:mapY(d.y2)})),
+  };
+}
+function segMidpoint(s){ return {x:(s.x1+s.x2)/2, y:(s.y1+s.y2)/2}; }
+function pointInCore(p, tile){
+  return p.x>=tile.coreX1 && p.x<=tile.coreX2 && p.y>=tile.coreY1 && p.y<=tile.coreY2;
+}
+function filterByOwnership(items, tile, getPoint){
+  return items.filter(it=>pointInCore(getPoint(it), tile));
+}
+
+// A long wall can still straddle a core boundary and get truncated by
+// whichever tile owns its midpoint (that tile's crop may not reach far
+// enough to have seen the whole thing) — reported as two separate,
+// ownership-kept fragments, one from each neighbouring tile. Unlike the
+// dimension case above, two wall/window fragments that are collinear and
+// touch/overlap really are (near enough always) the same physical wall, so
+// stitching them back together here is safe — ownership filtering has
+// already removed the true duplicates this would otherwise risk conflating.
+function segmentAngle(s){ return Math.atan2(s.y2-s.y1, s.x2-s.x1); }
+function angleDiff(a, b){
+  const d = Math.abs(a-b) % Math.PI; // a line and its reverse direction are the same line
+  return Math.min(d, Math.PI-d);
+}
+function perpDistanceToLine(point, line){
+  const dx = line.x2-line.x1, dy = line.y2-line.y1;
+  const len = Math.hypot(dx,dy) || 1e-9;
+  return Math.abs((point.x-line.x1)*dy - (point.y-line.y1)*dx) / len;
+}
+const MERGE_ANGLE_THRESH_RAD = 6 * Math.PI/180; // ~6°: same line direction, allowing for per-tile coordinate noise
+const MERGE_PERP_THRESH = 0.012;                // normalized distance off the line to still count as the same wall
+const MERGE_GAP_THRESH = 0.015;                 // normalized gap between two fragments' extents to still bridge them
+function mergeCollinearSegments(list, angleThresh, perpThresh, gapThresh){
+  let segs = list.map(s=>({...s}));
+  let mergedSomething = true;
+  while (mergedSomething){
+    mergedSomething = false;
+    outer:
+    for (let i=0; i<segs.length; i++){
+      for (let j=i+1; j<segs.length; j++){
+        const a = segs[i], b = segs[j];
+        const angA = segmentAngle(a), angB = segmentAngle(b);
+        if (angleDiff(angA, angB) > angleThresh) continue;
+        const midB = segMidpoint(b);
+        if (perpDistanceToLine(midB, a) > perpThresh) continue;
+        const dirx = Math.cos(angA), diry = Math.sin(angA);
+        const proj = (x,y) => (x-a.x1)*dirx + (y-a.y1)*diry;
+        const aMin = Math.min(proj(a.x1,a.y1), proj(a.x2,a.y2));
+        const aMax = Math.max(proj(a.x1,a.y1), proj(a.x2,a.y2));
+        const bMin = Math.min(proj(b.x1,b.y1), proj(b.x2,b.y2));
+        const bMax = Math.max(proj(b.x1,b.y1), proj(b.x2,b.y2));
+        if (bMin > aMax+gapThresh || aMin > bMax+gapThresh) continue; // disjoint along the line, not the same feature
+        const mMin = Math.min(aMin,bMin), mMax = Math.max(aMax,bMax);
+        const merged = {
+          ...a,
+          x1: a.x1+dirx*mMin, y1: a.y1+diry*mMin,
+          x2: a.x1+dirx*mMax, y2: a.y1+diry*mMax,
+          thicknessCm: (a.thicknessCm && b.thicknessCm) ? (a.thicknessCm+b.thicknessCm)/2 : (a.thicknessCm||b.thicknessCm),
+        };
+        segs.splice(j,1); segs.splice(i,1,merged);
+        mergedSomething = true;
+        break outer;
+      }
+    }
+  }
+  return segs;
+}
+// Safety net only, for the rare exact-boundary tie where a point lands on
+// two tiles' shared core edge and gets kept by both.
+function dedupePoints(list, thresh, getPoint){
+  const kept = [];
+  list.forEach(item=>{
+    const p = getPoint(item);
+    if (!kept.some(k=>Math.hypot(p.x-getPoint(k).x, p.y-getPoint(k).y) <= thresh)) kept.push(item);
+  });
+  return kept;
+}
+function normalizeLabelText(t){ return (t||"").trim().toLowerCase().replace(/\s+/g," "); }
+function dedupeLabels(list, thresh){
+  const kept = [];
+  list.forEach(item=>{
+    const norm = normalizeLabelText(item.text);
+    const isDup = kept.some(k=>normalizeLabelText(k.text)===norm && Math.hypot(item.x-k.x, item.y-k.y)<=thresh);
+    if (!isDup) kept.push(item);
+  });
+  return kept;
+}
+
+async function runTiledDetect(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load an image on this floor first."); return; }
+  const apiKey = document.getElementById("fldApiKey").value.trim();
+  if (!apiKey){
+    alert("Enter your Anthropic API key first (get one at console.anthropic.com). It's stored only in this browser.");
+    document.getElementById("fldApiKey").focus();
+    return;
+  }
+  const model = document.getElementById("fldModel").value;
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  try{
+    const sourceImg = await loadImageEl(floor.image.dataURL);
+    const tiles = computeTileRegions();
+    const combined = {walls:[], windows:[], doors:[], labels:[], dimensions:[]};
+    for (let i=0; i<tiles.length; i++){
+      statusEl.textContent = `High-accuracy pass: analyzing tile ${i+1} of ${tiles.length}…`;
+      const t = tiles[i];
+      const cropped = cropImageRegion(sourceImg, floor.worldWidth, floor.worldHeight, t.x1, t.y1, t.x2, t.y2);
+      const {mediaType, base64Data} = parseDataUrl(cropped.dataURL);
+      const raw = await callClaudeStructured(base64Data, mediaType, apiKey, model, DETECT_PROMPT+TILE_DETECT_PROMPT_SUFFIX, DETECT_SCHEMA);
+      const remapped = remapResultToFullImage(raw, t);
+      // Ownership filtering first — keep only what this tile's own quadrant
+      // is responsible for, so distinct nearby features from other tiles
+      // never reach the merge step below and risk getting fused together.
+      combined.walls.push(...filterByOwnership(remapped.walls, t, segMidpoint));
+      combined.windows.push(...filterByOwnership(remapped.windows, t, segMidpoint));
+      combined.doors.push(...filterByOwnership(remapped.doors, t, d=>({x:d.x, y:d.y})));
+      combined.labels.push(...filterByOwnership(remapped.labels, t, l=>({x:l.x, y:l.y})));
+      combined.dimensions.push(...filterByOwnership(remapped.dimensions, t, segMidpoint));
+    }
+    statusEl.textContent = "Merging tiles and applying results…";
+    // Walls/windows: stitch back together any that got truncated by
+    // whichever tile owned their midpoint (safe now that ownership
+    // filtering has already removed true duplicates — see comments above).
+    combined.walls = mergeCollinearSegments(combined.walls, MERGE_ANGLE_THRESH_RAD, MERGE_PERP_THRESH, MERGE_GAP_THRESH);
+    combined.windows = mergeCollinearSegments(combined.windows, MERGE_ANGLE_THRESH_RAD, MERGE_PERP_THRESH, MERGE_GAP_THRESH);
+    // Dimensions: ownership filtering only — never fragment-merged, since a
+    // room's dimension arrows are a compact, self-contained reading and
+    // fusing two distinct rooms' collinear-but-different readings would
+    // corrupt the scale calibration (see comment above).
+    const DEDUPE_FRAC = 0.01; // safety-net proximity threshold for the rare exact-boundary tie
+    combined.doors = dedupePoints(combined.doors, DEDUPE_FRAC*1.5, d=>({x:d.x, y:d.y}));
+    combined.labels = dedupeLabels(combined.labels, 0.05);
+
+    pushUndoSnapshot();
+    const {wallCount, windowCount, doorCount, labelCount, dimensionCount, calibrationApplied} = applyDetection(combined, floor);
+    statusEl.textContent = `High-accuracy pass (4 tiles) added ${wallCount} wall${wallCount===1?"":"s"}, ${windowCount} window${windowCount===1?"":"s"}, ${doorCount} door${doorCount===1?"":"s"}` +
+      (labelCount ? `, ${labelCount} text label${labelCount===1?"":"s"}` : "") +
+      (dimensionCount ? `, read ${dimensionCount} dimension${dimensionCount===1?"":"s"}${calibrationApplied?" (calibrated)":""}` : "") +
+      `. Review and correct with the Select tool — nothing was deleted.`;
+    updateScaleStatus();
+    scheduleAutosave();
+    render();
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("High-accuracy detection failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
+function loadImageEl(dataURL){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = ()=>reject(new Error("Could not decode image data."));
+    img.src = dataURL;
+  });
+}
+
+function cropImageRegion(imgEl, naturalWidth, naturalHeight, x1, y1, x2, y2){
+  const px1 = Math.max(0, Math.round(x1*naturalWidth));
+  const py1 = Math.max(0, Math.round(y1*naturalHeight));
+  const px2 = Math.min(naturalWidth, Math.round(x2*naturalWidth));
+  const py2 = Math.min(naturalHeight, Math.round(y2*naturalHeight));
+  const w = Math.max(1, px2-px1), h = Math.max(1, py2-py1);
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(imgEl, px1, py1, w, h, 0, 0, w, h);
+  return {dataURL: c.toDataURL("image/png"), w, h};
+}
+
+async function runSplitFloors(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load a combined floorplan image on this floor first."); return; }
+  const apiKey = document.getElementById("fldApiKey").value.trim();
+  if (!apiKey){
+    alert("Enter your Anthropic API key first (get one at console.anthropic.com). It's stored only in this browser.");
+    document.getElementById("fldApiKey").focus();
+    return;
+  }
+  const model = document.getElementById("fldModel").value;
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  statusEl.textContent = "Finding floors in the image…";
+  try{
+    const {mediaType, base64Data} = readImageDataUrl(floor);
+    const result = await callClaudeStructured(base64Data, mediaType, apiKey, model, SPLIT_PROMPT, SPLIT_SCHEMA);
+    const regions = (result.floors || []).filter(f=>f.x2>f.x1 && f.y2>f.y1);
+    if (!regions.length) throw new Error("Couldn't identify any floor regions in this image.");
+    if (regions.length === 1){
+      statusEl.textContent = "Claude found only one floor in this image — nothing to split.";
+      return;
+    }
+    const names = regions.map(r=>r.label).join(", ");
+    if (!confirm(`Split "${floor.name}" into ${regions.length} floors (${names})? Any walls, doors or furniture already on "${floor.name}" will be discarded — the split only reuses its image.`)) return;
+
+    const sourceImg = await loadImageEl(floor.image.dataURL);
+    const newFloors = regions.map(r=>{
+      const cropped = cropImageRegion(sourceImg, floor.worldWidth, floor.worldHeight, r.x1, r.y1, r.x2, r.y2);
+      const f = makeFloor(r.label || "Floor");
+      f.image = {dataURL: cropped.dataURL, naturalWidth: cropped.w, naturalHeight: cropped.h};
+      f.worldWidth = cropped.w; f.worldHeight = cropped.h;
+      return f;
+    });
+
+    pushUndoSnapshot();
+    const idx = state.floors.findIndex(x=>x.id===floor.id);
+    state.floors.splice(idx, 1, ...newFloors);
+    switchFloor(newFloors[0].id);
+    scheduleAutosave();
+    statusEl.textContent = `Split into ${newFloors.length} floors: ${names}. Run "Detect walls, doors & dimensions" on each one.`;
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("Floor split failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pointer interaction
+// ---------------------------------------------------------------------------
+function getMouseScreen(e){
+  const rect = cv.getBoundingClientRect();
+  return {x: e.clientX-rect.left, y: e.clientY-rect.top};
+}
+function snapAngle(x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1;
+  const len = Math.hypot(dx,dy);
+  const ang = Math.round(Math.atan2(dy,dx)/(Math.PI/12))*(Math.PI/12); // 15deg steps
+  return {x2: x1+Math.cos(ang)*len, y2: y1+Math.sin(ang)*len};
+}
+
+// ---------------------------------------------------------------------------
+// Snapping — wall/window endpoints snap to nearby wall/window endpoints or
+// edges, and doors snap onto the nearest wall's centreline, so pieces line
+// up without needing pixel-perfect dragging.
+// ---------------------------------------------------------------------------
+function projectPointToSegment(p, a, b){
+  const l2 = (b.x-a.x)**2 + (b.y-a.y)**2;
+  if (l2 === 0) return {x:a.x, y:a.y};
+  let t = ((p.x-a.x)*(b.x-a.x) + (p.y-a.y)*(b.y-a.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return {x: a.x+t*(b.x-a.x), y: a.y+t*(b.y-a.y)};
+}
+function snapToNearbyWalls(mw, excludeWallId){
+  const snapWorld = SNAP_SCREEN_PX/fitScale;
+  let best = null, bestDist = snapWorld;
+  activeFloor().walls.forEach(w=>{
+    if (w.id === excludeWallId) return;
+    [[w.x1,w.y1],[w.x2,w.y2]].forEach(([x,y])=>{
+      const d = Math.hypot(mw.x-x, mw.y-y);
+      if (d < bestDist){ bestDist = d; best = {x,y}; }
+    });
+    const proj = projectPointToSegment(mw, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
+    const d2 = Math.hypot(mw.x-proj.x, mw.y-proj.y);
+    if (d2 < bestDist){ bestDist = d2; best = proj; }
+  });
+  return best;
+}
+function snapDoorToWall(mw){
+  const snapWorld = (SNAP_SCREEN_PX*1.5)/fitScale;
+  let best = null, bestDist = snapWorld;
+  activeFloor().walls.forEach(w=>{
+    if ((w.type||"wall") !== "wall") return; // only snap doors into actual walls, not windows
+    const proj = projectPointToSegment(mw, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
+    const d = Math.hypot(mw.x-proj.x, mw.y-proj.y);
+    if (d < bestDist){ bestDist = d; best = {point:proj, angle:Math.atan2(w.y2-w.y1, w.x2-w.x1)}; }
+  });
+  return best;
+}
+
+cv.addEventListener("pointerdown", (e)=>{
+  cv.setPointerCapture(e.pointerId);
+  const ms = getMouseScreen(e);
+  const mw = toWorld(ms.x, ms.y);
+  // Captured unconditionally so any drag that turns out to mutate something
+  // (draw/move/resize/rotate/calibrate) has a "before" snapshot ready; a
+  // plain click that only selects/deselects never touches state, so the
+  // pointerup comparison below just finds nothing changed and skips it.
+  dragUndoSnapshot = snapshotState();
+
+  if (activeTool === "wall" || activeTool === "window"){
+    const type = activeTool === "window" ? "draw-window" : "draw-wall";
+    const snapStart = snapToNearbyWalls(mw, null);
+    const start = snapStart || mw;
+    drag = {type, x1:start.x, y1:start.y, x2:start.x, y2:start.y};
+    render();
+    return;
+  }
+  if (activeTool === "calibrate"){
+    drag = {type:"calibrate", x1:mw.x, y1:mw.y, x2:mw.x, y2:mw.y};
+    render();
+    return;
+  }
+  if (activeTool === "pick-thickness"){
+    drag = {type:"pick-thickness", x1:mw.x, y1:mw.y, x2:mw.x, y2:mw.y};
+    render();
+    return;
+  }
+
+  // select tool: handles of current selection take priority
+  if (selection && selection.kind === "box"){
+    const box = getBox(selection.id);
+    if (box){
+      const h = hitTestBoxHandles(box, ms);
+      if (h && h.type === "resize"){
+        const hw = cmToWorld(box.wCm)/2, hh = cmToWorld(box.dCm)/2;
+        const sign = {tl:[-1,-1], tr:[1,-1], br:[1,1], bl:[-1,1]}[h.corner];
+        const fixedLocal = {x:-sign[0]*hw, y:-sign[1]*hh};
+        const fixedWorldOffset = rotate(fixedLocal.x, fixedLocal.y, box.rotation);
+        const fixedWorld = {x: box.x+fixedWorldOffset.x, y: box.y+fixedWorldOffset.y};
+        drag = {type:"resize-box", id:box.id, fixedWorld, rotation:box.rotation};
+        return;
+      }
+      if (h && h.type === "rotate"){
+        drag = {type:"rotate-box", id:box.id};
+        return;
+      }
+    }
+  }
+  if (selection && selection.kind === "wall"){
+    const wall = getWall(selection.id);
+    if (wall){
+      const ep = hitTestWallEndpoints(wall, ms);
+      if (ep){
+        // Capture the OTHER (fixed) endpoint and the wall's current angle
+        // now, before anything moves — that's what "lock angle" holds the
+        // drag to, regardless of how the dragged end moves afterward.
+        const fixed = ep==="1" ? {x:wall.x2,y:wall.y2} : {x:wall.x1,y:wall.y1};
+        const dragged = ep==="1" ? {x:wall.x1,y:wall.y1} : {x:wall.x2,y:wall.y2};
+        const angle = Math.atan2(dragged.y-fixed.y, dragged.x-fixed.x);
+        drag = {type:"move-wall-endpoint", id:wall.id, which:ep, fixed, angle};
+        return;
+      }
+    }
+  }
+
+  const hitBox = hitTestBoxes(ms);
+  if (hitBox){
+    select("box", hitBox.id);
+    drag = {type:"move-box", id:hitBox.id, startWorld:mw, origX:hitBox.x, origY:hitBox.y};
+    return;
+  }
+  const hitWall = hitTestWalls(ms);
+  if (hitWall){
+    select("wall", hitWall.id);
+    drag = {type:"move-wall", id:hitWall.id, startWorld:mw, orig:{x1:hitWall.x1,y1:hitWall.y1,x2:hitWall.x2,y2:hitWall.y2}};
+    return;
+  }
+  deselect();
+});
+
+cv.addEventListener("pointermove", (e)=>{
+  if (!drag){ updateHoverCursor(e); return; }
+  const ms = getMouseScreen(e);
+  const mw = toWorld(ms.x, ms.y);
+
+  const isDrawSeg = drag.type === "draw-wall" || drag.type === "draw-window";
+  if (isDrawSeg || drag.type === "calibrate" || drag.type === "pick-thickness"){
+    if (e.shiftKey && isDrawSeg){
+      const snapped = snapAngle(drag.x1,drag.y1,mw.x,mw.y);
+      drag.x2 = snapped.x2; drag.y2 = snapped.y2;
+    } else if (isDrawSeg){
+      const snap = snapToNearbyWalls(mw, null);
+      const p = snap || mw;
+      drag.x2 = p.x; drag.y2 = p.y;
+    } else {
+      drag.x2 = mw.x; drag.y2 = mw.y;
+    }
+    render();
+    return;
+  }
+  if (drag.type === "move-box"){
+    const b = getBox(drag.id);
+    b.x = drag.origX + (mw.x-drag.startWorld.x);
+    b.y = drag.origY + (mw.y-drag.startWorld.y);
+    if (b.kind === "door" && !e.shiftKey){
+      const snap = snapDoorToWall({x:b.x, y:b.y});
+      if (snap){ b.x = snap.point.x; b.y = snap.point.y; b.rotation = snap.angle; }
+    }
+    render();
+    return;
+  }
+  if (drag.type === "move-wall"){
+    const w = getWall(drag.id);
+    const dx = mw.x-drag.startWorld.x, dy = mw.y-drag.startWorld.y;
+    w.x1 = drag.orig.x1+dx; w.y1 = drag.orig.y1+dy;
+    w.x2 = drag.orig.x2+dx; w.y2 = drag.orig.y2+dy;
+    render();
+    return;
+  }
+  if (drag.type === "move-wall-endpoint"){
+    const w = getWall(drag.id);
+    const snap = e.shiftKey ? null : snapToNearbyWalls(mw, w.id);
+    let p = snap || mw;
+    if (lockWallAngles && !e.shiftKey) p = projectPointOntoLine(p, drag.fixed, drag.angle);
+    if (drag.which==="1"){ w.x1=p.x; w.y1=p.y; } else { w.x2=p.x; w.y2=p.y; }
+    render();
+    return;
+  }
+  if (drag.type === "resize-box"){
+    const b = getBox(drag.id);
+    const local = rotate(mw.x-drag.fixedWorld.x, mw.y-drag.fixedWorld.y, -drag.rotation);
+    const newWorldW = Math.max(Math.abs(local.x), cmToWorld(5));
+    const newWorldH = Math.max(Math.abs(local.y), cmToWorld(5));
+    const signX = local.x>=0 ? 1 : -1, signY = local.y>=0 ? 1 : -1;
+    const centerLocal = {x: signX*newWorldW/2, y: signY*newWorldH/2};
+    const centerWorldOffset = rotate(centerLocal.x, centerLocal.y, drag.rotation);
+    b.x = drag.fixedWorld.x + centerWorldOffset.x;
+    b.y = drag.fixedWorld.y + centerWorldOffset.y;
+    b.wCm = worldToCm(newWorldW);
+    b.dCm = worldToCm(newWorldH);
+    updateSelPanel();
+    render();
+    return;
+  }
+  if (drag.type === "rotate-box"){
+    const b = getBox(drag.id);
+    const c = toScreen(b.x,b.y);
+    const ang = Math.atan2(ms.y-c.y, ms.x-c.x);
+    b.rotation = ang + Math.PI/2;
+    updateSelPanel();
+    render();
+    return;
+  }
+});
+
+window.addEventListener("pointerup", ()=>{
+  if (!drag) return;
+  if (drag.type === "draw-wall" || drag.type === "draw-window"){
+    const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
+    if (len > 4){
+      const isWindow = drag.type === "draw-window";
+      const wall = {
+        id:newId(), type: isWindow ? "window" : "wall",
+        x1:drag.x1, y1:drag.y1, x2:drag.x2, y2:drag.y2,
+        thicknessCm: isWindow ? newWindowThicknessCm : newWallThicknessCm,
+      };
+      activeFloor().walls.push(wall);
+      select("wall", wall.id);
+    }
+  }
+  if (drag.type === "calibrate"){
+    const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
+    if (len > 2){
+      const input = prompt("Real-world length of that line, in metres (e.g. 4.2):");
+      const meters = parseFloat(input);
+      if (meters && meters>0){
+        activeFloor().calibration = {metersPerWorldUnit: meters/len};
+        updateScaleStatus();
+      }
+    }
+    setTool("select");
+  }
+  if (drag.type === "pick-thickness"){
+    const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
+    if (len > 1){
+      autoWallRefThicknessPx = len;
+      document.getElementById("detectStatus").textContent = `Reference thickness set: ${len.toFixed(1)}px. Click "Auto-detect walls from image" to run.`;
+    }
+    setTool("select");
+  }
+  if (dragUndoSnapshot !== null){
+    const after = snapshotState();
+    if (after !== dragUndoSnapshot) commitUndoSnapshot(dragUndoSnapshot);
+    dragUndoSnapshot = null;
+  }
+  drag = null;
+  scheduleAutosave();
+  render();
+});
+
+window.addEventListener("keydown", (e)=>{
+  const inField = document.activeElement && ["INPUT","TEXTAREA"].includes(document.activeElement.tagName);
+  if (inField) return;
+  if ((e.key==="Delete" || e.key==="Backspace") && selection){
+    deleteSelection();
+    e.preventDefault();
+  }
+  if (e.key==="Escape"){
+    drag = null;
+    setTool("select");
+    deselect();
+  }
+  const cmdOrCtrl = e.metaKey || e.ctrlKey;
+  if (cmdOrCtrl && e.key.toLowerCase()==="z" && !e.shiftKey){
+    undo();
+    e.preventDefault();
+  }
+  if (cmdOrCtrl && ((e.key.toLowerCase()==="z" && e.shiftKey) || e.key.toLowerCase()==="y")){
+    redo();
+    e.preventDefault();
+  }
+});
+
+function deleteSelection(){
+  if (!selection) return;
+  pushUndoSnapshot();
+  const f = activeFloor();
+  if (selection.kind==="box") f.boxes = f.boxes.filter(b=>b.id!==selection.id);
+  if (selection.kind==="wall") f.walls = f.walls.filter(w=>w.id!==selection.id);
+  selection = null;
+  updateSelPanel();
+  scheduleAutosave();
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Paste image from clipboard
+// ---------------------------------------------------------------------------
+window.addEventListener("paste", (e)=>{
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items){
+    if (item.type.startsWith("image/")){
+      loadImageFile(item.getAsFile());
+      break;
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sidebar UI wiring
+// ---------------------------------------------------------------------------
+function updateScaleStatus(){
+  const el = document.getElementById("scaleStatus");
+  if (activeFloor().calibration){
+    el.textContent = "Calibrated — accurate to the line you drew.";
+    el.classList.add("ok");
+  } else {
+    el.textContent = "Not calibrated — furniture sizes are a rough guess until you calibrate.";
+    el.classList.remove("ok");
+  }
+}
+
+function updateSelPanel(){
+  const panel = document.getElementById("selPanel");
+  if (!selection){ panel.classList.remove("show"); return; }
+  panel.classList.add("show");
+  const isBox = selection.kind==="box";
+  const isDoor = isBox && getBox(selection.id) && getBox(selection.id).kind==="door";
+  document.getElementById("fldLabelWrap").style.display = isBox ? "flex" : "none";
+  document.getElementById("fldSizeWrap").style.display = isBox ? "grid" : "none";
+  document.getElementById("fldRotWrap").style.display = isBox ? "flex" : "none";
+  document.getElementById("fldLenWrap").style.display = isBox ? "none" : "flex";
+  document.getElementById("fldWallThicknessWrap").style.display = isBox ? "none" : "flex";
+  document.getElementById("fldDoorSwingWrap").style.display = isDoor ? "flex" : "none";
+
+  if (isBox){
+    const b = getBox(selection.id);
+    if (!b) return;
+    document.getElementById("fldLabel").value = b.label;
+    document.getElementById("fldW").value = Math.round(b.wCm);
+    document.getElementById("fldD").value = Math.round(b.dCm);
+    document.getElementById("fldRot").value = Math.round(b.rotation*180/Math.PI) % 360;
+  } else {
+    const w = getWall(selection.id);
+    if (!w) return;
+    const isWindow = (w.type||"wall") === "window";
+    document.getElementById("lblWallThickness").textContent = isWindow ? "Window thickness (cm)" : "Wall thickness (cm)";
+    const meters = worldLenToMeters(Math.hypot(w.x2-w.x1, w.y2-w.y1));
+    document.getElementById("fldLen").value = meters.toFixed(2)+" m";
+    document.getElementById("fldWallThickness").value = Math.round(w.thicknessCm||WALL_THICKNESS_CM);
+  }
+}
+
+document.getElementById("fldLabel").addEventListener("input", (e)=>{
+  if (!selection || selection.kind!=="box") return;
+  pushUndoSnapshotDebounced();
+  getBox(selection.id).label = e.target.value;
+  scheduleAutosave(); render();
+});
+document.getElementById("fldW").addEventListener("input", (e)=>{
+  if (!selection || selection.kind!=="box") return;
+  const v = parseFloat(e.target.value); if (!v||v<=0) return;
+  pushUndoSnapshotDebounced();
+  getBox(selection.id).wCm = v; scheduleAutosave(); render();
+});
+document.getElementById("fldD").addEventListener("input", (e)=>{
+  if (!selection || selection.kind!=="box") return;
+  const v = parseFloat(e.target.value); if (!v||v<=0) return;
+  pushUndoSnapshotDebounced();
+  getBox(selection.id).dCm = v; scheduleAutosave(); render();
+});
+document.getElementById("fldRot").addEventListener("input", (e)=>{
+  if (!selection || selection.kind!=="box") return;
+  const v = parseFloat(e.target.value)||0;
+  pushUndoSnapshotDebounced();
+  getBox(selection.id).rotation = v*Math.PI/180; scheduleAutosave(); render();
+});
+document.getElementById("fldWallThickness").addEventListener("input", (e)=>{
+  if (!selection || selection.kind!=="wall") return;
+  const v = parseFloat(e.target.value); if (!v||v<=0) return;
+  pushUndoSnapshotDebounced();
+  getWall(selection.id).thicknessCm = v; scheduleAutosave(); render();
+});
+document.getElementById("fldNewWallThickness").addEventListener("input", (e)=>{
+  const v = parseFloat(e.target.value);
+  if (v && v>0) newWallThicknessCm = v;
+});
+document.getElementById("fldNewWindowThickness").addEventListener("input", (e)=>{
+  const v = parseFloat(e.target.value);
+  if (v && v>0) newWindowThicknessCm = v;
+});
+document.getElementById("btnDelete").addEventListener("click", deleteSelection);
+document.getElementById("btnFlipHinge").addEventListener("click", ()=>{
+  if (!selection || selection.kind!=="box") return;
+  const b = getBox(selection.id); if (!b || b.kind!=="door") return;
+  pushUndoSnapshot();
+  b.hinge = (b.hinge||-1) * -1; scheduleAutosave(); render();
+});
+document.getElementById("btnFlipSwing").addEventListener("click", ()=>{
+  if (!selection || selection.kind!=="box") return;
+  const b = getBox(selection.id); if (!b || b.kind!=="door") return;
+  pushUndoSnapshot();
+  b.swing = (b.swing||-1) * -1; scheduleAutosave(); render();
+});
+
+document.getElementById("btnSelect").addEventListener("click", ()=>setTool("select"));
+document.getElementById("btnWall").addEventListener("click", ()=>setTool("wall"));
+document.getElementById("btnWindow").addEventListener("click", ()=>setTool("window"));
+document.getElementById("btnCalibrate").addEventListener("click", ()=>setTool("calibrate"));
+document.getElementById("btnPickWallThickness").addEventListener("click", ()=>setTool("pick-thickness"));
+document.getElementById("btnPixelWallDetect").addEventListener("click", runPixelWallDetect);
+document.getElementById("btnPixelWindowDetect").addEventListener("click", runPixelWindowDetect);
+document.getElementById("btnDoor").addEventListener("click", ()=>{
+  addBox({kind:"door", type:"door", label:"Door", wCm:DOOR_DEFAULT.wCm, dCm:DOOR_DEFAULT.dCm, color:DOOR_DEFAULT.color, hinge:-1, swing:-1});
+});
+document.getElementById("btnCustom").addEventListener("click", addCustomItem);
+
+document.getElementById("fldOpacity").addEventListener("input", (e)=>{
+  bgOpacity = Math.max(0, Math.min(1, parseFloat(e.target.value)/100));
+  render();
+});
+document.getElementById("fldShowLabels").addEventListener("change", (e)=>{
+  showLabels = e.target.checked;
+  render();
+});
+document.getElementById("fldShowOverlay").addEventListener("change", (e)=>{
+  showOverlay = e.target.checked;
+  render();
+});
+document.getElementById("fldLockWallAngles").addEventListener("change", (e)=>{
+  lockWallAngles = e.target.checked;
+});
+document.getElementById("fldZoom").addEventListener("input", (e)=>{
+  zoomLevel = parseFloat(e.target.value)/100;
+  document.getElementById("zoomPct").textContent = Math.round(zoomLevel*100)+"%";
+  resizeCanvas();
+});
+document.getElementById("btnZoomReset").addEventListener("click", ()=>{
+  zoomLevel = 1;
+  document.getElementById("fldZoom").value = 100;
+  document.getElementById("zoomPct").textContent = "100%";
+  resizeCanvas();
+});
+
+document.getElementById("btnDetect").addEventListener("click", runAIDetect);
+document.getElementById("btnDetectTiled").addEventListener("click", runTiledDetect);
+document.getElementById("btnSplitFloors").addEventListener("click", runSplitFloors);
+function initAISettings(){
+  const keyField = document.getElementById("fldApiKey");
+  const modelField = document.getElementById("fldModel");
+  const savedKey = localStorage.getItem(AI_API_KEY_STORAGE);
+  if (savedKey) keyField.value = savedKey;
+  keyField.addEventListener("change", ()=>{
+    localStorage.setItem(AI_API_KEY_STORAGE, keyField.value.trim());
+  });
+  const savedModel = localStorage.getItem(AI_MODEL_STORAGE);
+  if (savedModel) modelField.value = savedModel;
+  modelField.addEventListener("change", ()=>{
+    localStorage.setItem(AI_MODEL_STORAGE, modelField.value);
+  });
+}
+
+document.getElementById("btnOpenImage").addEventListener("click", ()=>document.getElementById("fileInput").click());
+document.getElementById("fileInput").addEventListener("change", (e)=>{
+  if (e.target.files[0]) loadImageFile(e.target.files[0]);
+  e.target.value = "";
+});
+
+document.getElementById("btnSave").addEventListener("click", saveProject);
+document.getElementById("btnLoad").addEventListener("click", ()=>document.getElementById("loadInput").click());
+document.getElementById("loadInput").addEventListener("change", (e)=>{
+  if (e.target.files[0]) loadProjectFile(e.target.files[0]);
+  e.target.value = "";
+});
+document.getElementById("btnExportPng").addEventListener("click", exportPng);
+document.getElementById("btnClear").addEventListener("click", ()=>{
+  if (!confirm("Clear ALL floors and start a new project? (Ctrl/Cmd+Z will undo this.)")) return;
+  pushUndoSnapshot();
+  applyLoadedState({});
+  localStorage.removeItem(AUTOSAVE_KEY);
+});
+document.getElementById("btnAddFloor").addEventListener("click", addFloor);
+document.getElementById("btnUndo").addEventListener("click", undo);
+document.getElementById("btnRedo").addEventListener("click", redo);
+
+function buildFurniturePalette(){
+  const el = document.getElementById("furniturePalette");
+  FURNITURE_TYPES.forEach(f=>{
+    const btn = document.createElement("button");
+    btn.textContent = f.label;
+    btn.title = `${f.wCm} × ${f.dCm} cm`;
+    btn.addEventListener("click", ()=>addBox({kind:"furniture", type:f.key, label:f.label, wCm:f.wCm, dCm:f.dCm, color:f.color}));
+    el.appendChild(btn);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+buildFurniturePalette();
+initAISettings();
+setTool("select");
+restoreAutosave();       // may replace `state` wholesale; harmless no-op otherwise
+renderFloorTabs();
+updateScaleStatus();
+resizeCanvas();
+updateUndoRedoButtons(); // undo/redo history starts empty regardless of autosave restore
+</script>
+</body>
+</html>
