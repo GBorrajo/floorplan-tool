@@ -526,3 +526,384 @@ sessions so they don't get lost.
   simulated AI report for the dining/sitting door, matching the expected
   hinge/swing/rotation exactly. Existing wall/window regression tests
   (11 walls, 7 windows) unaffected.
+- 2026-08-25 — first real-world run of door detection (12 West Street),
+  and the user reported doors placed/angled wrong near the narrow
+  stairwell/hallway, plus windows still appearing on the interior doorway
+  walls into the dining/sitting rooms. Two real fixes, not just
+  more-of-the-same threshold tuning:
+  - **Door snap bug.** `runDoorDetect` was snapping each door onto its
+    nearest confirmed wall using the *midpoint* between the AI-reported
+    hinge and leaf-tip points, not the hinge point itself. The hinge is
+    defined to sit on the wall; the tip sits a full door-width away, in
+    whichever direction the door swings. In a wide room that offset is
+    harmless, but in a narrow corridor (like this house's stairwell) it's
+    large enough relative to the corridor width to pull the snap target
+    closer to the *opposite* wall than the one the door is actually in —
+    and since both position **and** rotation/swing are derived from
+    whichever wall gets picked, a wrong wall means both come out wrong
+    together. That's exactly the failure the user saw. Fixed by snapping
+    on the hinge point directly. Reproduced the bug and confirmed the fix
+    with a standalone test (60px-wide two-wall corridor, 80cm door: old
+    midpoint math picked the far wall, hinge-point math picks the near
+    one correctly).
+  - **Window/door overlap suppression.** The stairwell-wall false-positive
+    class documented above (a door's swing-arc ink reading as
+    window-glazing density) was previously just accepted as a known
+    limitation. Now that door positions are independently known, pixel
+    window detection filters out any window span that overlaps an
+    already-known door's footprint along the same wall
+    (`doorSpansOnWall`/`spansOverlap` in `scanWallForWindowSpans`) —
+    turning an accepted limitation into an actual fix. Verified with a
+    standalone test: two window-like density bands on a wall, one
+    overlapping a door's position — only the non-overlapping one survives
+    once the door is passed in. Practical implication: run "Auto-detect
+    doors" *before* pixel window detection (or trace doors manually
+    first) so this filter has something to check against.
+  - **Corner/T-junction snap bug**, found after retesting the fixes above —
+    doors were *still* inconsistent. Asked whether inconsistent
+    wall-tracing-over-doorway-gaps was the cause; checked `readImageDataUrl`
+    and confirmed the AI door-detect call reads the raw source image
+    directly, never the traced overlay, so that wasn't it. The real second
+    cause: `nearestWallPointAndAngle` picked whichever wall's *clamped*
+    segment (capped at its own endpoints) was Euclidean-nearest. A real
+    doorway is very often right next to a corner or T-junction — so a hinge
+    point sitting just past its own wall's endpoint (into the doorway gap)
+    could end up numerically closer to a totally different, perpendicular
+    wall's endpoint than to the correct wall's own clamped point, even
+    though the hinge sits almost exactly ON the correct wall's line. Wrong
+    wall picked → wrong angle (90° off in the T-junction case). Fixed by
+    scoring a wall on perpendicular distance to its own *line*, extended a
+    little past its endpoints (enough to cover a doorway-sized gap), before
+    falling back to plain nearest-clamped-point distance for genuinely
+    off-axis points. Verified with the exact failure scenario (a doorway
+    gap next to a T-junction: old code picked the perpendicular wall at
+    distance 10 over the correct wall's clamped distance of 15; new code
+    correctly picks the correct wall via its 3px perpendicular offset) plus
+    a sanity check that a point genuinely on the perpendicular wall still
+    picks that wall, and the original narrow-corridor regression test from
+    the fix above.
+  - **Hinge-side calculation was structurally broken — found by replaying
+    real ground-truth data through the pipeline, not by inspection.**
+    Retested the two fixes above against 12 West Street's real confirmed
+    wall list and its 4 manually-verified doors (reconstructing each
+    door's true hinge/tip points and feeding them through the actual
+    pipeline code). The T-junction fix genuinely mattered on real data —
+    the front-entrance door snapped to the wrong wall under the old logic,
+    correctly onto the right one after the fix, confirmed against the
+    source image. But investigating that door's numbers further exposed a
+    third, more fundamental bug: `deriveDoorOrientation` computed hinge
+    side from `hingeWorld − snappedPoint`, where `snappedPoint` is the
+    wall-projection of the hinge itself — and a point minus its own
+    perpendicular projection onto a line is, by definition, always
+    perpendicular to that line. So the "along the wall" component this was
+    testing is mathematically ~0 in the ordinary case (hinge safely inside
+    a wall segment, not near a clamped corner), and the sign comparison
+    silently defaults to the same side almost every time. Confirmed
+    directly: fed two mirror-image doors (one truly hinged left, one truly
+    hinged right) through the function and both came back `hinge: 1`.
+    Compounding it, the new door's stored position was set directly to
+    that same hinge point, while the renderer expects the stored position
+    to be the *center* of the opening (hinge offset half a door-width away
+    from it) — so every AI-detected door was landing roughly half a
+    door-width off from its true position, in whichever direction the
+    (effectively arbitrary) hinge side happened to land. This is very
+    likely the real, unified explanation for "sometimes placement looks
+    off, sometimes swing looks wrong" — one root cause, two visible
+    symptoms.
+  - **Fix, user-chosen over asking the AI for a third point:** determine
+    which side of the hinge the opening actually extends toward via pixel
+    density, the same way window detection already works — scan a
+    doorway-width band along the wall on each side of the hinge using the
+    strict wall-fill dark mask; the genuinely open side reads far more
+    blank than the still-solid wall on the other side
+    (`wallOpeningDirection`). `deriveDoorOrientation` now takes that
+    resolved direction directly instead of computing (and getting wrong)
+    a hinge sign itself, and derives the door's true center from it
+    (`hingeWorld − hinge·halfWidth·direction`) rather than storing the
+    hinge point as if it were the center. `runDoorDetect` now loads the
+    floor image's pixel data (previously only ever sent to the AI, never
+    read locally) to run this scan. Verified with a synthetic mirrored
+    pair (confirms hinge sign and center are now correctly distinguished,
+    where before both cases came back identical) and, more importantly,
+    replayed against door 32's exact real image pixels from 12 West
+    Street: `wallOpeningDirection` + `deriveDoorOrientation` reproduce
+    hinge=-1, swing=-1, center=(480, 1855) — an exact match to the
+    manually-verified ground truth, computed from real pixels rather than
+    a synthetic mask. Full existing regression set (corridor snap,
+    T-junction snap, window/door overlap suppression) still passes
+    alongside it (11/11).
+  - **`temperature: 0` attempt reverted for Opus 5/Sonnet 5 — no sampling
+    control exists on those models at all.** The API rejected it outright:
+    "`temperature` is deprecated for this model." Checked properly (not
+    assumed): temperature/top_p/top_k are removed entirely on Claude Opus 5
+    and Sonnet 5 — a 400 on any value, not just non-default ones — so
+    there is no user-facing sampling knob to reduce variance with on either
+    model. Still applied for Haiku 4.5 (the one model of the three where
+    it's actually allowed), gated the same way `effort` already is for the
+    other two. Practical implication: the user tested door detection 3
+    times on Opus 5 (the most capable of the three, and the one being
+    used) *before* this attempted fix and saw meaningfully different
+    placement/swing each run — with no sampling lever available on that
+    model to address it via request parameters, that variance most likely
+    reflects genuine visual ambiguity in how the model reads this specific
+    symbol (a dashed quarter-circle arc against wall/text clutter), not a
+    fixable API setting. Given the geometry pipeline has now been verified
+    deterministic and correct three separate ways (synthetic corridor/
+    T-junction cases, a synthetic mirrored hinge/opening pair, and a replay
+    against door 32's actual real image pixels), this closes off the
+    "make the AI reading more consistent" avenue — the deterministic
+    pixel-based arc/line shape-matching approach discussed earlier is now
+    the strongest remaining path forward for doors, not just an
+    alternative worth considering.
+
+## Pixel-based door detection (replaces AI for door position/hinge/swing)
+
+Ported from a validated Python prototype after AI-based door reading proved
+fundamentally inconsistent in practice (see the temperature investigation
+above — re-running detection on an unchanged image gave different
+placement/swing each time, even on Opus 5, with no sampling control
+available on that model to fix it at all).
+
+**What was tried and discarded first:** a generic whole-image Hough-circle
+search (OpenCV `HoughCircles`). It missed real, clearly-visible door arcs
+entirely (door 32's arc — obvious to the eye — didn't even survive the
+initial raw candidate list) while matching furniture icons and bath/sink
+fixtures as "circles" instead. Blind shape search over the whole image
+isn't the right tool for a *partial* (quarter-circle) arc.
+
+**What works:** exact template matching. Since every wall's line and angle
+is already known from wall detection/tracing, generate the *exact* shape
+`drawDoorSymbol` itself draws — a quarter-arc + straight leaf line,
+centered at a candidate hinge point on the wall — for every plausible
+position/radius/orientation along that wall, and score how much real ink
+in the source image lies along that specific template. This is a matched
+filter anchored to known geometry, not a generic shape search.
+
+One real bug caught mid-prototype, worth keeping documented: the first
+version of the scorer rated a stretch of plain solid wall as a perfect
+match, because "is there ink at every sample point" is trivially true when
+the whole swept area is solid black fill. Fixed by also requiring the
+*interior* of the swept quarter-sector to be mostly blank (real open
+floor), not solid — reusing the same blank-density philosophy already
+used for wall/window/doorway-gap detection elsewhere in this project
+(`DOOR_ARC_INTERIOR_DENSITY_MAX`).
+
+**Ported functions** (`index.html`): `scoreDoorTemplate` (the matched-filter
+score for one hinge/radius/orientation candidate), `detectDoorsFromWalls`
+(sweeps every confirmed wall, keeps the best-scoring orientation at each
+position, then non-max-suppresses nearby duplicates before applying the
+`DOOR_ARC_MIN_SCORE` acceptance threshold), `runPixelDoorDetect` (the
+button handler — loads the floor image's pixels, runs detection, creates
+door boxes the same way the AI path did, same status-message pattern as
+wall/window pixel detection).
+
+**Verified against real data before and after porting**, not just code
+review: the Python prototype was checked against the real 12 West Street
+ground floor and its known ground-truth doors (door 32 matched almost
+exactly — hinge side and swing direction both correct, position within
+~11px). After porting to JS, re-ran the *exact same real image* through
+the ported function and confirmed: (1) it reproduces materially the same
+candidates as the Python prototype (same walls, same hinge/swing signs,
+comparable positions/scores), (2) running it twice on identical input
+gives byte-identical results (the entire point — no AI call, no sampling,
+nothing left to vary), and (3) the full `runPixelDoorDetect` wrapper
+(image load → detection → door box creation → status message) works
+end-to-end, not just the inner scoring function.
+
+**UI change:** the AI-based door detector is kept (relabeled "AI, less
+consistent") for comparison, but the pixel-based detector is now the
+recommended button, moved into the deterministic "Auto-detect
+(pixel-based)" section alongside wall/window detection. Constants worth
+knowing about if results need tuning on a different property:
+`DOOR_ARC_MIN_SCORE` (0.68 — acceptance threshold; testing showed scores
+above ~0.7 were clean, 0.55–0.7 was a mix of real doors and noise, so this
+sits just above that mixed band), `DOOR_ARC_MIN_WIDTH_CM`/`MAX_WIDTH_CM`
+(45–110cm plausible door width range), `DOOR_ARC_DARK_THRESHOLD` (160,
+looser than the wall detector's 120 since arc/leaf lines are thin and
+anti-aliased, not solid fill).
+
+**Known limitation, same class as wall/window detection's:** this depends
+on confirmed walls being correct where the door actually sits, and on the
+plan actually drawing the arc/leaf swing symbol — a plan showing only a
+blank gap with no swing symbol won't be found this way (that was the
+original, less successful design covered earlier in this file).
+
+## Debugging session (2026-08-25): pixel door detect found nothing on a real floor
+
+User reported the new pixel-based door detector produced zero results on a
+real floor, with no visible error — worked through this methodically since
+"silently does nothing" could mean many things:
+
+1. Verified the script itself loads and the button is correctly wired
+   (headless jsdom load, then a simulated real click) — both clean, no
+   errors, ruling out a code/wiring bug outright.
+2. Had the user call `runPixelDoorDetect()` directly from the Safari
+   console with an explicit `.catch()` — printed "DONE OK", proving the
+   function completes successfully with zero doors found, not a silent
+   crash.
+3. Had the user run a diagnostic sweep (same logic as `detectDoorsFromWalls`
+   but printing top-scoring candidates regardless of threshold) — found
+   real signal clustered on two walls, just scoring 0.41-0.66, under the
+   0.68 acceptance threshold. Genuine near-misses, not random noise (score
+   clustering by wall/position is what real signal looks like).
+4. Had the user export the actual project JSON and pulled it in directly.
+   Root cause, found by inspecting the data rather than guessing further:
+   **the floor's `calibration` was `null` — never calibrated.**
+   `metersPerWorldUnit()` falls back to "assume the image spans about 10m
+   across" when uncalibrated; for this real terrace house (~4.4m wide),
+   that fallback was off by >2x. Wall/window detection are unaffected by
+   this because they measure thickness in pixels and convert back through
+   the SAME (wrong) scale, so the error cancels out in the round-trip.
+   Door width has no such round-trip — `DOOR_ARC_MIN/MAX_WIDTH_CM` are
+   fixed real-world facts converted through calibration in one direction
+   only, so the bad fallback went straight into the search radius
+   (19.9-48.6px instead of the ~46-112px real door symbols need) with
+   nothing to cancel it out.
+
+**Fixed two ways:**
+- `runPixelDoorDetect` now checks `floor.calibration` up front and blocks
+  with a clear explanatory alert if missing, instead of silently searching
+  at the wrong pixel scale and reporting "0 doors" with no clue why.
+- Verified the underlying detector actually works correctly once
+  calibrated: pulled the user's real image + wall list, estimated the
+  correct calibration from the printed room dimensions (dining room's
+  labeled 3.05m depth against its measured pixel span), and re-ran
+  detection — found real doors (score 0.70-0.84) in the same
+  wall/position clusters the earlier under-threshold diagnostic had
+  already flagged as likely real. This is a second real data point (a
+  differently-scaled export of the same 12 West Street image) confirming
+  the detector generalizes, not just overfit to the original file it was
+  built against.
+
+## Calibrating after detection made walls render "super chunky" (2026-08-25)
+
+Root cause: wall thickness (and pixel/AI-door-detected door width) is
+stored as a real-world cm value, but for anything from the pixel
+detectors it's *derived from a pixel measurement* via `worldToCm()` at
+detection time — not an independent fact. The user's floor had walls
+pixel-detected *before* ever calibrating (using the ~10m fallback guess,
+same session as the earlier door-detection debugging above), then
+calibrated properly afterwards. The already-stored `thicknessCm` values
+didn't change, but rendering re-interprets them through the *new*,
+correct (much smaller) scale — so a wall whose real pixel thickness was
+~25px, previously described as "56.56cm" under the inflated fallback
+scale, now rendered at `cmToWorld(56.56cm)` under the *correct* scale =
+~57px on screen. Walls got thicker, not thinner, because the old fallback
+scale was itself inflated relative to reality for this house.
+
+**Fixed:** `rescaleWallAndDoorSizesForCalibration(floor, oldMpwu, newMpwu)`
+— called right before the manual "📏 Calibrate scale" tool overwrites
+`floor.calibration`, using the scale that was in effect a moment
+earlier. Rescales walls'/windows' `thicknessCm` and doors' `wCm` by
+`newMpwu/oldMpwu`, which maps back to the same on-screen pixel size those
+values actually measured, not the (now-wrong) cm number they happened to
+produce under the old scale. Deliberately does NOT touch furniture sizes
+(a real-world catalog fact — a sofa really is ~200cm regardless of scale)
+or door `dCm` (always a fixed constant, never pixel-derived). Verified:
+a wall's inflated 56.56cm shrinks to a plausible ~24.7cm, a door's
+inflated 172cm shrinks to a plausible ~75.3cm, furniture is untouched,
+and it's a no-op when the scale doesn't actually change. Also added
+`pushUndoSnapshot`/`render`/`scheduleAutosave` calls to the calibrate
+handler, which it was missing even before this fix (calibrating alone
+used to change nothing visible, so their absence was never noticed).
+
+**Known related gap, not fixed this round:** the *AI*-detect calibration
+path (`applyDetection`, when Claude reads printed room dimensions) can
+have the same staleness within a single detection call — AI-reported
+wall thickness is a genuine real-world reading (fine, no rescale needed),
+but AI-detected *door width* is pixel-derived (hinge-to-tip distance
+converted via `worldToCm`) and calibration gets applied to the floor
+*after* those doors are created in the same function — so a first-ever
+detection run that reads both dimensions and doors together could produce
+a door width computed under the pre-calibration fallback scale, went
+stale the moment the AI's own dimension-derived calibration lands
+moments later. Not fixed here since it wasn't the reported bug and needs
+its own careful look at the door-creation ordering rather than reusing
+this same helper blindly. Worth a look next time AI-detected doors are
+touched.
+
+## Neighborhood-consistency fix for the max-radius false positive (2026-08-25)
+
+After the calibration fix above, the user retested and got a *worse*
+result: two "doors" both near a stairwell corner, one clearly mis-placed.
+Root cause, found by inspecting the actual stored data rather than
+guessing: both had `wCm: 101.875` — identical, and not a coincidence —
+`worldToCm()` of the exact *largest* radius the search tries under this
+floor's calibration. The scorer wasn't finding the true door size; it was
+locking onto the edge of the search range. Diagnosis: `scoreDoorTemplate`
+checks "is there dark ink roughly where expected" with no penalty for a
+larger, wrong-sized template coincidentally grazing *unrelated* nearby
+ink — and a stairwell corner is exactly where that's likely (tread lines,
+"Dn"/"Up" text, arrows all nearby).
+
+**Fixed:** `neighborhoodConsistency()` — a genuine door's arc/leaf scores
+well not just at its true radius but at nearby radii too (the real ink
+is actually there, so a slightly-off template still mostly overlaps it):
+a smooth peak. A score driven by coincidentally hitting unrelated ink
+tends to be a lonely spike — good at that one exact radius, much worse
+one step either side, since the incidental ink isn't actually arc/leaf
+shaped. Every candidate now has its winning orientation re-scored at
+neighboring radii (±`rStep`); if the average neighbor score isn't at
+least `DOOR_ARC_NEIGHBOR_SCORE_FRAC` (0.7) of the peak, it's rejected. A
+candidate at the very edge of the search range with no interior neighbor
+on one side is scored only against the side that exists (stricter, not
+laxer, than having two neighbors to average).
+
+**Verified against both real datasets, not just reasoned about:**
+12 West Street (the original validated file) still finds all 4 known-good
+doors with unchanged scores — the fix doesn't reject genuine matches. On
+the user's actual real export with their actual real calibration
+(`0.01292034714159325`, confirmed via console rather than estimated),
+the two-candidate max-radius double-match collapsed to one — the
+duplicate is gone.
+
+**Honest state, not oversold:** only 1 of the ~7 real doors on the user's
+floor is being found even after this fix, and the one that survives still
+has a wide `wCm` (~102cm) close to the top of the search range — plausibly
+genuine (it independently showed up in an earlier diagnostic sweep run
+under a *different* calibration estimate too, which is real
+cross-validating evidence, not proof) but not confirmed against the
+image directly. This fix demonstrably closes the specific reported bug
+(the false double-match) without breaking the previously-validated data,
+but doesn't by itself solve low recall on this specific
+lower-resolution image — that remains open. Door detection has now been
+through three different technical approaches (pixel-gap detection, AI
+hinge/tip reading, deterministic template matching) each hitting a real
+limitation; worth an honest conversation with the user about whether
+further tuning, manual tracing, or the AI path is the better use of
+effort from here, rather than continuing to iterate in isolation.
+
+## Threshold-loosening tried and rejected, with evidence (2026-08-25)
+
+User asked to try loosening `DOOR_ARC_MIN_SCORE`/`DOOR_ARC_NEIGHBOR_SCORE_FRAC`
+to recover more real doors, after confirming the one surviving detection
+was genuinely correct. Swept several threshold pairs (0.68/0.7 down to
+0.40/0.5) against both real datasets, then — critically — visually
+rendered and checked every *new* candidate that appeared at each looser
+level against the real source image, not just counted them.
+
+**Result: rejected.** At 0.55/0.6 (the least aggressive loosening tried),
+both new candidates on the original validated 12 West Street file were
+wrong: one a mirrored match (correct wall, swinging into the *wrong
+room*), one a clean false positive on a furniture bracket shape (no real
+door there at all). The same furniture-bracket false positive
+independently reappeared at the same threshold on the user's floor —
+same nook, same shape, same wrong match — which is strong evidence this
+is a systematic failure mode of the scoring approach, not a coincidence
+tied to one image. The other new candidate on the user's floor was very
+likely a near-duplicate of the already-correct detection (a different
+wall meeting at the same real-world corner), not a genuinely new find.
+
+Looser scoring trades a small chance of one duplicate for a repeatable,
+cross-image false positive class. Reverted (the real file's constants
+were only ever changed in in-memory test copies during this
+investigation, never in `index.html` itself, so no revert was actually
+needed). Left at 0.68/0.7.
+
+**Where this leaves door detection:** precision is good (everything it
+finds at the current threshold has been directly visually confirmed
+correct against real source images, across two different real datasets),
+but recall is low (finds roughly 1 in 7 real doors on a lower-resolution
+image). Best used as a first pass that catches some doors reliably,
+not a complete solution — the remaining doors need manual placement,
+using the angle-lock/snapping/hover-cursor UX already built for that.

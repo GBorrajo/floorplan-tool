@@ -134,8 +134,11 @@
       <button class="wide" id="btnPixelWallDetect">🧱 Auto-detect walls from image</button>
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Once the walls above look right, this scans along <em>them</em> for windows — no separate calibration needed, and every result sits exactly on a confirmed wall's line.</p>
       <button class="wide" id="btnPixelWindowDetect">🪟 Auto-detect windows along walls</button>
-      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Finds door <em>positions</em> from genuine gaps between confirmed wall segments (deterministic, no AI) — then asks Claude to read each door's hinge/swing from its arc symbol, one small cropped image at a time. Needs the API key below.</p>
-      <button class="wide" id="btnDoorDetect">🚪 Auto-detect doors (walls confirmed first)</button>
+      <button class="wide danger" id="btnClearWindows" style="margin-top:4px;">🗑 Clear all windows on this floor</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Recommended over the AI door detect below: matches the exact arc+leaf shape a door symbol draws against each wall's own line — deterministic, so re-running gives the same result every time (unlike the AI version, which read the same image differently call to call with no way to fix that).</p>
+      <button class="wide" id="btnPixelDoorDetect">🚪 Auto-detect doors (pixel, no AI)</button>
+      <button class="wide danger" id="btnClearDoors" style="margin-top:4px;">🗑 Clear all doors on this floor</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Detection only ever <em>adds</em> shapes — re-running without clearing first will duplicate whatever's already there. Use the clear buttons above for a clean retest.</p>
     </section>
 
     <section>
@@ -156,6 +159,8 @@
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">If this floor's image still shows more than one level (e.g. a listing image with Ground/First/Cellar together), run Split first — the two buttons below detect only within whatever image is on this tab, and can't tell your intended floor apart from another one shown in the same picture.</p>
       <button class="wide" id="btnDetect">🤖 Detect walls, doors &amp; dimensions</button>
       <button class="wide" id="btnDetectTiled" title="Splits the image into 4 overlapping tiles and detects each at full resolution, then merges the results — more accurate on large/detailed plans, at roughly 2x the cost of a normal pass. Works best on an image that's already just one floor.">🔍 High-accuracy detect (tiled, ~2x cost)</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Door-only alternative to the pixel-based detector above: reads each door's rough position plus hinge/swing off the printed arc symbol, then snaps that onto the nearest confirmed wall. Kept for comparison, but found to be inconsistent in practice — re-running on an unchanged image gave different placement/swing each time, even on Opus 5, with no setting available to fix that (temperature is rejected outright on Opus 5/Sonnet 5). Try the pixel-based detector first.</p>
+      <button class="wide" id="btnDoorDetect">🚪 Auto-detect doors (AI, less consistent)</button>
       <div id="detectStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;"></div>
     </section>
 
@@ -549,6 +554,34 @@ function metersPerWorldUnit(){
 function cmToWorld(cm){ return (cm/100) / metersPerWorldUnit(); }
 function worldToCm(w){ return w * metersPerWorldUnit() * 100; }
 function worldLenToMeters(w){ return w * metersPerWorldUnit(); }
+
+// Wall/window thickness and door width from the PIXEL-based detectors are
+// derived from a real pixel measurement via worldToCm() at detection time
+// — they're not independent real-world facts, they're "this many pixels,
+// interpreted through whatever scale was active then". If the floor's
+// calibration later changes (most commonly: it was never calibrated at
+// all, so detection ran against the ~10m fallback guess, then the user
+// calibrates properly afterwards), those stored cm values go stale and
+// suddenly render at the wrong on-screen size under the new scale — e.g.
+// walls detected under an inflated fallback scale rendering "super
+// chunky" once a much smaller real scale is set. Called right before a
+// calibration change is applied, using the scale that was in effect
+// a moment ago, so every such value gets rescaled back to the pixel size
+// it actually measured, not the (now wrong) cm number it happened to
+// produce under the old scale. Only walls/windows' thicknessCm and doors'
+// wCm are touched — furniture sizes come from a fixed real-world catalog
+// (a sofa really is ~200cm regardless of scale) and door dCm is always a
+// fixed constant, neither pixel-derived, so neither should move.
+function rescaleWallAndDoorSizesForCalibration(floor, oldMpwu, newMpwu){
+  if (!oldMpwu || !newMpwu || oldMpwu === newMpwu) return;
+  const ratio = newMpwu/oldMpwu;
+  floor.walls.forEach(w=>{
+    if (typeof w.thicknessCm === "number") w.thicknessCm = clampNum(w.thicknessCm*ratio, 1, 200, w.thicknessCm);
+  });
+  floor.boxes.forEach(b=>{
+    if (b.kind === "door" && typeof b.wCm === "number") b.wCm = clampNum(b.wCm*ratio, 20, 300, b.wCm);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Coordinate transforms (world = image-pixel space; screen = CSS px on canvas)
@@ -1524,7 +1557,36 @@ function mergeBooleanRunsShortGaps(bools, maxGapCount){
 }
 const WINDOW_BLANK_DENSITY = 0.05; // below this = genuinely open (a doorway), not a window
 const WINDOW_SOLID_DENSITY = 0.55; // above this = still just the wall's own normal solid fill
-function scanWallForWindowSpans(wall, dark, w, h){
+// A door's swing-arc ink sitting on this same wall produces exactly the kind
+// of moderate, non-uniform grey content a real window's glazing bars do —
+// documented as an inseparable-by-density ambiguity (see README). Now that
+// doors can be detected/traced independently, use their positions to
+// suppress the false positive directly instead of just accepting it: any
+// window span that overlaps an already-known door's footprint on this wall
+// is dropped.
+function spansOverlap(a, b){ return a.start < b.end && a.end > b.start; }
+function doorSpansOnWall(wall, doors){
+  if (!doors || !doors.length) return [];
+  const dx = wall.x2-wall.x1, dy = wall.y2-wall.y1;
+  const length = Math.hypot(dx,dy);
+  if (!length) return [];
+  const dirx = dx/length, diry = dy/length;
+  const perpx = -diry, perpy = dirx;
+  const wallHalfThickness = Math.max(4, cmToWorld(wall.thicknessCm||WALL_THICKNESS_CM))/2;
+  const perpTolerance = wallHalfThickness + 15; // margin for snap/positioning imprecision
+  const spans = [];
+  doors.forEach(door=>{
+    const relx = door.x-wall.x1, rely = door.y-wall.y1;
+    const d = relx*dirx + rely*diry;
+    const perp = relx*perpx + rely*perpy;
+    if (d < -20 || d > length+20) return; // not along this wall
+    if (Math.abs(perp) > perpTolerance) return; // not near this wall
+    const halfWidthPx = Math.max(20, cmToWorld(door.wCm||DOOR_DEFAULT.wCm)/2);
+    spans.push({start: d-halfWidthPx, end: d+halfWidthPx});
+  });
+  return spans;
+}
+function scanWallForWindowSpans(wall, dark, w, h, doors){
   const dx = wall.x2-wall.x1, dy = wall.y2-wall.y1;
   const length = Math.hypot(dx,dy);
   if (length < 20) return [];
@@ -1543,6 +1605,7 @@ function scanWallForWindowSpans(wall, dark, w, h){
   const maxGapCount = Math.round(15/step)+1; // bridge interruptions up to ~15px (a single mullion post)
   const merged = mergeBooleanRunsShortGaps(isCandidate, maxGapCount);
   const minSpanPx = Math.max(24, thicknessPx*1.2);
+  const doorSpans = doorSpansOnWall(wall, doors);
   const spans = [];
   let i = 0;
   while (i < merged.length){
@@ -1550,7 +1613,7 @@ function scanWallForWindowSpans(wall, dark, w, h){
     let j = i;
     while (j < merged.length && merged[j]) j++;
     const dStart = samples[i].d, dEnd = samples[Math.min(j,samples.length)-1].d;
-    if (dEnd-dStart >= minSpanPx){
+    if (dEnd-dStart >= minSpanPx && !doorSpans.some(ds=>spansOverlap({start:dStart,end:dEnd}, ds))){
       spans.push({
         x1: wall.x1+dirx*dStart, y1: wall.y1+diry*dStart,
         x2: wall.x1+dirx*dEnd, y2: wall.y1+diry*dEnd,
@@ -1561,7 +1624,7 @@ function scanWallForWindowSpans(wall, dark, w, h){
   }
   return spans;
 }
-function detectWindowsFromImageData(imgData, walls){
+function detectWindowsFromImageData(imgData, walls, doors){
   // Window glazing bars/frame details are light-to-mid grey, not black —
   // reuse the wall detector's strict DARK_THRESHOLD here and every window
   // reads as empty. See WINDOW_CONTENT_THRESHOLD above.
@@ -1569,7 +1632,7 @@ function detectWindowsFromImageData(imgData, walls){
   const windows = [];
   walls.forEach(wall=>{
     if ((wall.type||"wall") !== "wall") return;
-    windows.push(...scanWallForWindowSpans(wall, dark, w, h));
+    windows.push(...scanWallForWindowSpans(wall, dark, w, h, doors));
   });
   return windows;
 }
@@ -1593,7 +1656,8 @@ async function runPixelWindowDetect(){
     const cctx = c.getContext("2d");
     cctx.drawImage(img, 0, 0, floor.worldWidth, floor.worldHeight);
     const imgData = cctx.getImageData(0, 0, floor.worldWidth, floor.worldHeight);
-    const spans = detectWindowsFromImageData(imgData, floor.walls);
+    const doors = floor.boxes.filter(b=>b.kind==="door");
+    const spans = detectWindowsFromImageData(imgData, floor.walls, doors);
     pushUndoSnapshot();
     const newWindows = spans.map(s=>({
       id: newId(), type: "window",
@@ -1601,7 +1665,7 @@ async function runPixelWindowDetect(){
       thicknessCm: clampNum(worldToCm(s.thicknessPx), 3, 60, WINDOW_THICKNESS_CM),
     }));
     floor.walls.push(...newWindows);
-    statusEl.textContent = `Pixel-detected ${newWindows.length} window${newWindows.length===1?"":"s"} along the confirmed walls (no AI used). Review and correct with the Select tool — nothing was deleted. Known limitation: text, dimension arrows, or a door's hinge line running close to a wall can occasionally read as window-like density and get flagged as a window that isn't one — same tradeoff as wall detection's known false positive, easy to spot and delete.`;
+    statusEl.textContent = `Pixel-detected ${newWindows.length} window${newWindows.length===1?"":"s"} along the confirmed walls (no AI used)` + (doors.length ? `, suppressing any overlap with the ${doors.length} known door${doors.length===1?"":"s"} on this floor` : "") + `. Review and correct with the Select tool — nothing was deleted. Known limitation: text, dimension arrows, or an undetected door's hinge line running close to a wall can occasionally still read as window-like density and get flagged as a window that isn't one — run Auto-detect doors first (or trace doors manually) so their positions are known and this filter can catch it.`;
     scheduleAutosave();
     render();
   }catch(err){
@@ -1630,32 +1694,92 @@ async function runPixelWindowDetect(){
 // ---------------------------------------------------------------------------
 
 // Finds the confirmed wall nearest to a point, if within maxDistPx.
+// A real doorway is very often right next to a corner or a T-junction with
+// another wall. When it has a genuine gap, the wall on either side "ends"
+// close to that corner — so a hinge point sitting just past a segment's own
+// endpoint (still clearly along THAT wall's own line, just past where the
+// gap starts) can end up Euclidean-closer to a totally unrelated,
+// perpendicular wall's endpoint than to the correct wall's own (endpoint-
+// clamped) point. Fixed by scoring collinear candidates on perpendicular
+// distance to the wall's own (gap-extended) LINE first, only falling back
+// to plain nearest-clamped-point distance for a wall the point isn't
+// running along at all (handles genuinely off-axis/corner points fine).
 function nearestWallPointAndAngle(walls, point, maxDistPx){
-  let best = null, bestDist = maxDistPx;
+  let best = null, bestScore = maxDistPx;
   walls.forEach(w=>{
     if ((w.type||"wall") !== "wall") return;
-    const proj = projectPointToSegment(point, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
-    const d = Math.hypot(point.x-proj.x, point.y-proj.y);
-    if (d < bestDist){ bestDist = d; best = {point:proj, angle:segmentAngle(w), wall:w}; }
+    const dx = w.x2-w.x1, dy = w.y2-w.y1;
+    const length = Math.hypot(dx,dy);
+    if (!length) return;
+    const dirx = dx/length, diry = dy/length;
+    const relx = point.x-w.x1, rely = point.y-w.y1;
+    const along = relx*dirx + rely*diry;               // unclamped, along the wall's own axis
+    const perpDist = Math.abs(relx*(-diry) + rely*dirx); // distance to the wall's own infinite line
+    let candPoint, candDist;
+    if (along >= -maxDistPx && along <= length+maxDistPx && perpDist <= maxDistPx){
+      // Point runs along this wall's own line, possibly just past its
+      // endpoint (e.g. into a doorway gap) — score by how tightly it hugs
+      // the line, not by raw distance to the clamped endpoint.
+      const clampedAlong = Math.max(0, Math.min(length, along));
+      candPoint = {x: w.x1+dirx*clampedAlong, y: w.y1+diry*clampedAlong};
+      candDist = perpDist;
+    } else {
+      const proj = projectPointToSegment(point, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
+      candDist = Math.hypot(point.x-proj.x, point.y-proj.y);
+      candPoint = proj;
+      if (candDist > maxDistPx) return;
+    }
+    if (candDist < bestScore){ bestScore = candDist; best = {point:candPoint, angle:segmentAngle(w), wall:w}; }
   });
   return best;
 }
 
-// Converts two AI-reported points (hinge, leaf tip) into the hinge/swing/
-// rotation convention `drawDoorSymbol` expects — see that function's own
-// case table for the derivation this mirrors. `wallAngle` is the PIXEL-
-// CONFIRMED wall's angle, not any rotation the AI reported — this is what
-// lets a rough AI position still snap to an exactly axis-true door.
-function deriveDoorOrientation(wallAngle, snappedPoint, hingeWorld, tipWorld){
+// Which direction along the wall (relative to the hinge) the door's actual
+// OPENING extends — needed because `drawDoorSymbol` stores a door's position
+// as the CENTER of the opening, with the hinge offset half a door-width
+// away from it, not as the hinge point itself. Two AI-reported points
+// (hinge, leaf tip) can't answer this on their own: the tip's offset from
+// the hinge is (by the symbol's own geometry) purely PERPENDICULAR to the
+// wall, carrying no along-wall information at all. So this is resolved the
+// same deterministic way windows are: scan pixel density in a band along
+// the wall on each side of the hinge — the genuinely open side reads far
+// more blank than the still-solid wall fill on the other side. Reuses the
+// strict DARK_THRESHOLD mask (solid wall fill vs not), not the looser
+// window-glazing threshold — this is "wall vs opening", not "wall vs
+// window".
+function wallOpeningDirection(dark, w, h, wall, hingePoint, doorWidthPx){
+  const angle = segmentAngle(wall);
+  const dirx = Math.cos(angle), diry = Math.sin(angle);
+  const perpx = -diry, perpy = dirx;
+  const halfAlong = Math.max(2, Math.round(doorWidthPx/2));
+  const halfPerp = Math.max(2, Math.round(cmToWorld(wall.thicknessCm||WALL_THICKNESS_CM)/2));
+  const posCenter = {x: hingePoint.x+dirx*halfAlong, y: hingePoint.y+diry*halfAlong};
+  const negCenter = {x: hingePoint.x-dirx*halfAlong, y: hingePoint.y-diry*halfAlong};
+  const densityPos = sampleDensityInBand(dark, w, h, posCenter.x, posCenter.y, dirx, diry, perpx, perpy, halfAlong, halfPerp);
+  const densityNeg = sampleDensityInBand(dark, w, h, negCenter.x, negCenter.y, dirx, diry, perpx, perpy, halfAlong, halfPerp);
+  return densityPos <= densityNeg ? 1 : -1; // +1 = opening extends in the wall's own +direction from the hinge
+}
+
+// Converts an AI-reported leaf tip plus a pixel-resolved opening direction
+// into the hinge/swing/rotation/center convention `drawDoorSymbol` expects
+// — see that function's own case table for the derivation this mirrors.
+// `wallAngle` is the PIXEL-CONFIRMED wall's angle, not any rotation the AI
+// reported — this is what lets a rough AI position still snap to an
+// exactly axis-true door. `openDir` (+1/-1, from wallOpeningDirection)
+// says which way along the wall the opening extends from the hinge;
+// hinge=-1 means the symbol's hinge sits at its own local LEFT edge, which
+// is exactly the case where the opening/box extends in the wall's own
+// +direction from there — so openDir and hinge are direct opposites.
+function deriveDoorOrientation(wallAngle, hingeWorld, tipWorld, openDir, doorWidthPx){
   const dirx = Math.cos(wallAngle), diry = Math.sin(wallAngle);
   const perpx = -diry, perpy = dirx;
-  const hingeVecX = hingeWorld.x-snappedPoint.x, hingeVecY = hingeWorld.y-snappedPoint.y;
-  const alongProj = hingeVecX*dirx + hingeVecY*diry;
-  const hinge = alongProj < 0 ? -1 : 1;
+  const hinge = openDir > 0 ? -1 : 1;
   const swingVecX = tipWorld.x-hingeWorld.x, swingVecY = tipWorld.y-hingeWorld.y;
   const perpProj = swingVecX*perpx + swingVecY*perpy;
   const swing = perpProj < 0 ? -1 : 1;
-  return {hinge, swing, rotationDeg: wallAngle*180/Math.PI};
+  const hw = doorWidthPx/2;
+  const center = {x: hingeWorld.x - hinge*hw*dirx, y: hingeWorld.y - hinge*hw*diry};
+  return {hinge, swing, rotationDeg: wallAngle*180/Math.PI, center};
 }
 
 const DOOR_DETECT_PROMPT = `This is one floor of a floorplan. Walls and windows have already been traced accurately elsewhere — ignore them completely, and ignore any windows. Your only job is to find every DOOR OPENING.
@@ -1712,19 +1836,43 @@ async function runDoorDetect(){
       .filter(w=>(w.type||"wall")==="wall")
       .reduce((sum,w,_,arr)=>sum+cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)/arr.length, 0) || cmToWorld(WALL_THICKNESS_CM);
     const snapMaxPx = Math.max(30, avgThicknessPx*4);
+    // Needed for the pixel density scan that resolves which side of the
+    // hinge the opening extends toward (see wallOpeningDirection) — the AI's
+    // two points alone can't determine that; the source image's own pixels
+    // can.
+    let dark = null, imgW = 0, imgH = 0;
+    if (found.length){
+      const img = await loadImageEl(floor.image.dataURL);
+      const c = document.createElement("canvas");
+      c.width = floor.worldWidth; c.height = floor.worldHeight;
+      const cctx = c.getContext("2d");
+      cctx.drawImage(img, 0, 0, floor.worldWidth, floor.worldHeight);
+      const imgData = cctx.getImageData(0, 0, floor.worldWidth, floor.worldHeight);
+      ({dark, w:imgW, h:imgH} = computeDarkMask(imgData));
+    }
     const newDoors = [];
     let unsnapped = 0;
     found.forEach(d=>{
       const hingeWorld = {x:d.hingeX*floor.worldWidth, y:d.hingeY*floor.worldHeight};
       const tipWorld = {x:d.leafTipX*floor.worldWidth, y:d.leafTipY*floor.worldHeight};
-      const midWorld = {x:(hingeWorld.x+tipWorld.x)/2, y:(hingeWorld.y+tipWorld.y)/2};
-      const snap = nearestWallPointAndAngle(floor.walls, midWorld, snapMaxPx);
+      // Snap using the HINGE point, not the hinge/tip midpoint — the hinge is
+      // defined to sit on the wall itself, while the tip is a full door-width
+      // away in the swing direction. Using the midpoint pulled the snap target
+      // toward whichever room the door opens into, which in a narrow corridor
+      // (e.g. a stairwell) could land it closer to the wall on the OPPOSITE
+      // side than the wall the door actually sits in — wrong wall meant both
+      // wrong position and wrong rotation/swing, since both come from the
+      // snapped wall. Found from a real-world run: doors near a narrow
+      // hallway/stairwell were consistently misplaced/mis-angled.
+      const snap = nearestWallPointAndAngle(floor.walls, hingeWorld, snapMaxPx);
       if (!snap){ unsnapped++; return; } // reported door isn't near any confirmed wall — skip rather than place it floating
-      const orient = deriveDoorOrientation(snap.angle, snap.point, hingeWorld, tipWorld);
-      const wCm = clampNum(worldToCm(Math.hypot(tipWorld.x-hingeWorld.x, tipWorld.y-hingeWorld.y)), 40, 150, DOOR_DEFAULT.wCm);
+      const doorWidthPx = Math.hypot(tipWorld.x-hingeWorld.x, tipWorld.y-hingeWorld.y);
+      const openDir = wallOpeningDirection(dark, imgW, imgH, snap.wall, snap.point, doorWidthPx);
+      const orient = deriveDoorOrientation(snap.angle, snap.point, tipWorld, openDir, doorWidthPx);
+      const wCm = clampNum(worldToCm(doorWidthPx), 40, 150, DOOR_DEFAULT.wCm);
       newDoors.push({
         id: newId(), kind:"door", type:"door", label:"Door",
-        x:snap.point.x, y:snap.point.y,
+        x:orient.center.x, y:orient.center.y,
         wCm, dCm: DOOR_DEFAULT.dCm,
         rotation: orient.rotationDeg*Math.PI/180,
         hinge: orient.hinge, swing: orient.swing,
@@ -1820,6 +1968,217 @@ async function runPixelWallDetect(){
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pixel-based automatic DOOR detection — no AI. Ported from a Python
+// prototype (validated against the real 12 West Street image before
+// porting, same process as the wall/window detectors) after AI-based door
+// reading (hinge+leaf-tip point guessing) proved fundamentally
+// inconsistent in practice: re-running detection on an unchanged image
+// gave different placement/swing each time, on Opus 5, with no sampling
+// control available on that model to fix it (temperature is rejected
+// outright — see the AI Detect section below). A whole-image generic
+// Hough-circle search was tried first and discarded — it missed real,
+// clearly-visible door arcs entirely while matching furniture icons and
+// bath/sink fixtures instead; genuinely unconstrained circle search isn't
+// the right tool here.
+//
+// What works instead: since every wall's exact line and angle is already
+// known (from wall detection/tracing), generate the *exact* shape
+// `drawDoorSymbol` itself draws — a quarter-arc + straight leaf line,
+// centered at a candidate hinge point on the wall — for every plausible
+// position/radius/orientation along that wall, and score how much real
+// ink lies along that specific template. This is matched-filter template
+// matching, not a generic shape search, and it's what actually found real
+// doors reliably in testing.
+//
+// One bug caught during prototyping, worth keeping the fix documented:
+// the first version scored a stretch of plain solid wall as a perfect
+// match, because "is there ink at every sample point" is trivially true
+// when the whole swept area is solid black fill. Fixed by also requiring
+// the INTERIOR of the swept quarter-sector to be mostly blank (real
+// floor), not solid — reusing the same blank-density philosophy already
+// used for wall/window/doorway-gap detection elsewhere in this file.
+// ---------------------------------------------------------------------------
+const DOOR_ARC_DARK_THRESHOLD = 160; // looser than DARK_THRESHOLD (120) -- arc/leaf lines are thin/anti-aliased, not solid fill
+const DOOR_ARC_MIN_WIDTH_CM = 45, DOOR_ARC_MAX_WIDTH_CM = 110; // plausible real door widths -- the arc radius equals the door width, same convention drawDoorSymbol uses
+const DOOR_ARC_INTERIOR_DENSITY_MAX = 0.12; // above this, the "opening" is actually solid (wall/fixture) -- reject
+const DOOR_ARC_MIN_SCORE = 0.68; // acceptance threshold -- in testing, scores above ~0.7 were clean matches; 0.55-0.7 was a mix of real doors and noise, so this sits just above that mixed band
+const DOOR_ARC_NMS_FRAC = 0.55; // candidates within this fraction of a door-width of an already-kept one (along the same wall) are treated as duplicates
+
+function doorArcDarkAt(dark, w, h, x, y){
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi<1 || yi<1 || xi>=w-1 || yi>=h-1) return false;
+  for (let ddx=-1; ddx<=1; ddx++){
+    for (let ddy=-1; ddy<=1; ddy++){
+      if (dark[(yi+ddy)*w+(xi+ddx)]) return true;
+    }
+  }
+  return false;
+}
+
+// Scores how well the door-symbol template (arc+leaf, centered at `hinge`
+// on the wall) matches real ink, for one hinge/swing sign combination.
+// Mirrors drawDoorSymbol's own geometry exactly so a good score really
+// does mean "this looks like the shape the tool itself draws for a door".
+function scoreDoorTemplate(dark, w, h, hinge, dirx, diry, r, hingeSign, swingSign){
+  const perpx=-diry, perpy=dirx;
+  const nLeaf=10, nArc=24;
+  let leafHits=0;
+  for (let i=1;i<=nLeaf;i++){
+    const t=i/nLeaf;
+    if (doorArcDarkAt(dark,w,h, hinge.x+swingSign*r*t*perpx, hinge.y+swingSign*r*t*perpy)) leafHits++;
+  }
+  const leafScore = leafHits/nLeaf;
+
+  const alongSign = hingeSign<0 ? 1 : -1;
+  const a0 = Math.atan2(swingSign*perpy, swingSign*perpx);
+  const a1 = Math.atan2(alongSign*diry, alongSign*dirx);
+  let d = (a1-a0+Math.PI) % (2*Math.PI) - Math.PI; // shortest signed sweep
+  let arcHits=0;
+  for (let i=0;i<=nArc;i++){
+    const t=i/nArc, a=a0+d*t;
+    if (doorArcDarkAt(dark,w,h, hinge.x+r*Math.cos(a), hinge.y+r*Math.sin(a))) arcHits++;
+  }
+  const arcScore = arcHits/(nArc+1);
+
+  // Interior of the swept sector must be mostly BLANK (real open floor) --
+  // rejects the "whole area is solid wall/fixture" degenerate case above.
+  let interiorHits=0, interiorTotal=0;
+  [0.35,0.55,0.75].forEach(rt=>{
+    for (let i=1;i<nArc;i+=3){
+      const t=i/nArc, a=a0+d*t;
+      if (doorArcDarkAt(dark,w,h, hinge.x+r*rt*Math.cos(a), hinge.y+r*rt*Math.sin(a))) interiorHits++;
+      interiorTotal++;
+    }
+  });
+  const interiorDensity = interiorTotal ? interiorHits/interiorTotal : 1;
+  let score = 0.5*leafScore + 0.5*arcScore;
+  if (interiorDensity > DOOR_ARC_INTERIOR_DENSITY_MAX) score *= 0.05;
+  return score;
+}
+
+// Sweeps every confirmed wall for the best-scoring door template at every
+// position/radius/orientation, then greedily de-duplicates nearby
+// candidates on the same wall (non-max suppression) before returning only
+// those clearing DOOR_ARC_MIN_SCORE.
+// A genuine door's arc/leaf scores well not just at its exact true radius,
+// but at nearby radii too (the real ink is genuinely there, so a slightly
+// off template still mostly overlaps it) — a smooth peak, not a cliff.
+// A high score driven by coincidentally grazing UNRELATED nearby ink
+// (stair-tread lines, dimension text, arrows — all common right next to
+// stairwell doors specifically) tends to be a lonely spike: good at that
+// one exact radius, much worse just one step either side, since the
+// incidental ink that produced it isn't actually arc/leaf-shaped. Found
+// via a real false positive: two "doors" both locked onto the single
+// largest radius the search tried, right at a stairwell corner —
+// evaluating the neighborhood exposed it immediately (peak collapses one
+// step in, real doors elsewhere don't).
+const DOOR_ARC_NEIGHBOR_SCORE_FRAC = 0.7; // neighboring radii must retain at least this fraction of the peak score
+function neighborhoodConsistency(dark, w, h, hinge, dirx, diry, r, hingeSign, swingSign, rStep, minR, maxR, peakScore){
+  const neighborRs = [r-rStep, r+rStep].filter(nr => nr>=minR && nr<=maxR);
+  if (!neighborRs.length) return 0; // radius sits at the very edge of the search range with no interior neighbor to confirm against -- treat as unconfirmed, not automatically good
+  const scores = neighborRs.map(nr => scoreDoorTemplate(dark,w,h,hinge,dirx,diry,nr,hingeSign,swingSign));
+  const avg = scores.reduce((a,b)=>a+b,0)/scores.length;
+  return peakScore>0 ? avg/peakScore : 0;
+}
+
+function detectDoorsFromWalls(imgData, walls){
+  const {dark, w, h} = computeDarkMask(imgData, DOOR_ARC_DARK_THRESHOLD);
+  const minR = cmToWorld(DOOR_ARC_MIN_WIDTH_CM), maxR = cmToWorld(DOOR_ARC_MAX_WIDTH_CM);
+  const rStep = Math.max(2, (maxR-minR)/8), dStep = Math.max(2, minR/8);
+  const candidates = [];
+  walls.filter(wall=>(wall.type||"wall")==="wall").forEach(wall=>{
+    const dx=wall.x2-wall.x1, dy=wall.y2-wall.y1;
+    const length = Math.hypot(dx,dy);
+    if (length < 20) return;
+    const dirx=dx/length, diry=dy/length;
+    for (let d=0; d<=length; d+=dStep){
+      const hinge = {x: wall.x1+dirx*d, y: wall.y1+diry*d};
+      let best = null;
+      for (let r=minR; r<=maxR; r+=rStep){
+        [-1,1].forEach(hingeSign=>{
+          [-1,1].forEach(swingSign=>{
+            const score = scoreDoorTemplate(dark,w,h,hinge,dirx,diry,r,hingeSign,swingSign);
+            if (!best || score>best.score) best = {score,r,hingeSign,swingSign};
+          });
+        });
+      }
+      if (best && best.score > 0.5){
+        const consistency = neighborhoodConsistency(dark,w,h,hinge,dirx,diry,best.r,best.hingeSign,best.swingSign,rStep,minR,maxR,best.score);
+        if (consistency >= DOOR_ARC_NEIGHBOR_SCORE_FRAC) candidates.push({wall, d, hinge, ...best});
+      }
+    }
+  });
+  candidates.sort((a,b)=>b.score-a.score);
+  const kept = [];
+  candidates.forEach(c=>{
+    const nmsDist = c.r*DOOR_ARC_NMS_FRAC;
+    const dup = kept.some(k=>k.wall===c.wall && Math.abs(k.d-c.d)<nmsDist);
+    if (!dup && c.score >= DOOR_ARC_MIN_SCORE) kept.push(c);
+  });
+  return kept;
+}
+
+async function runPixelDoorDetect(){
+  const floor = activeFloor();
+  if (!floor.image){ alert("Load an image on this floor first."); return; }
+  const wallCount = floor.walls.filter(w=>(w.type||"wall")==="wall").length;
+  if (!wallCount){
+    alert("Detect (or trace) walls on this floor first — door detection only searches along confirmed walls, so it needs at least one.");
+    return;
+  }
+  if (!floor.calibration){
+    // Wall/window detection survive an uncalibrated floor because they
+    // measure thickness directly in pixels and convert back through the
+    // SAME (possibly wrong) scale — the error cancels out. Door width has
+    // no such round-trip: DOOR_ARC_MIN/MAX_WIDTH_CM are fixed real-world
+    // facts converted through calibration in one direction only, so an
+    // uncalibrated floor's fallback guess ("assume ~10m across") goes
+    // straight into the search radius with nothing to cancel it —
+    // silently searching at the wrong pixel scale and finding nothing.
+    alert("Calibrate this floor's scale first (📏 Calibrate scale) — door detection needs to know the real-world scale to search for door symbols at the right pixel size. Without it, results are unreliable (found via a real case: an uncalibrated floor's rough fallback scale was off by over 2x, and every candidate scored just under the acceptance threshold).");
+    return;
+  }
+  const statusEl = document.getElementById("detectStatus");
+  setAIButtonsDisabled(true);
+  statusEl.textContent = "Scanning confirmed walls for door arc/leaf symbols…";
+  try{
+    await new Promise(r=>setTimeout(r, 10));
+    const img = await loadImageEl(floor.image.dataURL);
+    const c = document.createElement("canvas");
+    c.width = floor.worldWidth; c.height = floor.worldHeight;
+    const cctx = c.getContext("2d");
+    cctx.drawImage(img, 0, 0, floor.worldWidth, floor.worldHeight);
+    const imgData = cctx.getImageData(0, 0, floor.worldWidth, floor.worldHeight);
+    const found = detectDoorsFromWalls(imgData, floor.walls);
+    pushUndoSnapshot();
+    const newDoors = found.map(cand=>{
+      const angle = segmentAngle(cand.wall);
+      const dirx = Math.cos(angle), diry = Math.sin(angle);
+      const hw = cand.r/2;
+      const center = {x: cand.hinge.x - cand.hingeSign*hw*dirx, y: cand.hinge.y - cand.hingeSign*hw*diry};
+      return {
+        id: newId(), kind:"door", type:"door", label:"Door",
+        x:center.x, y:center.y,
+        wCm: clampNum(worldToCm(cand.r), 40, 150, DOOR_DEFAULT.wCm), dCm: DOOR_DEFAULT.dCm,
+        rotation: angle,
+        hinge: cand.hingeSign, swing: cand.swingSign,
+        color: DOOR_DEFAULT.color,
+      };
+    });
+    floor.boxes.push(...newDoors);
+    statusEl.textContent = `Pixel-detected ${newDoors.length} door${newDoors.length===1?"":"s"} from arc/leaf symbols along confirmed walls (no AI used, fully deterministic — re-running gives the same result). Review and correct with the Select tool — nothing was deleted. Known limitation: relies on confirmed walls being correct where the door sits, and on the arc/leaf actually being drawn (a plan showing only a gap with no swing symbol won't be found this way).`;
+    scheduleAutosave();
+    render();
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("Pixel door detection failed: " + err.message);
+  }finally{
+    setAIButtonsDisabled(false);
+  }
+}
+
 async function callClaudeStructured(base64Data, mediaType, apiKey, model, promptText, schema){
   let resp;
   try{
@@ -1835,6 +2194,15 @@ async function callClaudeStructured(base64Data, mediaType, apiKey, model, prompt
       body: JSON.stringify({
         model,
         max_tokens: 16000,
+        // Reading fixed pixel coordinates off a fixed image is an extraction
+        // task, not a creative one — sampling variance only hurts here. BUT:
+        // temperature/top_p/top_k are removed entirely on Opus 5 and Sonnet
+        // 5 (the API rejects them with a 400) — there's no user-facing
+        // sampling knob on those models at all, so this can only help on
+        // Haiku 4.5. Confirmed via the claude-api skill rather than assumed,
+        // after a live 400 proved the initial across-the-board attempt
+        // wrong.
+        ...(model==="claude-haiku-4-5" ? {temperature: 0} : {}),
         // Opus 5 / Sonnet 5 think by default, and thinking shares the same
         // max_tokens budget as the answer — for a mechanical extraction task
         // like this, keep thinking shallow so there's always room left for
@@ -1879,7 +2247,7 @@ function readImageDataUrl(floor){
   return parseDataUrl(floor.image.dataURL);
 }
 function setAIButtonsDisabled(disabled){
-  ["btnDetect","btnDetectTiled","btnSplitFloors","btnPixelWallDetect","btnPixelWindowDetect","btnDoorDetect"].forEach(id=>{
+  ["btnDetect","btnDetectTiled","btnSplitFloors","btnPixelWallDetect","btnPixelWindowDetect","btnPixelDoorDetect","btnDoorDetect"].forEach(id=>{
     document.getElementById(id).disabled = disabled;
   });
 }
@@ -2484,8 +2852,15 @@ window.addEventListener("pointerup", ()=>{
       const input = prompt("Real-world length of that line, in metres (e.g. 4.2):");
       const meters = parseFloat(input);
       if (meters && meters>0){
-        activeFloor().calibration = {metersPerWorldUnit: meters/len};
+        const floor = activeFloor();
+        const oldMpwu = metersPerWorldUnit(); // capture BEFORE overwriting calibration below
+        const newMpwu = meters/len;
+        pushUndoSnapshot();
+        rescaleWallAndDoorSizesForCalibration(floor, oldMpwu, newMpwu);
+        floor.calibration = {metersPerWorldUnit: newMpwu};
         updateScaleStatus();
+        scheduleAutosave();
+        render();
       }
     }
     setTool("select");
@@ -2538,6 +2913,34 @@ function deleteSelection(){
   if (selection.kind==="box") f.boxes = f.boxes.filter(b=>b.id!==selection.id);
   if (selection.kind==="wall") f.walls = f.walls.filter(w=>w.id!==selection.id);
   selection = null;
+  updateSelPanel();
+  scheduleAutosave();
+  render();
+}
+
+// One-click reset for re-running a detector cleanly — detection only ever
+// ADDS shapes (never moves/replaces existing ones), so retesting after a
+// fix otherwise means the old and new results pile up on top of each other.
+function clearWindowsOnFloor(){
+  const f = activeFloor();
+  const count = f.walls.filter(w=>(w.type||"wall")==="window").length;
+  if (!count){ alert("No windows on this floor to clear."); return; }
+  if (!confirm(`Delete all ${count} window${count===1?"":"s"} on this floor? (Ctrl/Cmd+Z will undo this.)`)) return;
+  pushUndoSnapshot();
+  f.walls = f.walls.filter(w=>(w.type||"wall")!=="window");
+  if (selection && selection.kind==="wall" && !f.walls.find(w=>w.id===selection.id)) selection = null;
+  updateSelPanel();
+  scheduleAutosave();
+  render();
+}
+function clearDoorsOnFloor(){
+  const f = activeFloor();
+  const count = f.boxes.filter(b=>b.kind==="door").length;
+  if (!count){ alert("No doors on this floor to clear."); return; }
+  if (!confirm(`Delete all ${count} door${count===1?"":"s"} on this floor? (Ctrl/Cmd+Z will undo this.)`)) return;
+  pushUndoSnapshot();
+  f.boxes = f.boxes.filter(b=>b.kind!=="door");
+  if (selection && selection.kind==="box" && !f.boxes.find(b=>b.id===selection.id)) selection = null;
   updateSelPanel();
   scheduleAutosave();
   render();
@@ -2661,7 +3064,10 @@ document.getElementById("btnCalibrate").addEventListener("click", ()=>setTool("c
 document.getElementById("btnPickWallThickness").addEventListener("click", ()=>setTool("pick-thickness"));
 document.getElementById("btnPixelWallDetect").addEventListener("click", runPixelWallDetect);
 document.getElementById("btnPixelWindowDetect").addEventListener("click", runPixelWindowDetect);
+document.getElementById("btnPixelDoorDetect").addEventListener("click", runPixelDoorDetect);
 document.getElementById("btnDoorDetect").addEventListener("click", runDoorDetect);
+document.getElementById("btnClearWindows").addEventListener("click", clearWindowsOnFloor);
+document.getElementById("btnClearDoors").addEventListener("click", clearDoorsOnFloor);
 document.getElementById("btnDoor").addEventListener("click", ()=>{
   addBox({kind:"door", type:"door", label:"Door", wCm:DOOR_DEFAULT.wCm, dCm:DOOR_DEFAULT.dCm, color:DOOR_DEFAULT.color, hinge:-1, swing:-1});
 });
