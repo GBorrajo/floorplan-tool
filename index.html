@@ -109,22 +109,17 @@
     <section>
       <h2>Structure</h2>
       <div class="row">
-        <button id="btnWall">🧱 Draw wall</button>
-        <button id="btnWindow">🪟 Draw window</button>
-        <button id="btnDoor">🚪 Add door</button>
+        <button id="btnWallInterior">🧱 Interior wall (10cm)</button>
+        <button id="btnWallExterior">🧱 Exterior wall (25cm)</button>
         <button id="btnSelect" class="active">↖ Select / move</button>
       </div>
-      <div class="grid2">
-        <div class="field">
-          <label>New wall thickness (cm)</label>
-          <input type="number" id="fldNewWallThickness" min="1" value="10">
-        </div>
-        <div class="field">
-          <label>New window thickness (cm)</label>
-          <input type="number" id="fldNewWindowThickness" min="1" value="10">
-        </div>
-      </div>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Drag across a wall in the canvas to trace it. Finishing a segment leaves its line as a snap guide — start the next wall anywhere near that line, even with a gap, and it lands perfectly in line. Fine-tune an individual wall's thickness afterward in the panel below.</p>
       <label class="chk" style="font-size:11.5px;color:var(--text-dim);"><input type="checkbox" id="fldLockWallAngles" checked> 🔒 Lock wall angles when resizing (drag an endpoint to change length only — hold Shift to bypass)</label>
+      <div class="row" style="margin-top:2px;">
+        <button id="btnDoorPlace" style="cursor:grab;">🚪 Door — drag onto a wall</button>
+        <button id="btnWindowPlace" style="cursor:grab;">🪟 Window — drag onto a wall</button>
+      </div>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Press and drag either button onto a wall to drop it there — a door cuts an opening in the wall; a window sits on the wall and takes its thickness. Drop away from a wall to cancel. Once placed: drag a door across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from (or use the buttons below). Drag a window's end handle to extend it along the wall.</p>
     </section>
 
     <section>
@@ -253,6 +248,9 @@
 // Constants
 // ---------------------------------------------------------------------------
 const WALL_THICKNESS_CM = 10;
+const INTERIOR_WALL_THICKNESS_CM = 10;
+const EXTERIOR_WALL_THICKNESS_CM = 25;
+const WINDOW_DEFAULT_LEN_CM = 100; // starting length for a newly-dropped window, before it's extended
 const FURNITURE_TYPES = [
   {key:"sofa",     label:"Sofa",          wCm:200, dCm:90,  color:"#4f8cff"},
   {key:"armchair", label:"Armchair",      wCm:90,  dCm:90,  color:"#7c6fe0"},
@@ -437,8 +435,8 @@ function makeFloor(name){
     worldWidth: 1200,
     worldHeight: 800,
     calibration: null,    // {metersPerWorldUnit}
-    walls: [],            // {id, x1,y1,x2,y2, thicknessCm, type:'wall'|'window'}
-    boxes: [],            // {id, kind:'furniture'|'door', type, label, x, y, wCm, dCm, rotation, color, hinge, swing}
+    walls: [],            // {id, x1,y1,x2,y2, thicknessCm, type:'wall'|'window', wallId?} — a window's wallId is the wall it's embedded in (set once it's dropped/dragged onto one); its own x1,y1,x2,y2 sit exactly on that wall's line and it renders on top, but the host wall's own geometry is untouched.
+    boxes: [],            // {id, kind:'furniture'|'door', type, label, x, y, wCm, dCm, rotation, color, hinge, swing, wallId?} — a door's wallId is the wall it's cut into; the cut itself is computed at render/hit-test time from every door's position (see wallVisibleSegments), not stored as split wall pieces, so it stays correct even for doors placed before wallId existed (pixel/AI-detected doors included). Known limitation: a door/window doesn't follow if its host wall is later moved/resized — re-drag it back onto the wall afterward.
     labels: [],           // {id, x, y, text} — optional AI-read room names/dimension text, toggleable layer
   };
 }
@@ -522,15 +520,17 @@ function redo(){
 
 let imgEl = null; // cached Image() for the active floor's image, rebuilt on floor switch/load
 
-let activeTool = "select"; // 'select' | 'wall' | 'window' | 'calibrate'
+let activeTool = "select"; // 'select' | 'wall' | 'calibrate' | 'pick-thickness'
 let selection = null;      // {kind:'wall'|'box', id}
 let drag = null;
-let newWallThicknessCm = WALL_THICKNESS_CM;     // used for walls drawn from here on
-let newWindowThicknessCm = WINDOW_THICKNESS_CM; // used for windows drawn from here on
+let placing = null; // {kind:'door'|'window', id} while a fresh door/window dragged from the Structure palette hasn't been dropped onto a wall yet — cancelled (object removed) at pointerup/Escape if it never snapped
+let newWallThicknessCm = INTERIOR_WALL_THICKNESS_CM; // used for walls drawn from here on — set by the Interior/Exterior wall buttons
+let newWindowThicknessCm = WINDOW_THICKNESS_CM; // placeholder thickness for a just-dropped window before it first snaps onto a wall (then it inherits that wall's own thickness)
 let bgOpacity = 1;   // 0-1, background floorplan image opacity (view-only, not saved in the project)
 let showLabels = true;  // view-only toggle for the AI text-label layer
 let showOverlay = true; // view-only toggle for traced walls/windows/doors/furniture, to compare against the bare image
 let zoomLevel = 1;      // 1 = fit the window (default); <1 zooms out within the same viewport (reveals content drawn outside the image bounds); >1 grows the canvas so the browser's native scroll can pan around it
+let wallHoverPoint = null; // world {x,y} the wall tool's cursor square is drawn at (the actual/snapped point a click would start drawing from) — null when not hovering the canvas with the wall tool active
 let lockWallAngles = true; // dragging a wall/window endpoint changes its length along the existing angle only, by default (most walls in a floor plan are already correctly angled — it's the length that needs trimming)
 
 let canvasW = 0, canvasH = 0; // logical (CSS) pixel size of the canvas itself (grows past the viewport when zoomed in, for native scrolling)
@@ -863,7 +863,12 @@ async function loadImageFile(file){
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-function resizeCanvas(){
+// `anchor`, if given, is {worldPoint, viewportX, viewportY} — instead of the
+// default re-centring, scroll is set so `worldPoint` stays under
+// (viewportX,viewportY) in the visible viewport, i.e. zooming keeps
+// whatever's under the cursor/pinch fixed in place rather than jumping the
+// view back to centre. Used by wheel-pinch/ctrl-scroll zoom.
+function resizeCanvas(anchor){
   const rect = wrap.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   // A 0×0 (or otherwise degenerate) measurement means the browser hasn't
@@ -876,7 +881,7 @@ function resizeCanvas(){
   } else if (baseCanvasW === 0 || baseCanvasH === 0){
     // No good size yet at all (first paint) — try again next frame rather
     // than rendering at zero size.
-    requestAnimationFrame(resizeCanvas);
+    requestAnimationFrame(()=>resizeCanvas());
     return;
   } else {
     console.warn("resizeCanvas: canvasWrap measured 0×0, reusing last known size", baseCanvasW, baseCanvasH);
@@ -891,13 +896,50 @@ function resizeCanvas(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   computeFit();
   render();
-  // Keep the view centred by default whenever the canvas is resized (new
-  // floor/image, zoom change, window resize) — matches how the content was
-  // already always centred within the canvas even before zoom existed.
-  wrap.scrollLeft = (canvasW - baseCanvasW) / 2;
-  wrap.scrollTop = (canvasH - baseCanvasH) / 2;
+  if (anchor){
+    const s = toScreen(anchor.worldPoint.x, anchor.worldPoint.y);
+    wrap.scrollLeft = s.x - anchor.viewportX;
+    wrap.scrollTop = s.y - anchor.viewportY;
+  } else {
+    // Keep the view centred by default whenever the canvas is resized (new
+    // floor/image, zoom change, window resize) — matches how the content was
+    // already always centred within the canvas even before zoom existed.
+    wrap.scrollLeft = (canvasW - baseCanvasW) / 2;
+    wrap.scrollTop = (canvasH - baseCanvasH) / 2;
+  }
 }
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize", ()=>resizeCanvas());
+
+// ---------------------------------------------------------------------------
+// Pinch-to-zoom (trackpad) / Ctrl+scroll-wheel zoom — a trackpad pinch is
+// reported by the browser as a wheel event with ctrlKey set (there's no
+// separate "pinch" DOM event), so that's the same signal a real Ctrl+wheel
+// zoom sends; handling both this way is standard practice (Mapbox/Leaflet
+// etc. do the same). Zooms around wherever the cursor/pinch centre is,
+// rather than always snapping back to the middle of the view.
+// ---------------------------------------------------------------------------
+const ZOOM_MIN = 0.25, ZOOM_MAX = 4;
+function setZoomAt(newZoomLevel, clientX, clientY){
+  newZoomLevel = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoomLevel));
+  if (newZoomLevel === zoomLevel) return;
+  const rect = wrap.getBoundingClientRect();
+  const viewportX = clientX - rect.left, viewportY = clientY - rect.top;
+  // World point currently under the cursor, using the CURRENT scroll/scale
+  // (i.e. before zoomLevel changes below).
+  const worldPoint = toWorld(wrap.scrollLeft + viewportX, wrap.scrollTop + viewportY);
+  zoomLevel = newZoomLevel;
+  document.getElementById("fldZoom").value = Math.round(zoomLevel*100);
+  document.getElementById("zoomPct").textContent = Math.round(zoomLevel*100)+"%";
+  resizeCanvas({worldPoint, viewportX, viewportY});
+}
+wrap.addEventListener("wheel", (e)=>{
+  if (!e.ctrlKey) return; // plain two-finger scroll/pan is left to the browser's native overflow:auto handling
+  e.preventDefault();
+  // deltaY sign/magnitude conventions differ (pinch vs. real ctrl+wheel,
+  // trackpad vs. mouse), but exponential scaling on deltaY gives smooth,
+  // speed-proportional zoom either way without needing to special-case them.
+  setZoomAt(zoomLevel * Math.exp(-e.deltaY*0.01), e.clientX, e.clientY);
+}, {passive:false});
 
 function render(){
   computeFit();
@@ -922,8 +964,9 @@ function render(){
   }
   if (showLabels) drawLabelsLayer();
 
-  if (drag && (drag.type === "draw-wall" || drag.type === "draw-window")) drawWallPreview(drag);
+  if (drag && drag.type === "draw-wall") drawWallPreview(drag);
   if (drag && (drag.type === "calibrate" || drag.type === "pick-thickness")) drawCalibratePreview(drag);
+  if (!drag && activeTool === "wall" && wallHoverPoint) drawWallHoverSquare(wallHoverPoint);
 
   if (selection && showOverlay) drawSelectionHandles();
 }
@@ -946,15 +989,25 @@ function drawGrid(){
 }
 
 function drawWalls(){
+  const doors = activeFloor().boxes.filter(b=>b.kind==="door");
   activeFloor().walls.forEach(w=>{
     const isSel = selection && selection.kind==="wall" && selection.id===w.id;
     if ((w.type||"wall") === "window") drawWindowSegment(w, isSel);
     else {
-      const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
       ctx.strokeStyle = isSel ? "#ffffff" : "#c9ccd3";
       ctx.lineWidth = Math.max(cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3);
-      ctx.lineCap = "square";
-      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      // "butt" (no cap extension) — wallVisibleSegments already bakes the
+      // equivalent of a square cap into the coordinates themselves, but only
+      // at the wall's true ends, not at a door-cut edge. See its comment.
+      ctx.lineCap = "butt";
+      // A door cuts a real gap here — not drawn as pieces stored on the
+      // wall itself, but computed fresh each frame from every door's own
+      // position (see wallVisibleSegments), so it stays right even if the
+      // door is later dragged elsewhere.
+      wallVisibleSegments(w, doors).forEach(seg=>{
+        const a = toScreen(seg.x1,seg.y1), b = toScreen(seg.x2,seg.y2);
+        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      });
     }
   });
 }
@@ -992,14 +1045,38 @@ function drawWindowSegment(w, isSel){
 
 function drawWallPreview(d){
   const a = toScreen(d.x1,d.y1), b = toScreen(d.x2,d.y2);
-  const isWindow = d.type === "draw-window";
-  const thicknessCm = isWindow ? newWindowThicknessCm : newWallThicknessCm;
-  ctx.strokeStyle = isWindow ? "rgba(255,255,255,0.9)" : "rgba(79,140,255,0.8)";
-  ctx.lineWidth = Math.max(cmToWorld(thicknessCm)*fitScale, 3);
+  ctx.strokeStyle = "rgba(79,140,255,0.8)";
+  ctx.lineWidth = Math.max(cmToWorld(newWallThicknessCm)*fitScale, 3);
   ctx.setLineDash([6,4]);
   ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
   ctx.setLineDash([]);
   drawLengthLabel(a,b, worldLenToMeters(Math.hypot(d.x2-d.x1,d.y2-d.y1)));
+}
+
+// Stands in for the OS cursor while the wall tool is armed (cursor itself
+// is hidden — see setTool) — a to-scale square, exactly as wide as the wall
+// will render, centred on the point a click would start drawing from (which
+// may already be snapped onto a nearby wall/guide line — see
+// snapToNearbyWalls). Makes it obvious up front where the wall's actual
+// edges will land, rather than only finding out once it's drawn.
+function drawWallHoverSquare(p){
+  const c = toScreen(p.x, p.y);
+  const size = Math.max(cmToWorld(newWallThicknessCm)*fitScale, 3);
+  ctx.save();
+  ctx.fillStyle = "rgba(79,140,255,0.35)";
+  ctx.strokeStyle = "rgba(79,140,255,0.9)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.rect(c.x-size/2, c.y-size/2, size, size);
+  ctx.fill(); ctx.stroke();
+  // small crosshair through the centre, for precise placement even when
+  // the square itself is tiny (a thin interior wall at low zoom)
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(c.x-size/2-5, c.y); ctx.lineTo(c.x+size/2+5, c.y);
+  ctx.moveTo(c.x, c.y-size/2-5); ctx.lineTo(c.x, c.y+size/2+5);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawCalibratePreview(d){
@@ -1172,11 +1249,17 @@ function distToSegmentScreen(p, a, b){
 }
 function hitTestWalls(mouseScreen){
   const walls = activeFloor().walls;
+  const doors = activeFloor().boxes.filter(b=>b.kind==="door");
   for (let i=walls.length-1; i>=0; i--){
     const w = walls[i];
-    const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
     const thickness = Math.max(cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3);
-    if (distToSegmentScreen(mouseScreen,a,b) <= thickness/2 + HIT_TOLERANCE_PX) return w;
+    // Skip the gap a door cuts, same as drawWalls — clicking in the opening
+    // hits the door (or nothing) instead of the wall behind it.
+    const pieces = (w.type||"wall")==="window" ? [{x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2}] : wallVisibleSegments(w, doors);
+    for (const seg of pieces){
+      const a = toScreen(seg.x1,seg.y1), b = toScreen(seg.x2,seg.y2);
+      if (distToSegmentScreen(mouseScreen,a,b) <= thickness/2 + HIT_TOLERANCE_PX) return w;
+    }
   }
   return null;
 }
@@ -1239,21 +1322,23 @@ function deselect(){ selection = null; updateSelPanel(); render(); }
 
 function setTool(tool){
   activeTool = tool;
-  ["btnSelect","btnWall","btnWindow","btnDoor","btnCalibrate","btnPickWallThickness"].forEach(id=>document.getElementById(id).classList.remove("active"));
+  ["btnSelect","btnWallInterior","btnWallExterior","btnCalibrate","btnPickWallThickness"].forEach(id=>document.getElementById(id).classList.remove("active"));
   if (tool==="select") document.getElementById("btnSelect").classList.add("active");
-  if (tool==="wall") document.getElementById("btnWall").classList.add("active");
-  if (tool==="window") document.getElementById("btnWindow").classList.add("active");
+  if (tool==="wall") document.getElementById(newWallThicknessCm===EXTERIOR_WALL_THICKNESS_CM ? "btnWallExterior" : "btnWallInterior").classList.add("active");
   if (tool==="calibrate") document.getElementById("btnCalibrate").classList.add("active");
   if (tool==="pick-thickness") document.getElementById("btnPickWallThickness").classList.add("active");
   updateHint();
-  cv.style.cursor = tool==="select" ? "default" : "crosshair";
+  // Wall tool hides the OS cursor in favour of the to-scale square drawn in
+  // render() (see drawWallHoverSquare) — the actual cursor would otherwise
+  // just sit on top of it, redundant and imprecise by comparison.
+  cv.style.cursor = tool==="select" ? "default" : (tool==="wall" ? "none" : "crosshair");
+  if (tool !== "wall") wallHoverPoint = null;
 }
 
 function updateHint(){
   const hints = {
-    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate. Delete/Backspace removes the selection. Dragging a door snaps it onto the nearest wall — hold Shift to bypass. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom.",
-    wall: "Click and drag across a wall in the image to trace it. Hold Shift to snap to 0/45/90°; otherwise endpoints snap to nearby wall/window ends and edges when close.",
-    window: "Click and drag across a window in the image to trace it (windows draw as a white band with dark frame details, distinct from solid wall lines). Same snapping as walls.",
+    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate. Delete/Backspace removes the selection. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
+    wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. Hold Shift to snap to 0/45/90°; otherwise endpoints snap to nearby wall/window ends and edges, and to the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line.",
     calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
     "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
   };
@@ -1585,6 +1670,53 @@ function doorSpansOnWall(wall, doors){
     spans.push({start: d-halfWidthPx, end: d+halfWidthPx});
   });
   return spans;
+}
+// Splits a wall's own [0,length] extent into the pieces that are actually
+// still there once every door's span (see doorSpansOnWall, same units) is
+// cut out — used by both drawWalls (what to stroke) and hitTestWalls (what
+// counts as a hit), so a door's opening is a real gap in both, not just a
+// symbol drawn on top.
+function wallVisibleSegments(wall, doors){
+  const dx = wall.x2-wall.x1, dy = wall.y2-wall.y1;
+  const length = Math.hypot(dx,dy);
+  if (!length) return [{x1:wall.x1,y1:wall.y1,x2:wall.x2,y2:wall.y2}];
+  const dirx = dx/length, diry = dy/length;
+  const spans = doorSpansOnWall(wall, doors)
+    .map(s=>({start:Math.max(0,s.start), end:Math.min(length,s.end)}))
+    .filter(s=>s.end>s.start)
+    .sort((a,b)=>a.start-b.start);
+  const merged = [];
+  spans.forEach(s=>{
+    const last = merged[merged.length-1];
+    if (last && s.start <= last.end) last.end = Math.max(last.end, s.end);
+    else merged.push({start:s.start, end:s.end});
+  });
+  const pieces = [];
+  let cursor = 0;
+  merged.forEach(s=>{
+    if (s.start > cursor) pieces.push({start:cursor, end:s.start});
+    cursor = Math.max(cursor, s.end);
+  });
+  if (cursor < length) pieces.push({start:cursor, end:length});
+  // Canvas's "square" line cap (used to draw a wall — see drawWalls) extends
+  // a stroked piece by half its own on-screen thickness past BOTH drawn
+  // ends, which is wanted at the wall's true x1/y1..x2/y2 endpoints (gives
+  // a clean square join at a corner/T-junction) but wrong at an edge this
+  // function just cut for a door — that same extension pokes the wall
+  // straight back into the door's own opening, which is the overlap this
+  // fixes. So the extension is baked in here explicitly, ONLY at a piece
+  // end that's still a true wall endpoint (start===0 / end===length), and
+  // drawWalls/hitTestWalls use a plain "butt" cap — a door-cut edge then
+  // ends exactly where the door's own span says, no matter the cap style.
+  const halfThicknessWorld = Math.max(cmToWorld(wall.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3) / 2 / fitScale;
+  return pieces.map(p=>{
+    const extStart = p.start===0 ? p.start-halfThicknessWorld : p.start;
+    const extEnd = p.end===length ? p.end+halfThicknessWorld : p.end;
+    return {
+      x1: wall.x1+dirx*extStart, y1: wall.y1+diry*extStart,
+      x2: wall.x1+dirx*extEnd,   y2: wall.y1+diry*extEnd,
+    };
+  });
 }
 function scanWallForWindowSpans(wall, dark, w, h, doors){
   const dx = wall.x2-wall.x1, dy = wall.y2-wall.y1;
@@ -2660,6 +2792,19 @@ function snapToNearbyWalls(mw, excludeWallId){
     const proj = projectPointToSegment(mw, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
     const d2 = Math.hypot(mw.x-proj.x, mw.y-proj.y);
     if (d2 < bestDist){ bestDist = d2; best = proj; }
+    // Colinear guide: the infinite line through this wall, unclamped past
+    // its own endpoints — lets a new wall pick up perfectly in line after a
+    // deliberate gap (e.g. one left for a door drawn as two segments).
+    if ((w.type||"wall") === "wall"){
+      const len = Math.hypot(w.x2-w.x1, w.y2-w.y1);
+      if (len > 1e-6){
+        const dirx = (w.x2-w.x1)/len, diry = (w.y2-w.y1)/len;
+        const t = (mw.x-w.x1)*dirx + (mw.y-w.y1)*diry;
+        const lp = {x: w.x1+dirx*t, y: w.y1+diry*t};
+        const d3 = Math.hypot(mw.x-lp.x, mw.y-lp.y);
+        if (d3 < bestDist){ bestDist = d3; best = lp; }
+      }
+    }
   });
   return best;
 }
@@ -2667,13 +2812,17 @@ function snapDoorToWall(mw){
   const snapWorld = (SNAP_SCREEN_PX*1.5)/fitScale;
   let best = null, bestDist = snapWorld;
   activeFloor().walls.forEach(w=>{
-    if ((w.type||"wall") !== "wall") return; // only snap doors into actual walls, not windows
+    if ((w.type||"wall") !== "wall") return; // only snap doors/windows into actual walls, not other windows
     const proj = projectPointToSegment(mw, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2});
     const d = Math.hypot(mw.x-proj.x, mw.y-proj.y);
-    if (d < bestDist){ bestDist = d; best = {point:proj, angle:Math.atan2(w.y2-w.y1, w.x2-w.x1)}; }
+    if (d < bestDist){ bestDist = d; best = {point:proj, angle:Math.atan2(w.y2-w.y1, w.x2-w.x1), wall:w}; }
   });
   return best;
 }
+
+cv.addEventListener("pointerleave", ()=>{
+  if (wallHoverPoint){ wallHoverPoint = null; render(); }
+});
 
 cv.addEventListener("pointerdown", (e)=>{
   cv.setPointerCapture(e.pointerId);
@@ -2685,11 +2834,10 @@ cv.addEventListener("pointerdown", (e)=>{
   // pointerup comparison below just finds nothing changed and skips it.
   dragUndoSnapshot = snapshotState();
 
-  if (activeTool === "wall" || activeTool === "window"){
-    const type = activeTool === "window" ? "draw-window" : "draw-wall";
+  if (activeTool === "wall"){
     const snapStart = snapToNearbyWalls(mw, null);
     const start = snapStart || mw;
-    drag = {type, x1:start.x, y1:start.y, x2:start.x, y2:start.y};
+    drag = {type:"draw-wall", x1:start.x, y1:start.y, x2:start.x, y2:start.y};
     render();
     return;
   }
@@ -2756,12 +2904,22 @@ cv.addEventListener("pointerdown", (e)=>{
   deselect();
 });
 
-cv.addEventListener("pointermove", (e)=>{
-  if (!drag){ updateHoverCursor(e); return; }
+window.addEventListener("pointermove", (e)=>{
+  if (!drag){
+    if (activeTool === "wall"){
+      const hms = getMouseScreen(e);
+      const hmw = toWorld(hms.x, hms.y);
+      const snap = snapToNearbyWalls(hmw, null);
+      wallHoverPoint = snap || hmw;
+      render();
+    }
+    updateHoverCursor(e);
+    return;
+  }
   const ms = getMouseScreen(e);
   const mw = toWorld(ms.x, ms.y);
 
-  const isDrawSeg = drag.type === "draw-wall" || drag.type === "draw-window";
+  const isDrawSeg = drag.type === "draw-wall";
   if (isDrawSeg || drag.type === "calibrate" || drag.type === "pick-thickness"){
     if (e.shiftKey && isDrawSeg){
       const snapped = snapAngle(drag.x1,drag.y1,mw.x,mw.y);
@@ -2782,13 +2940,65 @@ cv.addEventListener("pointermove", (e)=>{
     b.y = drag.origY + (mw.y-drag.startWorld.y);
     if (b.kind === "door" && !e.shiftKey){
       const snap = snapDoorToWall({x:b.x, y:b.y});
-      if (snap){ b.x = snap.point.x; b.y = snap.point.y; b.rotation = snap.angle; }
+      if (snap){
+        b.x = snap.point.x; b.y = snap.point.y; b.rotation = snap.angle; b.wallId = snap.wall.id;
+        // Swing/hinge by drag: how far the RAW cursor sits off the wall's
+        // own centreline (perp) picks which side the leaf opens into; how
+        // far it's moved along the wall from where THIS drag picked the
+        // door up (relative to the door's own width) picks which end it's
+        // hinged from. Small movements near the centreline/pickup point
+        // flip nothing, so an ordinary reposition drag stays stable.
+        const dirx = Math.cos(snap.angle), diry = Math.sin(snap.angle);
+        const perpx = -diry, perpy = dirx;
+        const relx = mw.x-snap.wall.x1, rely = mw.y-snap.wall.y1;
+        const perp = relx*perpx + rely*perpy;
+        const dAlong = relx*dirx + rely*diry;
+        // Threshold as a fraction of snapDoorToWall's OWN tolerance (not a
+        // fixed real-world cm distance) — cm-vs-screen-px tolerances drift
+        // apart under zoom/calibration, and a fixed-cm threshold could sit
+        // outside the snap radius entirely, detaching the door before the
+        // push ever registers as a flip. Staying a fraction of the same
+        // tolerance guarantees the flip is always reachable before that.
+        const snapWorld = (SNAP_SCREEN_PX*1.5)/fitScale;
+        const swingThreshold = snapWorld*0.4;
+        if (perp > swingThreshold) b.swing = 1;
+        else if (perp < -swingThreshold) b.swing = -1;
+        if (drag.hingeAnchorWallId !== snap.wall.id){
+          drag.hingeAnchorWallId = snap.wall.id;
+          drag.hingeAnchorD = (drag.origX-snap.wall.x1)*dirx + (drag.origY-snap.wall.y1)*diry;
+        }
+        const hingeThreshold = cmToWorld((b.wCm||DOOR_DEFAULT.wCm)/2);
+        const deltaD = dAlong - drag.hingeAnchorD;
+        if (deltaD > hingeThreshold) b.hinge = 1;
+        else if (deltaD < -hingeThreshold) b.hinge = -1;
+      }
     }
     render();
     return;
   }
   if (drag.type === "move-wall"){
     const w = getWall(drag.id);
+    // A window stays attached to whatever wall it's nearest — re-snap its
+    // whole line onto that wall's centreline/angle/thickness as it's
+    // dragged, rather than translating freely off-axis. This also drives
+    // first-time placement: a freshly-dropped window is just a "move-wall"
+    // drag on a not-yet-attached placeholder (see beginPlaceWindow).
+    if ((w.type||"wall") === "window" && !e.shiftKey){
+      const midStart = {x:(drag.orig.x1+drag.orig.x2)/2, y:(drag.orig.y1+drag.orig.y2)/2};
+      const mid = {x: midStart.x+(mw.x-drag.startWorld.x), y: midStart.y+(mw.y-drag.startWorld.y)};
+      const snap = snapDoorToWall(mid);
+      if (snap){
+        const len = Math.hypot(drag.orig.x2-drag.orig.x1, drag.orig.y2-drag.orig.y1) || cmToWorld(WINDOW_DEFAULT_LEN_CM);
+        const halfLen = len/2;
+        const dirx = Math.cos(snap.angle), diry = Math.sin(snap.angle);
+        w.x1 = snap.point.x-dirx*halfLen; w.y1 = snap.point.y-diry*halfLen;
+        w.x2 = snap.point.x+dirx*halfLen; w.y2 = snap.point.y+diry*halfLen;
+        w.thicknessCm = snap.wall.thicknessCm;
+        w.wallId = snap.wall.id;
+        render();
+        return;
+      }
+    }
     const dx = mw.x-drag.startWorld.x, dy = mw.y-drag.startWorld.y;
     w.x1 = drag.orig.x1+dx; w.y1 = drag.orig.y1+dy;
     w.x2 = drag.orig.x2+dx; w.y2 = drag.orig.y2+dy;
@@ -2833,18 +3043,36 @@ cv.addEventListener("pointermove", (e)=>{
 
 window.addEventListener("pointerup", ()=>{
   if (!drag) return;
-  if (drag.type === "draw-wall" || drag.type === "draw-window"){
+  if (drag.type === "draw-wall"){
     const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
     if (len > 4){
-      const isWindow = drag.type === "draw-window";
       const wall = {
-        id:newId(), type: isWindow ? "window" : "wall",
+        id:newId(), type:"wall",
         x1:drag.x1, y1:drag.y1, x2:drag.x2, y2:drag.y2,
-        thicknessCm: isWindow ? newWindowThicknessCm : newWallThicknessCm,
+        thicknessCm: newWallThicknessCm,
       };
       activeFloor().walls.push(wall);
       select("wall", wall.id);
     }
+  }
+  // A door/window dragged in from the Structure palette that never snapped
+  // onto a wall (dropped in empty space) is cancelled here rather than left
+  // floating unattached.
+  if (placing){
+    if (placing.kind === "door"){
+      const b = getBox(placing.id);
+      if (!b || !b.wallId){
+        activeFloor().boxes = activeFloor().boxes.filter(x=>x.id!==placing.id);
+        if (selection && selection.kind==="box" && selection.id===placing.id) selection = null;
+      }
+    } else if (placing.kind === "window"){
+      const w = getWall(placing.id);
+      if (!w || !w.wallId){
+        activeFloor().walls = activeFloor().walls.filter(x=>x.id!==placing.id);
+        if (selection && selection.kind==="wall" && selection.id===placing.id) selection = null;
+      }
+    }
+    placing = null;
   }
   if (drag.type === "calibrate"){
     const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
@@ -2891,6 +3119,11 @@ window.addEventListener("keydown", (e)=>{
     e.preventDefault();
   }
   if (e.key==="Escape"){
+    if (placing){
+      if (placing.kind==="door") activeFloor().boxes = activeFloor().boxes.filter(x=>x.id!==placing.id);
+      if (placing.kind==="window") activeFloor().walls = activeFloor().walls.filter(x=>x.id!==placing.id);
+      placing = null;
+    }
     drag = null;
     setTool("select");
     deselect();
@@ -3035,14 +3268,6 @@ document.getElementById("fldWallThickness").addEventListener("input", (e)=>{
   pushUndoSnapshotDebounced();
   getWall(selection.id).thicknessCm = v; scheduleAutosave(); render();
 });
-document.getElementById("fldNewWallThickness").addEventListener("input", (e)=>{
-  const v = parseFloat(e.target.value);
-  if (v && v>0) newWallThicknessCm = v;
-});
-document.getElementById("fldNewWindowThickness").addEventListener("input", (e)=>{
-  const v = parseFloat(e.target.value);
-  if (v && v>0) newWindowThicknessCm = v;
-});
 document.getElementById("btnDelete").addEventListener("click", deleteSelection);
 document.getElementById("btnFlipHinge").addEventListener("click", ()=>{
   if (!selection || selection.kind!=="box") return;
@@ -3058,8 +3283,8 @@ document.getElementById("btnFlipSwing").addEventListener("click", ()=>{
 });
 
 document.getElementById("btnSelect").addEventListener("click", ()=>setTool("select"));
-document.getElementById("btnWall").addEventListener("click", ()=>setTool("wall"));
-document.getElementById("btnWindow").addEventListener("click", ()=>setTool("window"));
+document.getElementById("btnWallInterior").addEventListener("click", ()=>{ newWallThicknessCm = INTERIOR_WALL_THICKNESS_CM; setTool("wall"); });
+document.getElementById("btnWallExterior").addEventListener("click", ()=>{ newWallThicknessCm = EXTERIOR_WALL_THICKNESS_CM; setTool("wall"); });
 document.getElementById("btnCalibrate").addEventListener("click", ()=>setTool("calibrate"));
 document.getElementById("btnPickWallThickness").addEventListener("click", ()=>setTool("pick-thickness"));
 document.getElementById("btnPixelWallDetect").addEventListener("click", runPixelWallDetect);
@@ -3068,8 +3293,48 @@ document.getElementById("btnPixelDoorDetect").addEventListener("click", runPixel
 document.getElementById("btnDoorDetect").addEventListener("click", runDoorDetect);
 document.getElementById("btnClearWindows").addEventListener("click", clearWindowsOnFloor);
 document.getElementById("btnClearDoors").addEventListener("click", clearDoorsOnFloor);
-document.getElementById("btnDoor").addEventListener("click", ()=>{
-  addBox({kind:"door", type:"door", label:"Door", wCm:DOOR_DEFAULT.wCm, dCm:DOOR_DEFAULT.dCm, color:DOOR_DEFAULT.color, hinge:-1, swing:-1});
+// Door/window placement: press-drag straight off the palette button. Both
+// reuse an existing drag type (move-box for doors, move-wall for windows)
+// so the same continuous wall-snapping used to reposition an already-placed
+// one also drives first-time placement — see the pointermove handlers
+// above. `placing` marks the object provisional until it's actually
+// dropped on a wall; pointerup/Escape remove it again if it never snapped.
+document.getElementById("btnDoorPlace").addEventListener("pointerdown", (e)=>{
+  e.preventDefault();
+  setTool("select");
+  const ms = getMouseScreen(e);
+  const mw = toWorld(ms.x, ms.y);
+  dragUndoSnapshot = snapshotState();
+  const box = {
+    id: newId(), kind:"door", type:"door", label:"Door",
+    x: mw.x, y: mw.y, wCm: DOOR_DEFAULT.wCm, dCm: DOOR_DEFAULT.dCm,
+    rotation: 0, color: DOOR_DEFAULT.color, hinge:-1, swing:-1,
+  };
+  activeFloor().boxes.push(box);
+  select("box", box.id);
+  placing = {kind:"door", id:box.id};
+  drag = {type:"move-box", id:box.id, startWorld:mw, origX:box.x, origY:box.y};
+  e.target.setPointerCapture(e.pointerId);
+  render();
+});
+document.getElementById("btnWindowPlace").addEventListener("pointerdown", (e)=>{
+  e.preventDefault();
+  setTool("select");
+  const ms = getMouseScreen(e);
+  const mw = toWorld(ms.x, ms.y);
+  dragUndoSnapshot = snapshotState();
+  const halfLen = cmToWorld(WINDOW_DEFAULT_LEN_CM)/2;
+  const wall = {
+    id:newId(), type:"window",
+    x1: mw.x-halfLen, y1: mw.y, x2: mw.x+halfLen, y2: mw.y,
+    thicknessCm: newWindowThicknessCm,
+  };
+  activeFloor().walls.push(wall);
+  select("wall", wall.id);
+  placing = {kind:"window", id:wall.id};
+  drag = {type:"move-wall", id:wall.id, startWorld:mw, orig:{x1:wall.x1,y1:wall.y1,x2:wall.x2,y2:wall.y2}};
+  e.target.setPointerCapture(e.pointerId);
+  render();
 });
 document.getElementById("btnCustom").addEventListener("click", addCustomItem);
 
