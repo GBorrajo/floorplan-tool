@@ -627,12 +627,47 @@ function getWall(id){ return activeFloor().walls.find(w=>w.id===id) || null; }
 // Persistence
 // ---------------------------------------------------------------------------
 let autosaveTimer = null;
+// Silently swallowing a write failure here (as this used to do) means
+// autosave can stop working with zero visible sign — exactly the failure
+// class already caught once in this project (see the image-onerror fix in
+// project memory). The realistic way to trip this is the project's own
+// floorplan image: it's stored as a base64 data URL inside `state` itself,
+// easily a few MB on its own, against a same-origin localStorage quota
+// that's commonly only ~5-10MB total — so a real photo can fill or exceed
+// it on its own, especially once walls/doors/windows/labels add more on
+// top. Warn once per session (not every failed autosave attempt) so it's
+// seen without being spammed, and say plainly that Save-to-.json still
+// works regardless of this limit.
+let autosaveWriteFailed = false;
+function flushAutosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+  try{
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(state));
+  }catch(e){
+    console.error("Autosave failed:", e);
+    if (!autosaveWriteFailed){
+      autosaveWriteFailed = true;
+      alert(`Autosave couldn't save your latest changes (${e.name}: ${e.message}) — most likely this project (often its floorplan image) is too large for this browser's storage limit. Your work is still here right now, but won't survive a refresh or close unless you use "💾 Save" to export a .json backup. This warning won't repeat this session.`);
+    }
+  }
+}
 function scheduleAutosave(){
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(()=>{
-    try{ localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(state)); }catch(e){ /* ignore quota errors */ }
-  }, AUTOSAVE_DEBOUNCE_MS);
+  autosaveTimer = setTimeout(flushAutosave, AUTOSAVE_DEBOUNCE_MS);
 }
+// A refresh/close/tab-switch arriving inside that debounce window would
+// otherwise drop whatever changed since the last flush — pagehide fires
+// reliably on both a real close and Chrome's back-forward-cache navigation,
+// beforeunload catches engines that skip pagehide, and visibilitychange
+// covers switching away (mobile Safari can suspend a hidden tab without
+// ever firing the other two). All three just call the same idempotent
+// flush, so firing more than one for a single navigation is harmless.
+window.addEventListener("pagehide", flushAutosave);
+window.addEventListener("beforeunload", flushAutosave);
+document.addEventListener("visibilitychange", ()=>{
+  if (document.visibilityState === "hidden") flushAutosave();
+});
 function restoreAutosave(){
   try{
     const raw = localStorage.getItem(AUTOSAVE_KEY);
