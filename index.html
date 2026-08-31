@@ -44,6 +44,8 @@
   section{display:flex; flex-direction:column; gap:6px;}
   section h2{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); margin:0 0 2px; font-weight:600;}
   .row{display:flex; gap:6px; flex-wrap:wrap;}
+  .paletteCategory{width:100%; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); opacity:.75; margin:6px 0 0;}
+  .paletteCategory:first-child{margin-top:0;}
   button{
     font:inherit; font-size:12.5px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border);
     border-radius:6px; padding:7px 10px; cursor:pointer; text-align:left;
@@ -104,6 +106,7 @@
       </div>
       <div id="scaleStatus">Not calibrated</div>
       <button class="wide" id="btnCalibrate">📏 Calibrate scale</button>
+      <button class="wide" id="btnMeasure">📐 Measure distance</button>
     </section>
 
     <section>
@@ -119,7 +122,7 @@
         <button id="btnDoorPlace" style="cursor:grab;">🚪 Door — drag onto a wall</button>
         <button id="btnWindowPlace" style="cursor:grab;">🪟 Window — drag onto a wall</button>
       </div>
-      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Press and drag either button onto a wall to drop it there — a door cuts an opening in the wall; a window sits on the wall and takes its thickness. Drop away from a wall to cancel. Once placed: drag a door across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from (or use the buttons below). Drag a window's end handle to extend it along the wall.</p>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Press and drag either button onto a wall to drop it there — a door cuts an opening in the wall; a window sits on the wall and takes its thickness. Drop away from a wall to cancel. Once placed: drag a door across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from (or use the buttons below). Drag a window's end handle to extend it along the wall, or its amber centre handle to bow it out into a bay/bow window (an even arc between its two ends).</p>
     </section>
 
     <section>
@@ -163,6 +166,7 @@
       <h2>Furniture</h2>
       <div class="row" id="furniturePalette"></div>
       <button class="wide" id="btnCustom">+ Custom item…</button>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Click an item to arm it — it rides the cursor, and each click on the canvas drops another copy (handy for a run of kitchen units). Click its button again, press Escape, or pick another tool to put it away. Ctrl/Cmd+C/V copies and pastes the selected item. Dragging an item close to another of the <em>same</em> type snaps them edge-to-edge or lines them up (hold Shift to bypass).</p>
     </section>
 
     <section>
@@ -251,16 +255,41 @@ const WALL_THICKNESS_CM = 10;
 const INTERIOR_WALL_THICKNESS_CM = 10;
 const EXTERIOR_WALL_THICKNESS_CM = 25;
 const WINDOW_DEFAULT_LEN_CM = 100; // starting length for a newly-dropped window, before it's extended
+const WINDOW_BOW_MAX_FRACTION = 0.8; // a bay/bow window's centre can be pulled out by at most this fraction of its own half-length, keeping the sagitta-arc geometry well-conditioned
+const BOW_ARC_SAMPLES = 16; // line segments used to approximate a bowed window's curve, for both drawing and hit-testing
 const FURNITURE_TYPES = [
-  {key:"sofa",     label:"Sofa",          wCm:200, dCm:90,  color:"#4f8cff"},
-  {key:"armchair", label:"Armchair",      wCm:90,  dCm:90,  color:"#7c6fe0"},
-  {key:"dining",   label:"Dining table",  wCm:140, dCm:90,  color:"#e0a23c"},
-  {key:"coffee",   label:"Coffee table",  wCm:100, dCm:50,  color:"#d98a3d"},
-  {key:"beddbl",   label:"Bed (double)",  wCm:140, dCm:190, color:"#e0637c"},
-  {key:"bedsgl",   label:"Bed (single)",  wCm:90,  dCm:190, color:"#e0637c"},
-  {key:"wardrobe", label:"Wardrobe",      wCm:120, dCm:60,  color:"#8a8f98"},
-  {key:"desk",     label:"Desk",          wCm:120, dCm:60,  color:"#3ea08a"},
-  {key:"kitchen",  label:"Kitchen unit",  wCm:60,  dCm:60,  color:"#5fb3a3"},
+  // Living room
+  {key:"sofa",       label:"Sofa",           wCm:200, dCm:90,  color:"#4f8cff", category:"Living room"},
+  {key:"armchair",   label:"Armchair",       wCm:90,  dCm:90,  color:"#7c6fe0", category:"Living room"},
+  {key:"coffee",     label:"Coffee table",   wCm:100, dCm:50,  color:"#d98a3d", category:"Living room"},
+  {key:"tvunit",     label:"TV unit",        wCm:150, dCm:40,  color:"#4a4f5c", category:"Living room"},
+  {key:"bookshelf",  label:"Bookshelf",      wCm:80,  dCm:30,  color:"#8a5a3c", category:"Living room"},
+  {key:"fireplace",  label:"Fireplace",      wCm:110, dCm:35,  color:"#a8503c", category:"Living room"},
+  // Dining
+  {key:"dining",     label:"Dining table",   wCm:140, dCm:90,  color:"#e0a23c", category:"Dining"},
+  {key:"diningchair",label:"Dining chair",   wCm:45,  dCm:50,  color:"#d9995a", category:"Dining"},
+  // Kitchen
+  {key:"kitchen",    label:"Kitchen unit",   wCm:60,  dCm:60,  color:"#5fb3a3", category:"Kitchen"},
+  {key:"sink",       label:"Kitchen sink",   wCm:80,  dCm:60,  color:"#4fa8b8", category:"Kitchen"},
+  {key:"cooker",     label:"Cooker / hob",   wCm:60,  dCm:60,  color:"#d9714f", category:"Kitchen"},
+  {key:"fridge",     label:"Fridge freezer", wCm:60,  dCm:65,  color:"#7fa8d9", category:"Kitchen"},
+  {key:"dishwasher", label:"Dishwasher",     wCm:60,  dCm:60,  color:"#6fa3c9", category:"Kitchen"},
+  {key:"washer",     label:"Washing machine",wCm:60,  dCm:60,  color:"#5a8fc7", category:"Kitchen"},
+  // Bedroom
+  {key:"beddbl",     label:"Bed (double)",   wCm:140, dCm:190, color:"#e0637c", category:"Bedroom"},
+  {key:"bedsgl",     label:"Bed (single)",   wCm:90,  dCm:190, color:"#e0637c", category:"Bedroom"},
+  {key:"wardrobe",   label:"Wardrobe",       wCm:120, dCm:60,  color:"#8a8f98", category:"Bedroom"},
+  {key:"drawers",    label:"Chest of drawers",wCm:90, dCm:45,  color:"#9b7355", category:"Bedroom"},
+  {key:"bedside",    label:"Bedside table",  wCm:45,  dCm:40,  color:"#8a6f5c", category:"Bedroom"},
+  // Bathroom
+  {key:"toilet",     label:"Toilet",         wCm:40,  dCm:65,  color:"#7d93a8", category:"Bathroom"},
+  {key:"bath",       label:"Bath",           wCm:170, dCm:70,  color:"#6f8ca3", category:"Bathroom"},
+  {key:"shower",     label:"Shower",         wCm:90,  dCm:90,  color:"#5f7f99", category:"Bathroom"},
+  {key:"basin",      label:"Bathroom sink",  wCm:55,  dCm:45,  color:"#7d93a8", category:"Bathroom"},
+  // Office / other
+  {key:"desk",       label:"Desk",           wCm:120, dCm:60,  color:"#3ea08a", category:"Office / other"},
+  {key:"officechair",label:"Office chair",   wCm:55,  dCm:55,  color:"#4a9483", category:"Office / other"},
+  {key:"radiator",   label:"Radiator",       wCm:100, dCm:10,  color:"#9aa5ad", category:"Office / other"},
 ];
 const DOOR_DEFAULT = {wCm:80, dCm:10, color:"#c9a227"};
 const WINDOW_THICKNESS_CM = 10;
@@ -419,6 +448,8 @@ const HANDLE_SCREEN_PX = 7;
 const ROTATE_HANDLE_DIST_PX = 28;
 const HIT_TOLERANCE_PX = 6;
 const SNAP_SCREEN_PX = 12; // wall/window endpoint & door snap threshold, in screen pixels
+const BOX_SNAP_SCREEN_PX = 10; // same-type furniture edge/centre snap threshold, in screen pixels
+const BOX_SNAP_MAX_NEIGHBOR_DIST_CM = 400; // ignore same-type furniture further apart than this — a small on-axis coincidence shouldn't snap two chairs across the house
 const AUTOSAVE_KEY = "floorplanTool.autosave.v2";
 const AUTOSAVE_DEBOUNCE_MS = 500;
 
@@ -520,7 +551,7 @@ function redo(){
 
 let imgEl = null; // cached Image() for the active floor's image, rebuilt on floor switch/load
 
-let activeTool = "select"; // 'select' | 'wall' | 'calibrate' | 'pick-thickness'
+let activeTool = "select"; // 'select' | 'wall' | 'calibrate' | 'pick-thickness' | 'measure' | 'stamp'
 let selection = null;      // {kind:'wall'|'box', id}
 let drag = null;
 let placing = null; // {kind:'door'|'window', id} while a fresh door/window dragged from the Structure palette hasn't been dropped onto a wall yet — cancelled (object removed) at pointerup/Escape if it never snapped
@@ -532,6 +563,11 @@ let showOverlay = true; // view-only toggle for traced walls/windows/doors/furni
 let zoomLevel = 1;      // 1 = fit the window (default); <1 zooms out within the same viewport (reveals content drawn outside the image bounds); >1 grows the canvas so the browser's native scroll can pan around it
 let wallHoverPoint = null; // world {x,y} the wall tool's cursor square is drawn at (the actual/snapped point a click would start drawing from) — null when not hovering the canvas with the wall tool active
 let lockWallAngles = true; // dragging a wall/window endpoint changes its length along the existing angle only, by default (most walls in a floor plan are already correctly angled — it's the length that needs trimming)
+let lastMeasureLine = null; // {x1,y1,x2,y2} in world coords — the most recent completed "measure" drag, kept on screen (with its distance label) until a new one is started or the tool changes
+let stampSpec = null;     // {kind,type,label,wCm,dCm,color} while a furniture item is "armed" from the palette — see armStamp(); click on the canvas places a copy and leaves it armed for the next one
+let stampHoverPoint = null; // world {x,y} the stamp ghost preview follows while armed
+let furniturePaletteButtons = {}; // type key -> its palette <button>, so armStamp can highlight the active one
+let clipboardBox = null;  // last copied furniture box's spec (no id/position) — see copySelection()/pasteClipboard()
 
 let canvasW = 0, canvasH = 0; // logical (CSS) pixel size of the canvas itself (grows past the viewport when zoomed in, for native scrolling)
 let baseCanvasW = 0, baseCanvasH = 0; // logical size of the visible viewport (canvasWrap), independent of zoom — what "fit" is computed against
@@ -1002,6 +1038,9 @@ function render(){
   if (drag && drag.type === "draw-wall") drawWallPreview(drag);
   if (drag && (drag.type === "calibrate" || drag.type === "pick-thickness")) drawCalibratePreview(drag);
   if (!drag && activeTool === "wall" && wallHoverPoint) drawWallHoverSquare(wallHoverPoint);
+  if (drag && drag.type === "measure") drawMeasureLine(drag.x1,drag.y1,drag.x2,drag.y2);
+  else if (!drag && lastMeasureLine) drawMeasureLine(lastMeasureLine.x1,lastMeasureLine.y1,lastMeasureLine.x2,lastMeasureLine.y2);
+  if (!drag && activeTool === "stamp" && stampSpec && stampHoverPoint) drawStampPreview(stampSpec, stampHoverPoint);
 
   if (selection && showOverlay) drawSelectionHandles();
 }
@@ -1047,34 +1086,107 @@ function drawWalls(){
   });
 }
 
+// True midpoint of a window's centreline — NOT just indexing into the
+// points array at the halfway index: windowCenterlinePoints returns an
+// EVEN count (2) for a straight window, where the halfway index lands on
+// an endpoint rather than the middle, and an ODD count (arc samples + 1)
+// for a bowed one, where it correctly lands on the middle sample.
+function windowMidpoint(w){
+  const pts = windowCenterlinePoints(w);
+  if (pts.length === 2) return {x:(pts[0].x+pts[1].x)/2, y:(pts[0].y+pts[1].y)/2};
+  return pts[Math.floor(pts.length/2)];
+}
+function pointsToSegments(pts){
+  const segs = [];
+  for (let i=0;i<pts.length-1;i++) segs.push({x1:pts[i].x,y1:pts[i].y,x2:pts[i+1].x,y2:pts[i+1].y});
+  return segs;
+}
+// A window's centreline as a list of world points — just its two endpoints
+// for an ordinary straight window, or a sampled circular arc (sagitta =
+// w.bowCm at the midpoint) for a bay/bow window. Nothing about a bow is
+// stored beyond this one number: x1/y1/x2/y2 stay the true, wall-attached
+// endpoints (so endpoint-drag/extend/snap all keep working unchanged), and
+// the curve is re-derived fresh here every time it's needed — same
+// philosophy as wallVisibleSegments deriving a door's cut fresh each frame.
+function windowCenterlinePoints(w){
+  const A = {x:w.x1,y:w.y1}, B = {x:w.x2,y:w.y2};
+  if (!w.bowCm) return [A,B];
+  const dx = B.x-A.x, dy = B.y-A.y;
+  const len = Math.hypot(dx,dy);
+  if (len < 1e-6) return [A,B];
+  const nx = -dy/len, ny = dx/len; // perpendicular to the chord
+  const h = len/2;
+  const maxS = h*WINDOW_BOW_MAX_FRACTION;
+  const s = Math.max(-maxS, Math.min(maxS, cmToWorld(w.bowCm)));
+  if (Math.abs(s) < 1e-6) return [A,B];
+  // Sagitta → radius/centre: a circle through A and B with the chord's
+  // midpoint pulled out by s along the normal. Standard sagitta formula;
+  // the WINDOW_BOW_MAX_FRACTION clamp keeps s comfortably smaller than h,
+  // which keeps A/B within a shallow minor arc of each other — needed for
+  // the "shortest angular path" sweep below to always pass through the
+  // bulge apex rather than the long way around the circle.
+  const d = (s*s - h*h) / (2*s);
+  const r = Math.abs(d - s);
+  const cx = (A.x+B.x)/2 + d*nx, cy = (A.y+B.y)/2 + d*ny;
+  const angleA = Math.atan2(A.y-cy, A.x-cx);
+  const angleB = Math.atan2(B.y-cy, B.x-cx);
+  let delta = angleB - angleA;
+  while (delta > Math.PI) delta -= Math.PI*2;
+  while (delta < -Math.PI) delta += Math.PI*2;
+  const pts = [];
+  for (let i=0;i<=BOW_ARC_SAMPLES;i++){
+    const ang = angleA + delta*(i/BOW_ARC_SAMPLES);
+    pts.push({x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r});
+  }
+  return pts;
+}
+
 function drawWindowSegment(w, isSel){
   // Windows are drawn as a thick, mostly-white band (with a dark centre
   // line for the pane split and dark end caps for the frame) rather than a
   // solid black wall band — visually distinct on the canvas, matching how
-  // they're printed on real floorplans.
-  const a = toScreen(w.x1,w.y1), b = toScreen(w.x2,w.y2);
+  // they're printed on real floorplans. A bowed window draws the exact
+  // same way, just following windowCenterlinePoints' sampled curve instead
+  // of a single straight segment — falls back to identical output to the
+  // old straight-only version when there's no bow (a 2-point "curve").
+  const pts = windowCenterlinePoints(w).map(p=>toScreen(p.x,p.y));
   const thickness = Math.max(cmToWorld(w.thicknessCm||WINDOW_THICKNESS_CM)*fitScale, 5);
-  const dx = b.x-a.x, dy = b.y-a.y, len = Math.hypot(dx,dy) || 1;
-  const nx = -dy/len, ny = dx/len, hw = thickness/2;
+  const hw = thickness/2;
+  // Per-point normal, from the segment on either side of it — adjacent
+  // quads then share an exact edge at each interior point, no seams.
+  const normals = pts.map((p,i)=>{
+    const prev = pts[Math.max(0,i-1)], next = pts[Math.min(pts.length-1,i+1)];
+    const ddx = next.x-prev.x, ddy = next.y-prev.y;
+    const l = Math.hypot(ddx,ddy) || 1;
+    return {x:-ddy/l, y:ddx/l};
+  });
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(a.x+nx*hw, a.y+ny*hw);
-  ctx.lineTo(b.x+nx*hw, b.y+ny*hw);
-  ctx.lineTo(b.x-nx*hw, b.y-ny*hw);
-  ctx.lineTo(a.x-nx*hw, a.y-ny*hw);
+  pts.forEach((p,i)=>{
+    const n = normals[i];
+    const x = p.x+n.x*hw, y = p.y+n.y*hw;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  for (let i=pts.length-1;i>=0;i--){
+    const p = pts[i], n = normals[i];
+    ctx.lineTo(p.x-n.x*hw, p.y-n.y*hw);
+  }
   ctx.closePath();
   ctx.fillStyle = "#ffffff";
   ctx.fill();
   ctx.strokeStyle = isSel ? "#4f8cff" : "#111317";
   ctx.lineWidth = isSel ? 2 : 1.25;
   ctx.stroke();
-  // frame end caps + centre pane line
+  // frame end caps (at the two true endpoints only) + centre pane line
   ctx.strokeStyle = "#111317";
   ctx.lineWidth = 1.25;
-  [a,b].forEach(p=>{
-    ctx.beginPath(); ctx.moveTo(p.x+nx*hw,p.y+ny*hw); ctx.lineTo(p.x-nx*hw,p.y-ny*hw); ctx.stroke();
+  [0, pts.length-1].forEach(i=>{
+    const p = pts[i], n = normals[i];
+    ctx.beginPath(); ctx.moveTo(p.x+n.x*hw,p.y+n.y*hw); ctx.lineTo(p.x-n.x*hw,p.y-n.y*hw); ctx.stroke();
   });
-  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.beginPath();
+  pts.forEach((p,i)=>{ if (i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1123,15 +1235,300 @@ function drawCalibratePreview(d){
   ctx.setLineDash([]);
 }
 
-function drawLengthLabel(a,b,meters){
+function drawLengthLabel(a,b,meters,approx){
   const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
   ctx.font = "12px sans-serif";
-  const text = meters.toFixed(2)+" m";
+  const text = meters.toFixed(2)+" m"+(approx?" (approx)":"");
   const wpx = ctx.measureText(text).width;
   ctx.fillStyle = "rgba(0,0,0,0.65)";
   ctx.fillRect(mx-wpx/2-4, my-18, wpx+8, 16);
   ctx.fillStyle = "#fff";
   ctx.fillText(text, mx-wpx/2, my-6);
+}
+
+// The measure tool's live/persisted line — a ruler dropped anywhere on the
+// canvas, independent of any wall/box (see the "measure" drag type).
+function drawMeasureLine(x1,y1,x2,y2){
+  const a = toScreen(x1,y1), b = toScreen(x2,y2);
+  ctx.strokeStyle = "#4fd6a0";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([2,4]);
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#4fd6a0";
+  [a,b].forEach(p=>{ ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fill(); });
+  const meters = worldLenToMeters(Math.hypot(x2-x1,y2-y1));
+  drawLengthLabel(a,b,meters, !activeFloor().calibration);
+}
+
+// ---------------------------------------------------------------------------
+// Furniture top-down icons — a plain rounded-rect footprint (same shape
+// used for hit-testing/resize) with a few flat shapes layered on top so
+// each catalog type reads at a glance. Kept intentionally simple: this is
+// a floorplan, not a furniture catalog render.
+// ---------------------------------------------------------------------------
+function roundRectPath(x,y,w,h,r){
+  const rr = Math.max(0, Math.min(r, w/2, h/2));
+  ctx.beginPath();
+  ctx.moveTo(x+rr,y);
+  ctx.arcTo(x+w,y, x+w,y+h, rr);
+  ctx.arcTo(x+w,y+h, x,y+h, rr);
+  ctx.arcTo(x,y+h, x,y, rr);
+  ctx.arcTo(x,y, x+w,y, rr);
+  ctx.closePath();
+}
+function drawSofaDetail(hw,hd){
+  const bandH = hd*2*0.24, armW = Math.min(hw*2*0.10, hd*0.9);
+  ctx.fillRect(-hw,-hd, hw*2, bandH); // backrest
+  ctx.fillRect(-hw,-hd, armW, hd*2);  // left arm
+  ctx.fillRect(hw-armW,-hd, armW, hd*2); // right arm
+  const seatL=-hw+armW, seatR=hw-armW, seams=2;
+  ctx.beginPath();
+  for (let i=1;i<=seams;i++){
+    const x = seatL + (seatR-seatL)*i/(seams+1);
+    ctx.moveTo(x,-hd+bandH); ctx.lineTo(x,hd);
+  }
+  ctx.stroke();
+}
+function drawArmchairDetail(hw,hd){
+  const bandH = hd*2*0.28, armW = hw*2*0.16;
+  ctx.fillRect(-hw,-hd, hw*2, bandH); // backrest
+  ctx.fillRect(-hw,-hd, armW, hd*2);  // left arm
+  ctx.fillRect(hw-armW,-hd, armW, hd*2); // right arm
+}
+function drawDiningDetail(hw,hd){
+  const wide = hw >= hd;
+  const shortHalf = wide ? hd : hw, longHalf = wide ? hw : hd;
+  const chairSize = Math.max(4, shortHalf*0.34);
+  const inset = shortHalf*0.22;
+  const count = Math.max(2, Math.min(4, Math.round((longHalf*2)/50)));
+  for (let side=-1; side<=1; side+=2){
+    for (let i=0;i<count;i++){
+      const t = (i+0.5)/count;
+      const along = -longHalf + t*longHalf*2;
+      const cx = wide ? along : side*(hw-inset-chairSize/2);
+      const cy = wide ? side*(hd-inset-chairSize/2) : along;
+      roundRectPath(cx-chairSize/2, cy-chairSize/2, chairSize, chairSize, 2);
+      ctx.fill();
+    }
+  }
+}
+function drawCoffeeDetail(hw,hd){
+  const inset = Math.min(hw,hd)*0.22;
+  roundRectPath(-hw+inset, -hd+inset, (hw-inset)*2, (hd-inset)*2, 3);
+  ctx.stroke();
+}
+function drawBedDetail(hw,hd,pillows){
+  const headH = hd*2*0.22;
+  ctx.fillRect(-hw,-hd, hw*2, headH); // headboard band
+  const pW = hw*2*0.32, pH = headH*0.7, gap = hw*2*0.06;
+  const totalW = pillows*pW + (pillows-1)*gap;
+  const startX = -totalW/2;
+  for (let i=0;i<pillows;i++){
+    roundRectPath(startX + i*(pW+gap), -hd+headH*0.15, pW, pH, 3);
+    ctx.fill();
+  }
+  ctx.beginPath(); // fold line near the foot
+  ctx.moveTo(-hw, hd-hd*0.36); ctx.lineTo(hw, hd-hd*0.36); ctx.stroke();
+}
+function drawWardrobeDetail(hw,hd){
+  ctx.beginPath(); ctx.moveTo(0,-hd); ctx.lineTo(0,hd); ctx.stroke(); // door split
+  const r = Math.min(hw,hd)*0.09;
+  // Offset toward the top edge, clear of the centred label text, rather
+  // than sitting behind it at the box's own centre.
+  [-hw*0.15, hw*0.15].forEach(x=>{ ctx.beginPath(); ctx.arc(x,-hd*0.55,r,0,Math.PI*2); ctx.fill(); });
+}
+function drawDeskDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.18); // back edge, against the wall
+}
+function drawKitchenDetail(hw,hd){
+  ctx.beginPath(); ctx.moveTo(-hw,-hd+3); ctx.lineTo(hw,-hd+3); ctx.stroke(); // worktop front edge
+}
+function drawTvUnitDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.18); // back edge, against the wall
+  const dividers = 2;
+  ctx.beginPath();
+  for (let i=1;i<=dividers;i++){ const x=-hw+(hw*2)*i/(dividers+1); ctx.moveTo(x,-hd); ctx.lineTo(x,hd); }
+  ctx.stroke();
+}
+function drawBookshelfDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // back edge, against the wall
+  const dividers = 3;
+  ctx.beginPath();
+  for (let i=1;i<=dividers;i++){ const x=-hw+(hw*2)*i/(dividers+1); ctx.moveTo(x,-hd*0.85); ctx.lineTo(x,hd*0.85); }
+  ctx.stroke();
+}
+function drawFireplaceDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.22); // mantel/back edge
+  roundRectPath(-hw*0.45, hd*0.05, hw*0.9, hd*0.55, 2);
+  ctx.fill(); // firebox opening
+}
+function drawDiningChairDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.3); // backrest
+}
+function drawSinkDetail(hw,hd){
+  roundRectPath(-hw*0.55, -hd*0.55, hw*1.1, hd*1.1, 6);
+  ctx.stroke(); // basin bowl
+  ctx.beginPath(); ctx.arc(0,-hd*0.78, Math.min(hw,hd)*0.08, 0, Math.PI*2); ctx.fill(); // tap
+}
+function drawCookerDetail(hw,hd){
+  const r = Math.min(hw,hd)*0.16;
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy])=>{
+    ctx.beginPath(); ctx.arc(sx*hw*0.4, sy*hd*0.4, r, 0, Math.PI*2); ctx.stroke();
+  });
+}
+function drawFridgeDetail(hw,hd){
+  ctx.beginPath(); ctx.moveTo(-hw,-hd*0.2); ctx.lineTo(hw,-hd*0.2); ctx.stroke(); // fridge/freezer split
+  ctx.beginPath(); ctx.arc(hw*0.7, hd*0.3, Math.min(hw,hd)*0.09, 0, Math.PI*2); ctx.fill(); // handle
+}
+function drawDishwasherDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // control panel
+  ctx.beginPath(); ctx.moveTo(-hw,hd*0.1); ctx.lineTo(hw,hd*0.1); ctx.stroke(); // door line
+}
+function drawWasherDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // control panel
+  ctx.beginPath(); ctx.arc(0, hd*0.15, Math.min(hw,hd)*0.55, 0, Math.PI*2); ctx.stroke(); // drum door
+}
+function drawDrawersDetail(hw,hd){
+  const rows = 3;
+  ctx.beginPath();
+  for (let i=1;i<=rows;i++){ const y=-hd+(hd*2)*i/(rows+1); ctx.moveTo(-hw,y); ctx.lineTo(hw,y); }
+  ctx.stroke();
+  for (let i=0;i<rows;i++){
+    const y = -hd+(hd*2)*(i+0.5)/(rows+1);
+    ctx.beginPath(); ctx.arc(0,y,Math.min(hw,hd)*0.06,0,Math.PI*2); ctx.fill(); // handle
+  }
+}
+function drawToiletDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.25); // cistern
+  ctx.beginPath(); ctx.ellipse(0, hd*0.25, hw*0.75, hd*0.6, 0, 0, Math.PI*2); ctx.stroke(); // bowl
+}
+function drawBathDetail(hw,hd){
+  const inset = Math.min(hw,hd)*0.18;
+  roundRectPath(-hw+inset, -hd+inset, (hw-inset)*2, (hd-inset)*2, 10);
+  ctx.stroke(); // inner basin
+  ctx.beginPath(); ctx.arc(-hw*0.75, 0, Math.min(hw,hd)*0.08, 0, Math.PI*2); ctx.fill(); // taps
+}
+function drawShowerDetail(hw,hd){
+  const inset = Math.min(hw,hd)*0.15;
+  roundRectPath(-hw+inset, -hd+inset, (hw-inset)*2, (hd-inset)*2, 4);
+  ctx.stroke(); // tray
+  ctx.beginPath(); ctx.arc(0,0, Math.min(hw,hd)*0.09, 0, Math.PI*2); ctx.fill(); // drain
+}
+function drawBasinDetail(hw,hd){
+  ctx.beginPath(); ctx.ellipse(0,0, hw*0.7, hd*0.65, 0, 0, Math.PI*2); ctx.stroke(); // bowl
+  ctx.beginPath(); ctx.arc(0,-hd*0.82, Math.min(hw,hd)*0.08, 0, Math.PI*2); ctx.fill(); // tap
+}
+function drawOfficeChairDetail(hw,hd){
+  ctx.beginPath(); ctx.arc(0,0, Math.min(hw,hd)*0.75, 0, Math.PI*2); ctx.stroke(); // swivel seat
+  ctx.fillRect(-hw*0.5,-hd, hw, hd*2*0.25); // backrest
+}
+function drawRadiatorDetail(hw,hd){
+  const fins = Math.max(4, Math.round((hw*2)/8));
+  ctx.beginPath();
+  for (let i=1;i<fins;i++){ const x=-hw+(hw*2)*i/fins; ctx.moveTo(x,-hd); ctx.lineTo(x,hd); }
+  ctx.stroke();
+}
+const FURNITURE_DETAIL_DRAWERS = {
+  sofa: drawSofaDetail,
+  armchair: drawArmchairDetail,
+  dining: drawDiningDetail,
+  coffee: drawCoffeeDetail,
+  beddbl: (hw,hd)=>drawBedDetail(hw,hd,2),
+  bedsgl: (hw,hd)=>drawBedDetail(hw,hd,1),
+  wardrobe: drawWardrobeDetail,
+  desk: drawDeskDetail,
+  kitchen: drawKitchenDetail,
+  tvunit: drawTvUnitDetail,
+  bookshelf: drawBookshelfDetail,
+  fireplace: drawFireplaceDetail,
+  diningchair: drawDiningChairDetail,
+  sink: drawSinkDetail,
+  cooker: drawCookerDetail,
+  fridge: drawFridgeDetail,
+  dishwasher: drawDishwasherDetail,
+  washer: drawWasherDetail,
+  drawers: drawDrawersDetail,
+  bedside: drawCoffeeDetail,
+  toilet: drawToiletDetail,
+  bath: drawBathDetail,
+  shower: drawShowerDetail,
+  basin: drawBasinDetail,
+  officechair: drawOfficeChairDetail,
+  radiator: drawRadiatorDetail,
+};
+// Draws a furniture footprint plus its type's detail shapes. Expects the
+// canvas already translated/rotated to the box's centre — see drawBoxes()
+// and drawStampPreview().
+function drawFurnitureShape(type, wScreen, dScreen, color, isSel){
+  const hw = wScreen/2, hd = dScreen/2;
+  const r = Math.min(6, hw*0.3, hd*0.3);
+  ctx.fillStyle = color + "cc";
+  ctx.strokeStyle = isSel ? "#ffffff" : "#00000055";
+  ctx.lineWidth = isSel ? 2 : 1;
+  roundRectPath(-hw,-hd,wScreen,dScreen,r);
+  ctx.fill(); ctx.stroke();
+
+  const drawDetail = FURNITURE_DETAIL_DRAWERS[type];
+  if (drawDetail){
+    ctx.save();
+    roundRectPath(-hw,-hd,wScreen,dScreen,r);
+    ctx.clip(); // keep detail shapes inside the footprint
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 1;
+    drawDetail(hw,hd);
+    ctx.restore();
+  }
+}
+
+// Splits a label across at most 2 lines so it never draws wider than the
+// box it's labelling — picks whichever word-boundary split keeps the
+// wider of the two resulting lines as narrow as possible. A single word
+// that's still too wide on its own is left to overflow slightly (nothing
+// left to split it on) rather than truncated.
+function wrapLabelLines(label, maxWidthPx){
+  if (ctx.measureText(label).width <= maxWidthPx) return [label];
+  const words = label.split(" ");
+  if (words.length < 2) return [label];
+  let best = null, bestWorst = Infinity;
+  for (let i=1;i<words.length;i++){
+    const line1 = words.slice(0,i).join(" "), line2 = words.slice(i).join(" ");
+    const worst = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width);
+    if (worst < bestWorst){ bestWorst = worst; best = [line1,line2]; }
+  }
+  return best;
+}
+// Shared by drawBoxes() and drawStampPreview() — draws a furniture item's
+// label centred in its footprint, wrapping to a second line rather than
+// overrunning the box's own edges, and skipping entirely once there's not
+// enough room for even one line.
+function drawFurnitureLabel(label, wScreen, dScreen){
+  const maxWidth = wScreen - 6;
+  if (maxWidth < 20) return;
+  ctx.fillStyle = "#fff";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const lines = wrapLabelLines(label, maxWidth);
+  const lineHeight = 12;
+  if (dScreen < lineHeight*lines.length + 4) return;
+  const startY = -(lines.length-1)*lineHeight/2;
+  lines.forEach((line,i)=> ctx.fillText(line, 0, startY + i*lineHeight));
+}
+
+// Ghost copy of the armed furniture stamp, following the cursor until
+// clicked down — see armStamp() / the "stamp" pointerdown handler.
+function drawStampPreview(spec, point){
+  const c = toScreen(point.x, point.y);
+  const wScreen = cmToWorld(spec.wCm)*fitScale;
+  const dScreen = cmToWorld(spec.dCm)*fitScale;
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.translate(c.x,c.y);
+  drawFurnitureShape(spec.type, wScreen, dScreen, spec.color, false);
+  drawFurnitureLabel(spec.label, wScreen, dScreen);
+  ctx.restore();
 }
 
 function drawBoxes(){
@@ -1147,18 +1544,8 @@ function drawBoxes(){
       drawDoorSymbol(wScreen, dScreen, b.hinge || -1, b.swing || -1);
     } else {
       const isSel = selection && selection.kind==="box" && selection.id===b.id;
-      ctx.fillStyle = b.color + "cc";
-      ctx.strokeStyle = isSel ? "#ffffff" : "#00000055";
-      ctx.lineWidth = isSel ? 2 : 1;
-      ctx.beginPath();
-      ctx.rect(-wScreen/2, -dScreen/2, wScreen, dScreen);
-      ctx.fill(); ctx.stroke();
-
-      ctx.fillStyle = "#fff";
-      ctx.font = "11px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      if (wScreen > 30 && dScreen > 16) ctx.fillText(b.label, 0, 0);
+      drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel);
+      drawFurnitureLabel(b.label, wScreen, dScreen);
     }
     ctx.restore();
   });
@@ -1234,6 +1621,12 @@ function drawSelectionHandles(){
       ctx.fillStyle = "#4f8cff";
       ctx.beginPath(); ctx.arc(p.x,p.y,HANDLE_SCREEN_PX/2,0,Math.PI*2); ctx.fill();
     });
+    if ((w.type||"wall") === "window"){
+      const mid = windowMidpoint(w);
+      const p = toScreen(mid.x, mid.y);
+      ctx.fillStyle = "#e0a23c";
+      ctx.beginPath(); ctx.arc(p.x,p.y,HANDLE_SCREEN_PX/2,0,Math.PI*2); ctx.fill();
+    }
   }
 }
 
@@ -1260,6 +1653,14 @@ function hitTestWallEndpoints(wall, mouseScreen){
   if (Math.hypot(mouseScreen.x-a.x, mouseScreen.y-a.y) <= HANDLE_SCREEN_PX+3) return "1";
   if (Math.hypot(mouseScreen.x-b.x, mouseScreen.y-b.y) <= HANDLE_SCREEN_PX+3) return "2";
   return null;
+}
+// The bay/bow-window "pull the centre out" handle — sits at the window's
+// current bulge apex (or its plain midpoint, before any bow is applied).
+function hitTestWindowBowHandle(wall, mouseScreen){
+  if ((wall.type||"wall") !== "window") return false;
+  const mid = windowMidpoint(wall);
+  const p = toScreen(mid.x, mid.y);
+  return Math.hypot(mouseScreen.x-p.x, mouseScreen.y-p.y) <= HANDLE_SCREEN_PX+3;
 }
 function pointInBoxScreen(box, mouseScreen){
   const c = toScreen(box.x,box.y);
@@ -1289,8 +1690,10 @@ function hitTestWalls(mouseScreen){
     const w = walls[i];
     const thickness = Math.max(cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)*fitScale, 3);
     // Skip the gap a door cuts, same as drawWalls — clicking in the opening
-    // hits the door (or nothing) instead of the wall behind it.
-    const pieces = (w.type||"wall")==="window" ? [{x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2}] : wallVisibleSegments(w, doors);
+    // hits the door (or nothing) instead of the wall behind it. A window's
+    // own centreline (straight, or the sampled curve of a bowed one) is
+    // walked as consecutive small segments the same way.
+    const pieces = (w.type||"wall")==="window" ? pointsToSegments(windowCenterlinePoints(w)) : wallVisibleSegments(w, doors);
     for (const seg of pieces){
       const a = toScreen(seg.x1,seg.y1), b = toScreen(seg.x2,seg.y2);
       if (distToSegmentScreen(mouseScreen,a,b) <= thickness/2 + HIT_TOLERANCE_PX) return w;
@@ -1331,6 +1734,7 @@ function updateHoverCursor(e){
     if (wall){
       const ep = hitTestWallEndpoints(wall, ms);
       if (ep) cursor = angleToResizeCursor(Math.atan2(wall.y2-wall.y1, wall.x2-wall.x1));
+      else if (hitTestWindowBowHandle(wall, ms)) cursor = angleToResizeCursor(Math.atan2(wall.y2-wall.y1, wall.x2-wall.x1) + Math.PI/2);
       else if (hitTestWalls(ms) === wall) cursor = "move";
     }
   }
@@ -1356,26 +1760,35 @@ function select(kind, id){ selection = {kind, id}; updateSelPanel(); render(); }
 function deselect(){ selection = null; updateSelPanel(); render(); }
 
 function setTool(tool){
+  // Leaving stamp mode for any of the regular tool buttons below disarms
+  // whatever furniture was on the cursor — "unselecting" it, per the
+  // furniture palette's own click-to-arm/click-to-disarm toggle.
+  if (stampSpec && tool !== "stamp"){ stampSpec = null; stampHoverPoint = null; updateFurniturePaletteActive(); }
+  if (tool !== "measure") lastMeasureLine = null;
   activeTool = tool;
-  ["btnSelect","btnWallInterior","btnWallExterior","btnCalibrate","btnPickWallThickness"].forEach(id=>document.getElementById(id).classList.remove("active"));
+  ["btnSelect","btnWallInterior","btnWallExterior","btnCalibrate","btnPickWallThickness","btnMeasure"].forEach(id=>document.getElementById(id).classList.remove("active"));
   if (tool==="select") document.getElementById("btnSelect").classList.add("active");
   if (tool==="wall") document.getElementById(newWallThicknessCm===EXTERIOR_WALL_THICKNESS_CM ? "btnWallExterior" : "btnWallInterior").classList.add("active");
   if (tool==="calibrate") document.getElementById("btnCalibrate").classList.add("active");
   if (tool==="pick-thickness") document.getElementById("btnPickWallThickness").classList.add("active");
+  if (tool==="measure") document.getElementById("btnMeasure").classList.add("active");
   updateHint();
-  // Wall tool hides the OS cursor in favour of the to-scale square drawn in
-  // render() (see drawWallHoverSquare) — the actual cursor would otherwise
-  // just sit on top of it, redundant and imprecise by comparison.
-  cv.style.cursor = tool==="select" ? "default" : (tool==="wall" ? "none" : "crosshair");
+  // Wall/stamp tools hide the OS cursor in favour of the to-scale preview
+  // drawn in render() (see drawWallHoverSquare/drawStampPreview) — the
+  // actual cursor would otherwise just sit on top of it, redundant and
+  // imprecise by comparison.
+  cv.style.cursor = tool==="select" ? "default" : ((tool==="wall"||tool==="stamp") ? "none" : "crosshair");
   if (tool !== "wall") wallHoverPoint = null;
 }
 
 function updateHint(){
   const hints = {
-    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate. Delete/Backspace removes the selection. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
-    wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. Hold Shift to snap to 0/45/90°; otherwise endpoints snap to nearby wall/window ends and edges, and to the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line.",
+    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Delete/Backspace removes the selection; Ctrl/Cmd+C/V copies and pastes furniture. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
+    wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. New walls snap to the nearest 90° by default; hold Shift to open up the angle and draw freely (endpoints still snap to nearby wall/window ends, edges, and the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line).",
     calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
     "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
+    measure: "Click and drag anywhere to measure a distance (needs the scale calibrated first). Snaps onto nearby wall ends/edges by default — hold Shift for a free-form line. Stays armed for repeat measurements; press Escape or pick another tool to stop.",
+    stamp: stampSpec ? `Click anywhere to drop another "${stampSpec.label}" — it stays on the cursor for as many as you need. Click its palette button again, press Escape, or pick another tool to put it away.` : "",
   };
   document.getElementById("hint").textContent = hints[activeTool] || "";
 }
@@ -1383,7 +1796,10 @@ function updateHint(){
 // ---------------------------------------------------------------------------
 // Add furniture / doors (into the active floor)
 // ---------------------------------------------------------------------------
-function addBox(spec){
+// Places one box at a specific world point. The shared primitive behind a
+// stamp placement (click point, see armStamp) and a paste (offset from the
+// copied item) — each just picks the point and whether to keep rotation.
+function addBoxAt(spec, world, rotation){
   pushUndoSnapshot();
   const f = activeFloor();
   const box = {
@@ -1391,18 +1807,52 @@ function addBox(spec){
     kind: spec.kind || "furniture",
     type: spec.type,
     label: spec.label,
-    x: f.worldWidth/2,
-    y: f.worldHeight/2,
+    x: world.x,
+    y: world.y,
     wCm: spec.wCm,
     dCm: spec.dCm,
-    rotation: 0,
+    rotation: rotation || 0,
     color: spec.color || "#4f8cff",
   };
   if (spec.kind === "door"){ box.hinge = spec.hinge || -1; box.swing = spec.swing || -1; }
   f.boxes.push(box);
+  resolveKitchenUnitOverlaps(box); // no-op unless box is a kitchen appliance placed over a kitchen unit
   select("box", box.id);
-  setTool("select");
   scheduleAutosave();
+  return box;
+}
+
+// ---------------------------------------------------------------------------
+// Furniture "stamp" placement — arm a furniture spec from the palette so it
+// rides the cursor (see drawStampPreview) and every click drops another
+// copy, without re-arming for each one. Clicking the same palette button
+// again, pressing Escape, or picking another tool disarms it.
+// ---------------------------------------------------------------------------
+function armStamp(spec){
+  // spec.key distinguishes "the same palette item clicked again" (toggle it
+  // off) from "a new custom item" (always (re)arm) — catalog buttons key on
+  // their stable type; addCustomItem mints a fresh key each time, so
+  // re-arming with a different custom item never reads as toggling the
+  // same one off.
+  const key = spec.key || spec.type;
+  if (stampSpec && activeTool === "stamp" && stampSpec.key === key){
+    setTool("select");
+    return;
+  }
+  deselect();
+  stampSpec = {...spec, key};
+  stampHoverPoint = null;
+  activeTool = "stamp";
+  ["btnSelect","btnWallInterior","btnWallExterior","btnCalibrate","btnPickWallThickness","btnMeasure"].forEach(id=>document.getElementById(id).classList.remove("active"));
+  updateFurniturePaletteActive();
+  updateHint();
+  cv.style.cursor = "none";
+  render();
+}
+function updateFurniturePaletteActive(){
+  Object.entries(furniturePaletteButtons).forEach(([key,btn])=>{
+    btn.classList.toggle("active", !!(stampSpec && activeTool==="stamp" && stampSpec.key===key));
+  });
 }
 
 function addCustomItem(){
@@ -1411,7 +1861,7 @@ function addCustomItem(){
   const wCm = parseFloat(prompt("Width in cm", "60"));
   const dCm = parseFloat(prompt("Depth in cm", "60"));
   if (!wCm || !dCm || wCm<=0 || dCm<=0) return;
-  addBox({kind:"furniture", type:"custom", label, wCm, dCm, color:"#6c7280"});
+  armStamp({kind:"furniture", type:"custom", key:"custom-"+Date.now()+"-"+Math.random(), label, wCm, dCm, color:"#6c7280"});
 }
 
 // ---------------------------------------------------------------------------
@@ -2796,11 +3246,18 @@ function getMouseScreen(e){
   const rect = cv.getBoundingClientRect();
   return {x: e.clientX-rect.left, y: e.clientY-rect.top};
 }
-function snapAngle(x1,y1,x2,y2){
+// Locks a line's direction to the nearest 90° (keeping its length) — the
+// default for a freshly-drawn wall; see the draw-wall pointermove handler.
+function snapAngle90(x1,y1,x2,y2){
   const dx=x2-x1, dy=y2-y1;
   const len = Math.hypot(dx,dy);
-  const ang = Math.round(Math.atan2(dy,dx)/(Math.PI/12))*(Math.PI/12); // 15deg steps
+  const ang = Math.round(Math.atan2(dy,dx)/(Math.PI/2))*(Math.PI/2);
   return {x2: x1+Math.cos(ang)*len, y2: y1+Math.sin(ang)*len};
+}
+// Same idea for a single angle value (furniture rotation) rather than a
+// two-point line.
+function snapAngle90Value(ang){
+  return Math.round(ang/(Math.PI/2))*(Math.PI/2);
 }
 
 // ---------------------------------------------------------------------------
@@ -2855,6 +3312,140 @@ function snapDoorToWall(mw){
   return best;
 }
 
+// World-space corners of a (possibly rotated) box, from its own
+// centre/size/rotation — shared by furniture-to-furniture snapping and
+// kitchen-unit overlap resolution below.
+function boxWorldCorners(b){
+  const hw = cmToWorld(b.wCm)/2, hd = cmToWorld(b.dCm)/2;
+  return [[-hw,-hd],[hw,-hd],[hw,hd],[-hw,hd]].map(([lx,ly])=>{
+    const r = rotate(lx,ly,b.rotation);
+    return {x:b.x+r.x, y:b.y+r.y};
+  });
+}
+function boxAABB(b){
+  const corners = boxWorldCorners(b);
+  const xs = corners.map(c=>c.x), ys = corners.map(c=>c.y);
+  return {minX:Math.min(...xs), maxX:Math.max(...xs), minY:Math.min(...ys), maxY:Math.max(...ys)};
+}
+// A furniture item being dragged snaps toward other items of the SAME
+// type (custom items match on label instead, since "custom" alone isn't a
+// real type) once close enough — either side-by-side with edges flush
+// (e.g. a run of kitchen units) or lined up on a shared edge/centre without
+// necessarily touching (e.g. dining chairs kept in a neat row). Checked
+// independently per axis, same spirit as the wall colinear snap-guide:
+// whichever candidate line is closest, within a small pixel radius, wins.
+function snapBoxToNearbyBoxes(box, candidateX, candidateY){
+  const threshold = BOX_SNAP_SCREEN_PX/fitScale;
+  const maxNeighborDist = cmToWorld(BOX_SNAP_MAX_NEIGHBOR_DIST_CM);
+  const hw = cmToWorld(box.wCm)/2, hd = cmToWorld(box.dCm)/2;
+  const dxs = [], dys = [];
+  [[-hw,-hd],[hw,-hd],[hw,hd],[-hw,hd]].forEach(([lx,ly])=>{
+    const r = rotate(lx,ly,box.rotation);
+    dxs.push(candidateX+r.x); dys.push(candidateY+r.y);
+  });
+  const dMinX=Math.min(...dxs), dMaxX=Math.max(...dxs), dMinY=Math.min(...dys), dMaxY=Math.max(...dys);
+  const dCenterX=(dMinX+dMaxX)/2, dCenterY=(dMinY+dMaxY)/2;
+
+  let bestX = null, bestXDist = threshold;
+  let bestY = null, bestYDist = threshold;
+  activeFloor().boxes.forEach(other=>{
+    if (other.id === box.id || other.kind !== "furniture" || box.kind !== "furniture") return;
+    if (other.type !== box.type) return;
+    if (box.type === "custom" && other.label !== box.label) return;
+    if (Math.hypot(other.x-candidateX, other.y-candidateY) > maxNeighborDist) return;
+    const a = boxAABB(other);
+    const aCenterX = (a.minX+a.maxX)/2, aCenterY = (a.minY+a.maxY)/2;
+    [
+      [a.maxX, dMinX], [a.minX, dMaxX], // edges touching (lateral)
+      [a.minX, dMinX], [a.maxX, dMaxX], [aCenterX, dCenterX], // edges/centre aligned (longitudinal)
+    ].forEach(([target,my])=>{
+      const dist = Math.abs(target-my);
+      if (dist < bestXDist){ bestXDist = dist; bestX = candidateX + (target-my); }
+    });
+    [
+      [a.maxY, dMinY], [a.minY, dMaxY],
+      [a.minY, dMinY], [a.maxY, dMaxY], [aCenterY, dCenterY],
+    ].forEach(([target,my])=>{
+      const dist = Math.abs(target-my);
+      if (dist < bestYDist){ bestYDist = dist; bestY = candidateY + (target-my); }
+    });
+  });
+  return {x: bestX!==null ? bestX : candidateX, y: bestY!==null ? bestY : candidateY};
+}
+
+// ---------------------------------------------------------------------------
+// Kitchen-unit overlap resolution — placing an appliance over a kitchen
+// unit cuts the unit's own footprint back rather than letting the two
+// layer on top of each other, the same way a door cuts a real gap in a
+// wall (see wallVisibleSegments) rather than just drawing over it. Unlike
+// the wall/door cut, this one isn't re-derived every frame — a kitchen
+// unit is a plain box like any other (resizable/rotatable by hand
+// afterward), so the cut has to actually happen to the stored boxes once,
+// at the moment the appliance is placed/dropped.
+// ---------------------------------------------------------------------------
+const KITCHEN_APPLIANCE_TYPES = ["fridge","cooker","sink","dishwasher","washer"];
+const KITCHEN_UNIT_MIN_PIECE_CM = 8; // a remainder shorter than this is discarded rather than kept as an unusable sliver
+
+function resolveKitchenUnitOverlaps(applianceBox){
+  if (!applianceBox || applianceBox.kind !== "furniture" || !KITCHEN_APPLIANCE_TYPES.includes(applianceBox.type)) return;
+  const f = activeFloor();
+  const appCorners = boxWorldCorners(applianceBox);
+  const toRemove = [];
+  const toAdd = [];
+  f.boxes.forEach(ku=>{
+    if (ku.type !== "kitchen" || ku.id === applianceBox.id) return;
+    // Appliance corners in the kitchen unit's own local frame — an exact
+    // rectangle when the two share a rotation (the common case, especially
+    // now furniture rotation default-snaps to 90°); otherwise this is an
+    // axis-aligned bounding approximation of the appliance's footprint,
+    // which can over-cut slightly rather than under-cut. True polygon
+    // subtraction is out of scope.
+    const local = appCorners.map(p=>rotate(p.x-ku.x, p.y-ku.y, -ku.rotation));
+    const lXs = local.map(p=>p.x), lYs = local.map(p=>p.y);
+    const appMinX = Math.min(...lXs), appMaxX = Math.max(...lXs);
+    const appMinY = Math.min(...lYs), appMaxY = Math.max(...lYs);
+    const hw = cmToWorld(ku.wCm)/2, hd = cmToWorld(ku.dCm)/2;
+    const ovMinX = Math.max(appMinX,-hw), ovMaxX = Math.min(appMaxX,hw);
+    const ovMinY = Math.max(appMinY,-hd), ovMaxY = Math.min(appMaxY,hd);
+    if (ovMinX >= ovMaxX || ovMinY >= ovMaxY) return; // no real overlap
+
+    const eps = cmToWorld(2);
+    const spansFullDepth = ovMinY <= -hd+eps && ovMaxY >= hd-eps;
+    const spansFullWidth = ovMinX <= -hw+eps && ovMaxX >= hw-eps;
+    // Cut along the unit's own width ("run") axis whenever the overlap
+    // spans its full depth — the ordinary case of an appliance sitting in
+    // the same counter-depth band as a run of units — falling back to a
+    // depth-axis cut only when it's the width that's fully spanned
+    // instead. A true corner overlap (neither fully spanned) still gets a
+    // width-axis cut as the more common real-world shape.
+    const cutWidth = spansFullDepth || !spansFullWidth;
+    const pieces = []; // {wCm, dCm, localX, localY}
+    const segs = cutWidth ? [[-hw,ovMinX],[ovMaxX,hw]] : [[-hd,ovMinY],[ovMaxY,hd]];
+    segs.forEach(([s,e])=>{
+      const lenCm = worldToCm(e-s);
+      if (lenCm < KITCHEN_UNIT_MIN_PIECE_CM) return;
+      const mid = (s+e)/2;
+      pieces.push(cutWidth
+        ? {wCm:lenCm, dCm:ku.dCm, localX:mid, localY:0}
+        : {wCm:ku.wCm, dCm:lenCm, localX:0, localY:mid});
+    });
+
+    toRemove.push(ku.id);
+    pieces.forEach(p=>{
+      const off = rotate(p.localX, p.localY, ku.rotation);
+      toAdd.push({
+        id:newId(), kind:"furniture", type:"kitchen", label:ku.label,
+        x:ku.x+off.x, y:ku.y+off.y, wCm:p.wCm, dCm:p.dCm,
+        rotation:ku.rotation, color:ku.color,
+      });
+    });
+  });
+  if (toRemove.length){
+    f.boxes = f.boxes.filter(b=>!toRemove.includes(b.id)).concat(toAdd);
+    if (selection && selection.kind==="box" && toRemove.includes(selection.id)) selection = null;
+  }
+}
+
 cv.addEventListener("pointerleave", ()=>{
   if (wallHoverPoint){ wallHoverPoint = null; render(); }
 });
@@ -2869,6 +3460,14 @@ cv.addEventListener("pointerdown", (e)=>{
   // pointerup comparison below just finds nothing changed and skips it.
   dragUndoSnapshot = snapshotState();
 
+  if (activeTool === "stamp"){
+    if (stampSpec) addBoxAt(stampSpec, mw);
+    // Deliberately doesn't touch activeTool/stampSpec — stays armed so the
+    // next click drops another copy (see armStamp's doc comment).
+    scheduleAutosave();
+    render();
+    return;
+  }
   if (activeTool === "wall"){
     const snapStart = snapToNearbyWalls(mw, null);
     const start = snapStart || mw;
@@ -2883,6 +3482,12 @@ cv.addEventListener("pointerdown", (e)=>{
   }
   if (activeTool === "pick-thickness"){
     drag = {type:"pick-thickness", x1:mw.x, y1:mw.y, x2:mw.x, y2:mw.y};
+    render();
+    return;
+  }
+  if (activeTool === "measure"){
+    drag = {type:"measure", x1:mw.x, y1:mw.y, x2:mw.x, y2:mw.y};
+    lastMeasureLine = null;
     render();
     return;
   }
@@ -2910,6 +3515,10 @@ cv.addEventListener("pointerdown", (e)=>{
   if (selection && selection.kind === "wall"){
     const wall = getWall(selection.id);
     if (wall){
+      if (hitTestWindowBowHandle(wall, ms)){
+        drag = {type:"bow-window", id:wall.id};
+        return;
+      }
       const ep = hitTestWallEndpoints(wall, ms);
       if (ep){
         // Capture the OTHER (fixed) endpoint and the wall's current angle
@@ -2947,6 +3556,10 @@ window.addEventListener("pointermove", (e)=>{
       const snap = snapToNearbyWalls(hmw, null);
       wallHoverPoint = snap || hmw;
       render();
+    } else if (activeTool === "stamp" && stampSpec){
+      const hms = getMouseScreen(e);
+      stampHoverPoint = toWorld(hms.x, hms.y);
+      render();
     }
     updateHoverCursor(e);
     return;
@@ -2956,16 +3569,35 @@ window.addEventListener("pointermove", (e)=>{
 
   const isDrawSeg = drag.type === "draw-wall";
   if (isDrawSeg || drag.type === "calibrate" || drag.type === "pick-thickness"){
-    if (e.shiftKey && isDrawSeg){
-      const snapped = snapAngle(drag.x1,drag.y1,mw.x,mw.y);
-      drag.x2 = snapped.x2; drag.y2 = snapped.y2;
-    } else if (isDrawSeg){
-      const snap = snapToNearbyWalls(mw, null);
-      const p = snap || mw;
-      drag.x2 = p.x; drag.y2 = p.y;
+    if (isDrawSeg){
+      if (e.shiftKey){
+        // Angle lock open — free direction; still catch an actual nearby
+        // wall/edge to line up with if there is one.
+        const snap = snapToNearbyWalls(mw, null);
+        const p = snap || mw;
+        drag.x2 = p.x; drag.y2 = p.y;
+      } else {
+        // Default: a point near existing geometry (wall/window end, edge,
+        // or the infinite line through a wall) wins so new walls still
+        // line up with what's already there; otherwise lock the new
+        // wall's own angle to the nearest 90°.
+        const snap = snapToNearbyWalls(mw, null);
+        if (snap){ drag.x2 = snap.x; drag.y2 = snap.y; }
+        else {
+          const snapped = snapAngle90(drag.x1,drag.y1,mw.x,mw.y);
+          drag.x2 = snapped.x2; drag.y2 = snapped.y2;
+        }
+      }
     } else {
       drag.x2 = mw.x; drag.y2 = mw.y;
     }
+    render();
+    return;
+  }
+  if (drag.type === "measure"){
+    const snap = e.shiftKey ? null : snapToNearbyWalls(mw, null);
+    const p = snap || mw;
+    drag.x2 = p.x; drag.y2 = p.y;
     render();
     return;
   }
@@ -3007,6 +3639,9 @@ window.addEventListener("pointermove", (e)=>{
         if (deltaD > hingeThreshold) b.hinge = 1;
         else if (deltaD < -hingeThreshold) b.hinge = -1;
       }
+    } else if (b.kind === "furniture" && !e.shiftKey){
+      const snap = snapBoxToNearbyBoxes(b, b.x, b.y);
+      b.x = snap.x; b.y = snap.y;
     }
     render();
     return;
@@ -3049,6 +3684,22 @@ window.addEventListener("pointermove", (e)=>{
     render();
     return;
   }
+  if (drag.type === "bow-window"){
+    // Signed perpendicular distance from the cursor to the window's own
+    // straight chord (x1,y1)-(x2,y2) — always measured against the chord,
+    // not the current arc, so the drag stays stable/predictable regardless
+    // of how far it's already bowed.
+    const w = getWall(drag.id);
+    const dx = w.x2-w.x1, dy = w.y2-w.y1;
+    const len = Math.hypot(dx,dy) || 1;
+    const nx = -dy/len, ny = dx/len;
+    const midx = (w.x1+w.x2)/2, midy = (w.y1+w.y2)/2;
+    const signed = (mw.x-midx)*nx + (mw.y-midy)*ny;
+    const maxWorld = (len/2) * WINDOW_BOW_MAX_FRACTION;
+    w.bowCm = worldToCm(Math.max(-maxWorld, Math.min(maxWorld, signed)));
+    render();
+    return;
+  }
   if (drag.type === "resize-box"){
     const b = getBox(drag.id);
     const local = rotate(mw.x-drag.fixedWorld.x, mw.y-drag.fixedWorld.y, -drag.rotation);
@@ -3068,8 +3719,10 @@ window.addEventListener("pointermove", (e)=>{
   if (drag.type === "rotate-box"){
     const b = getBox(drag.id);
     const c = toScreen(b.x,b.y);
-    const ang = Math.atan2(ms.y-c.y, ms.x-c.x);
-    b.rotation = ang + Math.PI/2;
+    const ang = Math.atan2(ms.y-c.y, ms.x-c.x) + Math.PI/2;
+    // Snaps to the nearest 90° by default (most furniture sits square to a
+    // wall) — hold Shift to open the angle lock and rotate freely.
+    b.rotation = e.shiftKey ? ang : snapAngle90Value(ang);
     updateSelPanel();
     render();
     return;
@@ -3089,6 +3742,14 @@ window.addEventListener("pointerup", ()=>{
       activeFloor().walls.push(wall);
       select("wall", wall.id);
     }
+  }
+  // Dropping a kitchen appliance onto a kitchen unit cuts the unit back —
+  // resolved once here on release rather than continuously while dragging
+  // (matches "placed", not "passed over", and avoids mutating other boxes'
+  // geometry mid-drag).
+  if (drag.type === "move-box"){
+    const b = getBox(drag.id);
+    if (b) resolveKitchenUnitOverlaps(b);
   }
   // A door/window dragged in from the Structure palette that never snapped
   // onto a wall (dropped in empty space) is cancelled here rather than left
@@ -3136,6 +3797,12 @@ window.addEventListener("pointerup", ()=>{
     }
     setTool("select");
   }
+  if (drag.type === "measure"){
+    // Left on screen (with its distance label) after release, rather than
+    // switching back to Select — stays armed for the next measurement.
+    // Cleared by starting a new one, pressing Escape, or picking another tool.
+    if (Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1) > 2) lastMeasureLine = {x1:drag.x1,y1:drag.y1,x2:drag.x2,y2:drag.y2};
+  }
   if (dragUndoSnapshot !== null){
     const after = snapshotState();
     if (after !== dragUndoSnapshot) commitUndoSnapshot(dragUndoSnapshot);
@@ -3172,6 +3839,14 @@ window.addEventListener("keydown", (e)=>{
     redo();
     e.preventDefault();
   }
+  if (cmdOrCtrl && e.key.toLowerCase()==="c"){
+    copySelection();
+    e.preventDefault();
+  }
+  if (cmdOrCtrl && e.key.toLowerCase()==="v"){
+    pasteClipboard();
+    e.preventDefault();
+  }
 });
 
 function deleteSelection(){
@@ -3182,6 +3857,30 @@ function deleteSelection(){
   if (selection.kind==="wall") f.walls = f.walls.filter(w=>w.id!==selection.id);
   selection = null;
   updateSelPanel();
+  scheduleAutosave();
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Copy / paste (furniture only — a door carries wallId/hinge/swing tied to
+// one specific wall, so pasting a copy of it wouldn't mean much).
+// ---------------------------------------------------------------------------
+function copySelection(){
+  if (!(selection && selection.kind==="box")) return;
+  const b = getBox(selection.id);
+  if (!b || b.kind !== "furniture") return;
+  clipboardBox = {kind:b.kind, type:b.type, label:b.label, wCm:b.wCm, dCm:b.dCm, rotation:b.rotation, color:b.color};
+}
+function pasteClipboard(){
+  if (!clipboardBox) return;
+  // Offset from whatever's currently selected (the last-pasted copy, if
+  // this is a repeat paste) so repeated Ctrl/Cmd+V cascades new copies
+  // diagonally instead of stacking them exactly on top of each other.
+  const src = selection && selection.kind==="box" ? getBox(selection.id) : null;
+  const f = activeFloor();
+  const base = src ? {x:src.x, y:src.y} : {x:f.worldWidth/2, y:f.worldHeight/2};
+  const offset = cmToWorld(20);
+  addBoxAt(clipboardBox, {x:base.x+offset, y:base.y+offset}, clipboardBox.rotation);
   scheduleAutosave();
   render();
 }
@@ -3321,6 +4020,7 @@ document.getElementById("btnSelect").addEventListener("click", ()=>setTool("sele
 document.getElementById("btnWallInterior").addEventListener("click", ()=>{ newWallThicknessCm = INTERIOR_WALL_THICKNESS_CM; setTool("wall"); });
 document.getElementById("btnWallExterior").addEventListener("click", ()=>{ newWallThicknessCm = EXTERIOR_WALL_THICKNESS_CM; setTool("wall"); });
 document.getElementById("btnCalibrate").addEventListener("click", ()=>setTool("calibrate"));
+document.getElementById("btnMeasure").addEventListener("click", ()=>setTool("measure"));
 document.getElementById("btnPickWallThickness").addEventListener("click", ()=>setTool("pick-thickness"));
 document.getElementById("btnPixelWallDetect").addEventListener("click", runPixelWallDetect);
 document.getElementById("btnPixelWindowDetect").addEventListener("click", runPixelWindowDetect);
@@ -3443,12 +4143,21 @@ document.getElementById("btnRedo").addEventListener("click", redo);
 
 function buildFurniturePalette(){
   const el = document.getElementById("furniturePalette");
+  let lastCategory = null;
   FURNITURE_TYPES.forEach(f=>{
+    if (f.category !== lastCategory){
+      const heading = document.createElement("div");
+      heading.className = "paletteCategory";
+      heading.textContent = f.category;
+      el.appendChild(heading);
+      lastCategory = f.category;
+    }
     const btn = document.createElement("button");
     btn.textContent = f.label;
-    btn.title = `${f.wCm} × ${f.dCm} cm`;
-    btn.addEventListener("click", ()=>addBox({kind:"furniture", type:f.key, label:f.label, wCm:f.wCm, dCm:f.dCm, color:f.color}));
+    btn.title = `${f.wCm} × ${f.dCm} cm — click to arm, then click the canvas to place as many as you need`;
+    btn.addEventListener("click", ()=>armStamp({kind:"furniture", type:f.key, key:f.key, label:f.label, wCm:f.wCm, dCm:f.dCm, color:f.color}));
     el.appendChild(btn);
+    furniturePaletteButtons[f.key] = btn;
   });
 }
 

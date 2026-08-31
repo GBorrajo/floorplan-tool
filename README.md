@@ -28,13 +28,27 @@ macOS). Everything runs client-side.
    real-world length (a printed dimension, a door you know is ~80cm, etc.)
    and type that length in metres. Until you do this, furniture is sized off
    a rough guess.
+2b. **Measure distance** — next to Calibrate scale. Click-drag anywhere to
+   read a distance (needs the scale calibrated first, otherwise it's flagged
+   "(approx)"). Snaps onto nearby wall ends/edges by default, Shift for a
+   free-form line. Stays armed for repeat measurements — useful for sizing
+   a space once walls have been removed/moved. Press Escape or pick another
+   tool to put it away.
 3. **Draw wall** — click-drag to trace each wall segment over the image.
-   Hold Shift to snap to 0/45/90°; otherwise endpoints snap to nearby
-   wall/window endpoints and edges when dragged close (see Snapping below).
-4. **Draw window** — same click-drag tracing as walls, but renders as a
-   window symbol (thick white band with dark frame/mullion lines) instead of
-   a solid wall. Use it for actual windows, including each straight side of a
-   bay window's step-out. Same snapping as walls.
+   New walls snap to the nearest 90° by default; hold Shift to open the
+   angle lock and draw freely. Endpoints separately snap to nearby
+   wall/window endpoints and edges when dragged close either way (see
+   Snapping below).
+4. **Window** — press-drag the Window button in Structure onto a wall to
+   drop one (see workflow step 8 below); renders as a window symbol (thick
+   white band with dark frame/mullion lines) instead of a solid wall. Drag
+   its end handle to extend it along the wall, or its amber centre handle
+   to pull it outward into a bay/bow window — an even circular arc between
+   its two (still wall-attached) ends, for a curved bow window or an
+   approximation of an angular bay. The bow amount is stored as one signed
+   number (`bowCm`); re-derived fresh from the window's endpoints every
+   time it's drawn or hit-tested, so extending an already-bowed window
+   keeps it bowed.
 5. **Add door** — drops a door symbol you can then drag/rotate into place.
    Select it to flip which end the hinge is on and which way it swings (the
    panel shows "Flip hinge side" / "Flip swing direction" buttons), so the
@@ -44,9 +58,10 @@ macOS). Everything runs client-side.
 6. **Snapping** — while drawing/moving a wall or window endpoint, it snaps
    (within a small pixel radius) to any nearby wall/window endpoint or onto
    another segment's edge, so adjoining walls line up without needing
-   pixel-perfect dragging. Hold Shift during a wall/window drag to use
-   angle-snapping (0/45/90°) instead. Doors snap onto the nearest wall the
-   same way (see above).
+   pixel-perfect dragging; failing that, a freshly-drawn wall locks to the
+   nearest 90° instead. Hold Shift during a wall/window drag to open the
+   angle lock and draw freely. Doors snap onto the nearest wall the same way
+   (see above), so they end up at whatever angle that wall has.
 7. **Lock wall angles when resizing** — on by default (checkbox in
    Structure). With an existing wall or window selected, dragging one of
    its two endpoint handles is constrained to slide along that segment's
@@ -242,10 +257,34 @@ macOS). Everything runs client-side.
     number field) undoes as a single step rather than one step per
     keystroke. History resets each time you reload the page (it's separate
     from the autosave, which is what survives a refresh).
-16. **Furniture palette** — click a type to drop it in the middle of the
-    canvas, then drag it into place. Corner handle resizes, top handle
-    rotates. The side panel also lets you type exact width/depth (cm) and
-    rotation (degrees).
+16. **Furniture palette** — grouped by room (Living room, Dining, Kitchen,
+    Bedroom, Bathroom, Office/other), covering the full house: seating and
+    tables, TV unit/bookshelf/fireplace, dining chairs, kitchen
+    unit/sink/cooker/fridge/dishwasher/washing machine, beds/wardrobe/chest
+    of drawers/bedside table, toilet/bath/shower/bathroom sink, desk/office
+    chair/radiator. Click a type to arm it as a "stamp": it rides the
+    cursor, and each click on the canvas drops another copy — click the
+    same button again, press Escape, or pick another tool to put it away.
+    Handy for dropping several of the same item (e.g. a run of kitchen
+    units) without re-arming each time; custom items go through the same
+    flow. Dragging an item close to another of the *same type* snaps them
+    together — edges flush when moved side-by-side (a run of kitchen
+    units), or lined up on a shared edge/centre when moved into a row
+    without necessarily touching (dining chairs around a table) — hold
+    Shift to bypass. Corner handle resizes an existing item, top handle
+    rotates it (default-snaps to the nearest 90°, hold Shift for a free
+    angle). The side panel also lets you type exact width/depth (cm) and
+    rotation (degrees). Each type renders as a simple top-down icon (sofa,
+    dining table + chairs, beds, wardrobe, kitchen/bathroom fixtures, etc.)
+    rather than a plain box, with its label wrapped onto a second line
+    rather than overrunning the item's own edges (and hidden entirely once
+    there isn't room for even one line). Ctrl/Cmd+C/V copies and pastes the
+    selected furniture item, cascading diagonally on repeated paste.
+    Placing a kitchen appliance (fridge, cooker/hob, sink, dishwasher,
+    washing machine) over a kitchen unit cuts the unit back to fit — resized
+    if the appliance sits at one end, split into two if it lands in the
+    middle (e.g. a hob cut into the middle of an island) — rather than the
+    two layering on top of each other.
 17. **Save** — downloads a `.json` with everything (image, walls, windows,
     doors, furniture, text labels, scale). **Load** reopens one. The tool
     also autosaves to this browser's local storage, so a refresh won't lose
@@ -907,3 +946,112 @@ but recall is low (finds roughly 1 in 7 real doors on a lower-resolution
 image). Best used as a first pass that catches some doors reliably,
 not a complete solution — the remaining doors need manual placement,
 using the angle-lock/snapping/hover-cursor UX already built for that.
+
+- 2026-08-31 — third feedback round, five additions: (1) walls/furniture
+  rotation now default-snap to the nearest 90° (was: free-form for walls
+  unless Shift, and always free for furniture) — Shift now opens the angle
+  lock for a free angle/rotation instead of the old 15° wall snap; doors
+  need no separate change since they already inherit whatever angle their
+  host wall has. (2) added a "Measure distance" tool next to Calibrate —
+  click-drag anywhere for a distance readout (snaps to nearby wall ends/
+  edges by default, Shift for free-form), flagged "(approx)" if the floor
+  isn't calibrated yet, stays armed for repeat measurements. (3) furniture
+  palette buttons are now click-to-arm/click-to-place stamps: click a type,
+  then click the canvas as many times as needed (e.g. a run of kitchen
+  units) without re-arming each time; click the same button again, press
+  Escape, or pick another tool to put it away — custom items go through the
+  same flow. (4) furniture now renders as a simple top-down icon per type
+  (sofa: backrest + arms + cushion seams; dining table: chairs along its
+  long edges; beds: headboard pillows + foot fold line; wardrobe: door
+  split + handles; desk/kitchen unit: a plain back/worktop edge line) built
+  as flat shapes clipped to the existing footprint rect, so hit-testing/
+  resize/rotate are untouched. (5) Ctrl/Cmd+C/V copies and pastes the
+  selected furniture item, cascading diagonally on repeated paste.
+
+- 2026-08-31, later same day — two more additions. (1) **Furniture-to-
+  furniture snapping**: dragging a piece near another of the *same type*
+  (matched on `type`, or `label` for custom items so two unrelated custom
+  pieces don't snap to each other) now snaps on each axis independently —
+  either edges touching flush (kitchen units placed side-by-side) or an
+  edge/centre lining up without touching (dining chairs kept in a neat
+  row) — whichever candidate is closest, within a small pixel threshold
+  (`BOX_SNAP_SCREEN_PX`), same approach as the existing wall colinear
+  guide. Candidates come from each box's world-space AABB (`boxAABB`,
+  rotation-aware) so it works at any rotation, not just axis-aligned;
+  neighbours further than 4m away are ignored outright so a stray on-axis
+  coincidence can't snap two chairs across the house. Shift bypasses, same
+  convention as every other snap in the tool. (2) **Expanded furniture
+  catalog** from 9 to 26 items, now grouped by room (Living room, Dining,
+  Kitchen, Bedroom, Bathroom, Office/other) in the sidebar instead of one
+  flat list: added TV unit, bookshelf, fireplace, dining chair, kitchen
+  sink, cooker/hob, fridge freezer, dishwasher, washing machine, chest of
+  drawers, bedside table, toilet, bath, shower, bathroom sink, office
+  chair, and radiator — each with its own simple top-down icon (bathroom/
+  kitchen fixtures as bowl/ring/door shapes; bedside table reuses the
+  coffee table's inset-outline icon, matching how visually similar the two
+  are). Verified both in a real Chrome tab: dragging one kitchen unit onto
+  another lands edges bit-exact flush and then bit-exact centre-aligned on
+  the next nudge; Shift-held drag lands at the raw un-snapped position;
+  and a dining chair dragged to exactly where a same-type snap would have
+  fired next to a kitchen unit correctly did NOT snap (different types).
+
+- 2026-08-31, third round: three more requests. (1) **Furniture labels wrap
+  to a second line** (`wrapLabelLines`/`drawFurnitureLabel`, shared by
+  `drawBoxes` and `drawStampPreview`) instead of overrunning a narrow
+  item's edges — picks whichever word-boundary split keeps the wider of
+  the two lines narrowest, falls back to letting a single unsplittable
+  word overflow slightly, and skips the label entirely once there's no
+  room for even one line. (2) **Bay/bow windows**: a window (still just a
+  `walls[]` entry with `type:"window"`) gained one optional signed field,
+  `bowCm` — the sagitta (bulge) at its midpoint, dragged via a new amber
+  handle at the window's centre. Nothing else about the shape is stored:
+  `windowCenterlinePoints` derives a sampled circular arc (standard
+  sagitta→radius/centre formula, clamped to `WINDOW_BOW_MAX_FRACTION`
+  (0.8) of the half-chord to keep the "sweep the minor arc" assumption
+  always correct) fresh from `x1/y1/x2/y2/bowCm` every time it's needed —
+  same philosophy as `wallVisibleSegments` deriving a door's cut fresh
+  each frame. `drawWindowSegment` now ribbons a banded polygon along
+  whatever centreline it gets (a straight 2-point line or a 17-point arc),
+  so it renders bit-identical to the old straight-only version when
+  there's no bow; `hitTestWalls` and the new `hitTestWindowBowHandle`
+  reuse the same sampled points (`pointsToSegments`) so both hit-testing
+  and the drag handle correctly follow the curve. Endpoint-drag,
+  extend-along-wall, and wall-attachment are all completely untouched —
+  the bow just re-derives against whatever the new chord is. (3)
+  **Kitchen units yield to appliances placed over them**
+  (`resolveKitchenUnitOverlaps`, `KITCHEN_APPLIANCE_TYPES` = fridge,
+  cooker/hob, sink, dishwasher, washing machine): transforms the
+  appliance's corners into the kitchen unit's own local frame, clips to
+  get the overlap span, and — mirroring the door/wall-cut model but as a
+  one-time mutation rather than a per-frame render computation, since a
+  kitchen unit is a plain movable/resizable box, not a derived-on-render
+  shape — cuts along whichever local axis (width/"run", or depth) the
+  overlap does NOT fully span, keeping 0/1/2 remainder pieces (a remainder
+  under `KITCHEN_UNIT_MIN_PIECE_CM` (8cm) is dropped as an unusable
+  sliver). One remaining piece = the unit visibly resizes; two = it splits
+  around the appliance (the literal "island loses a 60×60 square for the
+  hob" case); zero = fully consumed. Resolved once, at the moment an
+  appliance is placed (`addBoxAt`, covering stamp-placement and paste) or
+  a drag of one is released (`pointerup`'s `move-box` case) — deliberately
+  not continuously during the drag itself, both to avoid mutating other
+  boxes' geometry mid-gesture and because "placed over," not "passed
+  over," is what was asked for.
+
+  **One real test-methodology lesson, not an app bug, worth remembering
+  for next time**: `toScreen()` returns canvas-*local* pixel coordinates,
+  not page/viewport ones — feeding its output straight into a `computer`
+  tool click (which expects page coordinates) silently clicks the wrong
+  spot whenever the canvas isn't flush with the page origin (it never is
+  here; the sidebar offsets it). Cost real time chasing a phantom
+  "endpoint-drag might be broken by the bow-handle change" theory before
+  spotting it — always add `cv.getBoundingClientRect().left/top` to a
+  `toScreen()` result before using it as a real click coordinate, or
+  just add `rect.left/top` inside a synthetic-PointerEvent dispatch
+  (`clientX: rect.left+x`) the way the reliable `pointerId:1`-after-a-
+  real-click technique from earlier sessions already does correctly.
+  Once corrected, endpoint-drag on a bowed window was confirmed to extend
+  the chord while preserving the bow (re-deriving the arc against the new,
+  longer chord), exactly as designed. Both the split/resize kitchen-unit
+  cases and the bow-window math (sagitta formula, arc sampling, endpoint
+  preservation) were also verified numerically in a standalone Node
+  script before ever touching the browser.
