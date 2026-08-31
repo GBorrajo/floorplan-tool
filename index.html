@@ -167,6 +167,8 @@
       <div class="row" id="furniturePalette"></div>
       <button class="wide" id="btnCustom">+ Custom item…</button>
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Click an item to arm it — it rides the cursor, and each click on the canvas drops another copy (handy for a run of kitchen units). Click its button again, press Escape, or pick another tool to put it away. Ctrl/Cmd+C/V copies and pastes the selected item. Dragging an item close to another of the <em>same</em> type snaps them edge-to-edge or lines them up (hold Shift to bypass).</p>
+      <label class="chk" style="font-size:11.5px;color:var(--text-dim);margin-top:6px;"><input type="checkbox" id="fldShowClearance"> 📏 Clearance guides</label>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Shows a shaded zone off the relevant side(s) of dining chairs/tables, sofas, beds, toilets, sinks and kitchen appliances marking UK-typical ideal clearance (NKBA / Approved Document M / trade-press consensus) — a guide to plan against, not a live pass/fail check. Not covered (no single item to anchor a zone to — measure these manually instead): hallway width, min. 90cm (M4(2) accessible dwelling); kitchen aisle between facing runs, ~100–110cm one cook, 120–135cm two cooks.</p>
     </section>
 
     <section>
@@ -237,9 +239,16 @@
    drawn/edited at a time, switched via the tab strip at the top.
 
    IDEAS FOR LATER (add as they come to mind — see README.md too):
-   - Industry-recommended clearance/gaps (e.g. min walking space around a
-     dining table, distance from sofa to TV) — could render as a warning
-     outline when two boxes are closer than a configurable threshold.
+   - Live clearance warnings: the "Clearance guides" toggle (see
+     CLEARANCE_ZONES) currently only draws the static ideal-distance zone
+     off each item's edge — it doesn't check whether a wall or another
+     piece of furniture actually intrudes into that zone. Turning intruded
+     zones red would need real wall/neighbour-distance math, deliberately
+     left out of the first pass (see the comment on CLEARANCE_ZONES).
+   - Kitchen aisle / hallway width guides: not automatable in the current
+     data model (no "room"/"corridor" concept to anchor a check to) — for
+     now these are reference numbers only (see the Furniture section's
+     help text) and the Measure tool.
    - Snapping: wall-to-wall angle/endpoint snapping, furniture-to-wall snap.
    - Room labels & area calculation.
    - Pan & zoom (currently the whole image is fit to the canvas, no zoom).
@@ -293,6 +302,68 @@ const FURNITURE_TYPES = [
 ];
 const DOOR_DEFAULT = {wCm:80, dCm:10, color:"#c9a227"};
 const WINDOW_THICKNESS_CM = 10;
+
+// Ideal clearance guides — view-only overlay, toggled by fldShowClearance
+// (see drawClearanceGuides). Values are UK-typical: NKBA / Approved
+// Document M / UK trade-press consensus, converted straight to cm rather
+// than rounded from US inches, researched Aug 2026 — treat as a sanity
+// guide to plan against, not a building-regs pass/fail check (only the
+// bathroom figures below trace to an actual Part M/G minimum).
+//
+// Each entry is keyed by FURNITURE_TYPES key and lists one or more zones,
+// each drawn as a shaded band off ONE edge of the item's own footprint, in
+// the SAME local frame its icon is drawn in (see FURNITURE_DETAIL_DRAWERS)
+// — edge:"front" is +hd (local +y), "back" is -hd, "left"/"right" are
+// -hw/+hw. Every FURNITURE_DETAIL_DRAWERS icon puts its own back-against-
+// a-wall feature (backrest, headboard, cistern, tap, control panel) at -hd
+// and its user-facing side at +hd — checked per type against its actual
+// detail-drawing code rather than assumed, since "kitchen" (the plain
+// worktop unit) used to be drawn back-to-front relative to the other
+// Kitchen-category icons; see the comment on drawKitchenDetail.
+//
+// A pairwise guide (dining chair elbow room, sofa-to-coffee-table) is
+// approximated here as a static zone off the relevant single edge rather
+// than a live nearest-neighbour measurement between two actual boxes —
+// simpler, and matches the "visual guide, not a live check" brief this was
+// built to.
+const CLEARANCE_ZONES = {
+  diningchair: [
+    // Chair's own front (+hd) is the seat opening, facing the table — the
+    // 90cm is the space to pull the chair OUT and walk behind someone
+    // seated in it, which is behind the backrest, i.e. its back (-hd).
+    {edge:"back",  idealCm:90, label:"Pull out + walk behind: 90cm"},
+    {edge:"left",  idealCm:22, label:"Elbow room: 20-25cm"},
+    {edge:"right", idealCm:22, label:"Elbow room: 20-25cm"},
+  ],
+  dining: [
+    {edge:"front", idealCm:90, label:"Table clearance: 90cm"},
+    {edge:"back",  idealCm:90, label:"Table clearance: 90cm"},
+    {edge:"left",  idealCm:90, label:"Table clearance: 90cm"},
+    {edge:"right", idealCm:90, label:"Table clearance: 90cm"},
+  ],
+  sofa: [
+    {edge:"front", idealCm:53, label:"Coffee table clearance: 46-60cm"},
+  ],
+  beddbl: [
+    {edge:"left",  idealCm:60, label:"Bed-side clearance: 60cm"},
+    {edge:"right", idealCm:60, label:"Bed-side clearance: 60cm"},
+  ],
+  bedsgl: [
+    {edge:"left",  idealCm:60, label:"Bed-side clearance: 60cm"},
+    {edge:"right", idealCm:60, label:"Bed-side clearance: 60cm"},
+  ],
+  toilet: [
+    {edge:"front", idealCm:70, label:"Front clearance: 70cm"},
+  ],
+  basin: [
+    {edge:"front", idealCm:70, label:"Front clearance: 70cm"},
+  ],
+  sink:       [{edge:"front", idealCm:105, label:"Worktop aisle: ~105cm"}],
+  cooker:     [{edge:"front", idealCm:105, label:"Worktop aisle: ~105cm"}],
+  dishwasher: [{edge:"front", idealCm:105, label:"Worktop aisle: ~105cm"}],
+  washer:     [{edge:"front", idealCm:105, label:"Worktop aisle: ~105cm"}],
+  kitchen:    [{edge:"front", idealCm:105, label:"Worktop aisle: ~105cm"}],
+};
 
 // AI wall/door/window/dimension detection and multi-floor splitting
 // (optional, calls the Anthropic API directly from the browser with a key
@@ -560,6 +631,7 @@ let newWindowThicknessCm = WINDOW_THICKNESS_CM; // placeholder thickness for a j
 let bgOpacity = 1;   // 0-1, background floorplan image opacity (view-only, not saved in the project)
 let showLabels = true;  // view-only toggle for the AI text-label layer
 let showOverlay = true; // view-only toggle for traced walls/windows/doors/furniture, to compare against the bare image
+let showClearance = false; // view-only toggle for ideal furniture clearance guide zones — see CLEARANCE_ZONES
 let zoomLevel = 1;      // 1 = fit the window (default); <1 zooms out within the same viewport (reveals content drawn outside the image bounds); >1 grows the canvas so the browser's native scroll can pan around it
 let wallHoverPoint = null; // world {x,y} the wall tool's cursor square is drawn at (the actual/snapped point a click would start drawing from) — null when not hovering the canvas with the wall tool active
 let lockWallAngles = true; // dragging a wall/window endpoint changes its length along the existing angle only, by default (most walls in a floor plan are already correctly angled — it's the length that needs trimming)
@@ -1032,6 +1104,7 @@ function render(){
   if (showOverlay){
     drawWalls();
     drawBoxes();
+    if (showClearance) drawClearanceGuides();
   }
   if (showLabels) drawLabelsLayer();
 
@@ -1342,7 +1415,10 @@ function drawDeskDetail(hw,hd){
   ctx.fillRect(-hw,-hd, hw*2, hd*2*0.18); // back edge, against the wall
 }
 function drawKitchenDetail(hw,hd){
-  ctx.beginPath(); ctx.moveTo(-hw,-hd+3); ctx.lineTo(hw,-hd+3); ctx.stroke(); // worktop front edge
+  // Front at +hd, matching every other Kitchen-category icon's own
+  // door-handle/drum-door/tap details (sink, fridge, dishwasher, washer) —
+  // was -hd, the only one of the six drawn back-to-front; see CLEARANCE_ZONES.
+  ctx.beginPath(); ctx.moveTo(-hw,hd-3); ctx.lineTo(hw,hd-3); ctx.stroke(); // worktop front edge
 }
 function drawTvUnitDetail(hw,hd){
   ctx.fillRect(-hw,-hd, hw*2, hd*2*0.18); // back edge, against the wall
@@ -1503,18 +1579,33 @@ function wrapLabelLines(label, maxWidthPx){
 // label centred in its footprint, wrapping to a second line rather than
 // overrunning the box's own edges, and skipping entirely once there's not
 // enough room for even one line.
-function drawFurnitureLabel(label, wScreen, dScreen){
-  const maxWidth = wScreen - 6;
-  if (maxWidth < 20) return;
-  ctx.fillStyle = "#fff";
-  ctx.font = "11px sans-serif";
+// On-screen axis-aligned bounding box of a w×h rectangle rotated by `ang`
+// radians about its own centre — used to size an upright label correctly
+// regardless of how far its shape is itself rotated (reduces to {w,h} at
+// ang=0, {h,w} at 90°).
+function rotatedAabbSize(w, h, ang){
+  const cs = Math.abs(Math.cos(ang)), sn = Math.abs(Math.sin(ang));
+  return {w: w*cs + h*sn, h: w*sn + h*cs};
+}
+// Word-wrapped text drawn horizontally at an absolute (cx,cy) — the ctx
+// transform in effect must be translate-only, not rotated, so the text
+// stays upright and readable regardless of the shape it's labelling.
+function drawUprightWrappedText(text, cx, cy, maxWidth, maxHeight, opts){
+  const pad = opts.pad!=null ? opts.pad : 3;
+  if (maxWidth < (opts.minWidth||20) || maxHeight < (opts.minHeight||14)) return;
+  ctx.fillStyle = opts.color;
+  ctx.font = opts.font;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  const lines = wrapLabelLines(label, maxWidth);
-  const lineHeight = 12;
-  if (dScreen < lineHeight*lines.length + 4) return;
-  const startY = -(lines.length-1)*lineHeight/2;
-  lines.forEach((line,i)=> ctx.fillText(line, 0, startY + i*lineHeight));
+  const lines = wrapLabelLines(text, maxWidth - pad*2);
+  const lineHeight = opts.lineHeight;
+  if (maxHeight < lineHeight*lines.length + (opts.padY||0)) return;
+  const startY = cy - (lines.length-1)*lineHeight/2;
+  lines.forEach((line,i)=> ctx.fillText(line, cx, startY + i*lineHeight));
+}
+function drawFurnitureLabel(label, cx, cy, maxWidth, maxHeight){
+  drawUprightWrappedText(label, cx, cy, maxWidth, maxHeight,
+    {font:"11px sans-serif", color:"#fff", lineHeight:12, pad:3, padY:4, minWidth:20});
 }
 
 // Ghost copy of the armed furniture stamp, following the cursor until
@@ -1527,7 +1618,7 @@ function drawStampPreview(spec, point){
   ctx.globalAlpha = 0.55;
   ctx.translate(c.x,c.y);
   drawFurnitureShape(spec.type, wScreen, dScreen, spec.color, false);
-  drawFurnitureLabel(spec.label, wScreen, dScreen);
+  drawFurnitureLabel(spec.label, 0, 0, wScreen, dScreen);
   ctx.restore();
 }
 
@@ -1538,17 +1629,72 @@ function drawBoxes(){
     const dScreen = cmToWorld(b.dCm)*fitScale;
     ctx.save();
     ctx.translate(c.x,c.y);
-    ctx.rotate(b.rotation);
 
     if (b.kind === "door"){
+      ctx.save();
+      ctx.rotate(b.rotation);
       drawDoorSymbol(wScreen, dScreen, b.hinge || -1, b.swing || -1);
+      ctx.restore();
     } else {
+      ctx.save();
+      ctx.rotate(b.rotation);
       const isSel = selection && selection.kind==="box" && selection.id===b.id;
       drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel);
-      drawFurnitureLabel(b.label, wScreen, dScreen);
+      ctx.restore();
+      // Label drawn unrotated (translate-only ctx) so it stays upright no
+      // matter which way the furniture itself is turned.
+      const aabb = rotatedAabbSize(wScreen, dScreen, b.rotation);
+      drawFurnitureLabel(b.label, 0, 0, aabb.w, aabb.h);
     }
     ctx.restore();
   });
+}
+
+// Ideal clearance guide zones — see CLEARANCE_ZONES. Purely a visual
+// planning aid toggled by fldShowClearance: draws a translucent band off
+// one edge of an item's own footprint, sized to the researched ideal
+// distance. Not a live check against actual walls/neighbours — see the
+// comment on CLEARANCE_ZONES for why.
+function drawClearanceGuides(){
+  activeFloor().boxes.forEach(b=>{
+    if (b.kind !== "furniture") return;
+    const zones = CLEARANCE_ZONES[b.type];
+    if (!zones) return;
+    const c = toScreen(b.x,b.y);
+    const hw = cmToWorld(b.wCm)/2*fitScale, hd = cmToWorld(b.dCm)/2*fitScale;
+    zones.forEach(z=>drawClearanceZone(z, hw, hd, c, b.rotation));
+  });
+}
+function drawClearanceLabel(text, cx, cy, maxWidth, maxHeight){
+  drawUprightWrappedText(text, cx, cy, maxWidth, maxHeight,
+    {font:"9.5px sans-serif", color:"rgba(79,214,160,0.9)", lineHeight:11, pad:2, minWidth:24, minHeight:14});
+}
+function drawClearanceZone(zone, hw, hd, c, rotation){
+  const depth = cmToWorld(zone.idealCm)*fitScale;
+  if (depth < 2) return; // too zoomed out for the band to be worth drawing
+  let x,y,w,h;
+  if (zone.edge === "front"){    x=-hw;        y=hd;         w=hw*2; h=depth; }
+  else if (zone.edge === "back"){ x=-hw;        y=-hd-depth;  w=hw*2; h=depth; }
+  else if (zone.edge === "left"){ x=-hw-depth;  y=-hd;        w=depth; h=hd*2; }
+  else /* right */ {              x=hw;         y=-hd;        w=depth; h=hd*2; }
+
+  ctx.save();
+  ctx.translate(c.x,c.y);
+  ctx.rotate(rotation);
+  ctx.fillStyle = "rgba(79,214,160,0.12)";
+  ctx.strokeStyle = "rgba(79,214,160,0.55)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4,3]);
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeRect(x,y,w,h);
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // Label drawn separately, upright and unrotated in screen space, at the
+  // zone's true (rotated) centre point — see drawUprightWrappedText.
+  const off = rotate(x+w/2, y+h/2, rotation);
+  const aabb = rotatedAabbSize(w, h, rotation);
+  drawClearanceLabel(zone.label, c.x+off.x, c.y+off.y, aabb.w, aabb.h);
 }
 
 function drawDoorSymbol(wScreen, dScreen, hingeSign, swingSign){
@@ -4083,6 +4229,10 @@ document.getElementById("fldShowLabels").addEventListener("change", (e)=>{
 });
 document.getElementById("fldShowOverlay").addEventListener("change", (e)=>{
   showOverlay = e.target.checked;
+  render();
+});
+document.getElementById("fldShowClearance").addEventListener("change", (e)=>{
+  showClearance = e.target.checked;
   render();
 });
 document.getElementById("fldLockWallAngles").addEventListener("change", (e)=>{
