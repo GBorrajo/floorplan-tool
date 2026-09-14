@@ -182,7 +182,7 @@
     </section>
 
     <div id="selPanel">
-      <h2 style="text-transform:none;font-size:12px;color:var(--text);">Selected</h2>
+      <h2 id="selPanelTitle" style="text-transform:none;font-size:12px;color:var(--text);">Selected</h2>
       <div class="field" id="fldLabelWrap">
         <label>Label</label>
         <input type="text" id="fldLabel">
@@ -623,7 +623,8 @@ function redo(){
 let imgEl = null; // cached Image() for the active floor's image, rebuilt on floor switch/load
 
 let activeTool = "select"; // 'select' | 'wall' | 'calibrate' | 'pick-thickness' | 'measure' | 'stamp'
-let selection = null;      // {kind:'wall'|'box', id}
+let selection = null;      // {kind:'wall'|'box', id} — the single-item selection; null whenever 2+ items are selected (see multiSelection)
+let multiSelection = [];   // [{kind,id}, ...] — populated only when 2+ items are selected (rubber-band drag or shift-click); a 1-item result is folded into `selection` instead so all the existing single-select code keeps working unchanged
 let drag = null;
 let placing = null; // {kind:'door'|'window', id} while a fresh door/window dragged from the Structure palette hasn't been dropped onto a wall yet — cancelled (object removed) at pointerup/Escape if it never snapped
 let newWallThicknessCm = INTERIOR_WALL_THICKNESS_CM; // used for walls drawn from here on — set by the Interior/Exterior wall buttons
@@ -821,6 +822,7 @@ function applyLoadedState(data){
   idCounter = Math.max(idCounter, maxId+1);
 
   selection = null;
+  multiSelection = [];
   setTool("select");
   loadImageElementForActiveFloor();
   updateScaleStatus();
@@ -849,11 +851,13 @@ function loadProjectFile(file){
   reader.readAsText(file);
 }
 function exportPng(){
-  const prevSel = selection;
+  const prevSel = selection, prevMulti = multiSelection;
   selection = null;
+  multiSelection = [];
   render();
   const url = cv.toDataURL("image/png");
   selection = prevSel;
+  multiSelection = prevMulti;
   render();
   const a = document.createElement("a");
   a.href = url; a.download = (activeFloor().name || "floorplan") + ".png"; a.click();
@@ -881,6 +885,7 @@ function switchFloor(id){
   if (id === state.activeFloorId) return;
   state.activeFloorId = id;
   selection = null;
+  multiSelection = [];
   drag = null;
   updateSelPanel();
   loadImageElementForActiveFloor();
@@ -987,6 +992,7 @@ async function loadImageFile(file){
       f.boxes = [];
       imgEl = img;
       selection = null;
+      multiSelection = [];
       updateScaleStatus();
       updateSelPanel();
       resizeCanvas();
@@ -1114,8 +1120,25 @@ function render(){
   if (drag && drag.type === "measure") drawMeasureLine(drag.x1,drag.y1,drag.x2,drag.y2);
   else if (!drag && lastMeasureLine) drawMeasureLine(lastMeasureLine.x1,lastMeasureLine.y1,lastMeasureLine.x2,lastMeasureLine.y2);
   if (!drag && activeTool === "stamp" && stampSpec && stampHoverPoint) drawStampPreview(stampSpec, stampHoverPoint);
+  if (drag && drag.type === "marquee") drawMarquee(drag);
 
   if (selection && showOverlay) drawSelectionHandles();
+}
+
+// Rubber-band selection box — drawn in screen space over whatever's
+// selected live as it sweeps (see the "marquee" pointer handlers).
+function drawMarquee(drag){
+  const a = toScreen(drag.x1, drag.y1), b = toScreen(drag.x2, drag.y2);
+  const x = Math.min(a.x,b.x), y = Math.min(a.y,b.y), w = Math.abs(a.x-b.x), h = Math.abs(a.y-b.y);
+  ctx.save();
+  ctx.fillStyle = "rgba(79,140,255,0.15)";
+  ctx.strokeStyle = "rgba(79,140,255,0.9)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4,3]);
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeRect(x,y,w,h);
+  ctx.setLineDash([]);
+  ctx.restore();
 }
 
 function drawGrid(){
@@ -1138,7 +1161,7 @@ function drawGrid(){
 function drawWalls(){
   const doors = activeFloor().boxes.filter(b=>b.kind==="door");
   activeFloor().walls.forEach(w=>{
-    const isSel = selection && selection.kind==="wall" && selection.id===w.id;
+    const isSel = isItemSelected("wall", w.id);
     if ((w.type||"wall") === "window") drawWindowSegment(w, isSel);
     else {
       ctx.strokeStyle = isSel ? "#ffffff" : "#c9ccd3";
@@ -1638,7 +1661,7 @@ function drawBoxes(){
     } else {
       ctx.save();
       ctx.rotate(b.rotation);
-      const isSel = selection && selection.kind==="box" && selection.id===b.id;
+      const isSel = isItemSelected("box", b.id);
       drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel);
       ctx.restore();
       // Label drawn unrotated (translate-only ctx) so it stays upright no
@@ -1902,8 +1925,60 @@ function updateHoverCursor(e){
 // ---------------------------------------------------------------------------
 // Selection / tool state
 // ---------------------------------------------------------------------------
-function select(kind, id){ selection = {kind, id}; updateSelPanel(); render(); }
-function deselect(){ selection = null; updateSelPanel(); render(); }
+function select(kind, id){ selection = {kind, id}; multiSelection = []; updateSelPanel(); render(); }
+function deselect(){ selection = null; multiSelection = []; updateSelPanel(); render(); }
+
+// ---------------------------------------------------------------------------
+// Multi-select (rubber-band drag, shift-click) — see multiSelection above.
+// ---------------------------------------------------------------------------
+function currentSelectionItems(){
+  if (multiSelection.length) return multiSelection.slice();
+  if (selection) return [{kind:selection.kind, id:selection.id}];
+  return [];
+}
+function isItemSelected(kind, id){
+  if (selection && selection.kind===kind && selection.id===id) return true;
+  return multiSelection.some(s=>s.kind===kind && s.id===id);
+}
+// Sets the selection to exactly `items` (deduped), folding a single result
+// into `selection` so the existing single-select UI (property panel,
+// resize/rotate handles) keeps working unchanged; 2+ results clear
+// `selection` and populate multiSelection instead.
+function applySelectionItems(items){
+  const seen = new Set();
+  const deduped = items.filter(it=>{
+    const key = it.kind+":"+it.id;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  if (deduped.length === 0){ selection = null; multiSelection = []; }
+  else if (deduped.length === 1){ selection = deduped[0]; multiSelection = []; }
+  else { selection = null; multiSelection = deduped; }
+}
+function toggleSelectionItem(kind, id){
+  const items = currentSelectionItems();
+  const idx = items.findIndex(it=>it.kind===kind && it.id===id);
+  if (idx >= 0) items.splice(idx,1); else items.push({kind,id});
+  applySelectionItems(items);
+}
+function boxWorldAabb(b){
+  const aabb = rotatedAabbSize(cmToWorld(b.wCm), cmToWorld(b.dCm), b.rotation);
+  return {minX:b.x-aabb.w/2, maxX:b.x+aabb.w/2, minY:b.y-aabb.h/2, maxY:b.y+aabb.h/2};
+}
+function wallWorldAabb(w){
+  return {minX:Math.min(w.x1,w.x2), maxX:Math.max(w.x1,w.x2), minY:Math.min(w.y1,w.y2), maxY:Math.max(w.y1,w.y2)};
+}
+function rectsIntersect(a, b){
+  return a.minX<=b.maxX && a.maxX>=b.minX && a.minY<=b.maxY && a.maxY>=b.minY;
+}
+// Every item (box/wall) whose bounding box intersects the given world-space
+// rect — used to resolve a rubber-band marquee drag into a selection.
+function itemsInWorldRect(rect){
+  const out = [];
+  activeFloor().boxes.forEach(b=>{ if (rectsIntersect(rect, boxWorldAabb(b))) out.push({kind:"box", id:b.id}); });
+  activeFloor().walls.forEach(w=>{ if (rectsIntersect(rect, wallWorldAabb(w))) out.push({kind:"wall", id:w.id}); });
+  return out;
+}
 
 function setTool(tool){
   // Leaving stamp mode for any of the regular tool buttons below disarms
@@ -1929,7 +2004,7 @@ function setTool(tool){
 
 function updateHint(){
   const hints = {
-    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Delete/Backspace removes the selection; Ctrl/Cmd+C/V copies and pastes furniture. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
+    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Drag from empty space to rubber-band select everything the box touches, or Shift-click items one at a time to build up a selection — drag any of them to move the whole group, or Delete/Backspace to remove it all at once. Ctrl/Cmd+C/V copies and pastes a single selected piece of furniture. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
     wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. New walls snap to the nearest 90° by default; hold Shift to open up the angle and draw freely (endpoints still snap to nearby wall/window ends, edges, and the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line).",
     calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
     "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
@@ -3680,18 +3755,45 @@ cv.addEventListener("pointerdown", (e)=>{
   }
 
   const hitBox = hitTestBoxes(ms);
-  if (hitBox){
-    select("box", hitBox.id);
-    drag = {type:"move-box", id:hitBox.id, startWorld:mw, origX:hitBox.x, origY:hitBox.y};
+  const hitWall = !hitBox ? hitTestWalls(ms) : null;
+  const hit = hitBox ? {kind:"box", id:hitBox.id} : (hitWall ? {kind:"wall", id:hitWall.id} : null);
+
+  if (hit){
+    if (e.shiftKey){
+      // Shift-click adds/removes one item from whatever's already selected,
+      // same idea as the marquee's additive drag below — lets you build up
+      // (or trim) a multi-selection one click at a time.
+      toggleSelectionItem(hit.kind, hit.id);
+      updateSelPanel();
+      render();
+      return;
+    }
+    if (multiSelection.length && isItemSelected(hit.kind, hit.id)){
+      // Clicked an item that's already part of a multi-selection (and not
+      // extending/replacing it) — drag the whole group together.
+      const items = multiSelection.slice();
+      const origins = items.map(it=>{
+        if (it.kind==="box"){ const b=getBox(it.id); return {kind:"box", id:it.id, x:b.x, y:b.y}; }
+        const w=getWall(it.id); return {kind:"wall", id:it.id, x1:w.x1, y1:w.y1, x2:w.x2, y2:w.y2};
+      });
+      drag = {type:"move-group", startWorld:mw, origins};
+      return;
+    }
+    // Plain click on a single item: replace whatever was selected, same as before.
+    select(hit.kind, hit.id);
+    if (hit.kind==="box") drag = {type:"move-box", id:hitBox.id, startWorld:mw, origX:hitBox.x, origY:hitBox.y};
+    else drag = {type:"move-wall", id:hitWall.id, startWorld:mw, orig:{x1:hitWall.x1,y1:hitWall.y1,x2:hitWall.x2,y2:hitWall.y2}};
     return;
   }
-  const hitWall = hitTestWalls(ms);
-  if (hitWall){
-    select("wall", hitWall.id);
-    drag = {type:"move-wall", id:hitWall.id, startWorld:mw, orig:{x1:hitWall.x1,y1:hitWall.y1,x2:hitWall.x2,y2:hitWall.y2}};
-    return;
-  }
-  deselect();
+
+  // Nothing under the cursor: start a rubber-band marquee. A shift-drag
+  // keeps whatever's already selected and adds to it; a plain drag starts
+  // fresh (which also covers the plain "click empty space to deselect" case
+  // when the drag never actually moves).
+  if (!e.shiftKey) applySelectionItems([]);
+  drag = {type:"marquee", x1:mw.x, y1:mw.y, x2:mw.x, y2:mw.y, baseItems: currentSelectionItems()};
+  updateSelPanel();
+  render();
 });
 
 window.addEventListener("pointermove", (e)=>{
@@ -3744,6 +3846,31 @@ window.addEventListener("pointermove", (e)=>{
     const snap = e.shiftKey ? null : snapToNearbyWalls(mw, null);
     const p = snap || mw;
     drag.x2 = p.x; drag.y2 = p.y;
+    render();
+    return;
+  }
+  if (drag.type === "marquee"){
+    drag.x2 = mw.x; drag.y2 = mw.y;
+    const rect = {minX:Math.min(drag.x1,drag.x2), maxX:Math.max(drag.x1,drag.x2), minY:Math.min(drag.y1,drag.y2), maxY:Math.max(drag.y1,drag.y2)};
+    applySelectionItems(drag.baseItems.concat(itemsInWorldRect(rect)));
+    updateSelPanel();
+    render();
+    return;
+  }
+  if (drag.type === "move-group"){
+    // Plain translate for every item, no wall/box snapping — snapping is
+    // per-item (nearest OTHER item), which doesn't generalize cleanly to a
+    // group moving together.
+    const dx = mw.x-drag.startWorld.x, dy = mw.y-drag.startWorld.y;
+    drag.origins.forEach(o=>{
+      if (o.kind==="box"){
+        const b = getBox(o.id);
+        if (b){ b.x = o.x+dx; b.y = o.y+dy; }
+      } else {
+        const w = getWall(o.id);
+        if (w){ w.x1=o.x1+dx; w.y1=o.y1+dy; w.x2=o.x2+dx; w.y2=o.y2+dy; }
+      }
+    });
     render();
     return;
   }
@@ -3962,7 +4089,7 @@ window.addEventListener("pointerup", ()=>{
 window.addEventListener("keydown", (e)=>{
   const inField = document.activeElement && ["INPUT","TEXTAREA"].includes(document.activeElement.tagName);
   if (inField) return;
-  if ((e.key==="Delete" || e.key==="Backspace") && selection){
+  if ((e.key==="Delete" || e.key==="Backspace") && (selection || multiSelection.length)){
     deleteSelection();
     e.preventDefault();
   }
@@ -3996,9 +4123,20 @@ window.addEventListener("keydown", (e)=>{
 });
 
 function deleteSelection(){
-  if (!selection) return;
+  if (!selection && !multiSelection.length) return;
   pushUndoSnapshot();
   const f = activeFloor();
+  if (multiSelection.length){
+    const boxIds = new Set(multiSelection.filter(s=>s.kind==="box").map(s=>s.id));
+    const wallIds = new Set(multiSelection.filter(s=>s.kind==="wall").map(s=>s.id));
+    f.boxes = f.boxes.filter(b=>!boxIds.has(b.id));
+    f.walls = f.walls.filter(w=>!wallIds.has(w.id));
+    multiSelection = [];
+    updateSelPanel();
+    scheduleAutosave();
+    render();
+    return;
+  }
   if (selection.kind==="box") f.boxes = f.boxes.filter(b=>b.id!==selection.id);
   if (selection.kind==="wall") f.walls = f.walls.filter(w=>w.id!==selection.id);
   selection = null;
@@ -4042,6 +4180,7 @@ function clearWindowsOnFloor(){
   pushUndoSnapshot();
   f.walls = f.walls.filter(w=>(w.type||"wall")!=="window");
   if (selection && selection.kind==="wall" && !f.walls.find(w=>w.id===selection.id)) selection = null;
+  multiSelection = multiSelection.filter(s=>s.kind!=="wall" || f.walls.find(w=>w.id===s.id));
   updateSelPanel();
   scheduleAutosave();
   render();
@@ -4054,6 +4193,7 @@ function clearDoorsOnFloor(){
   pushUndoSnapshot();
   f.boxes = f.boxes.filter(b=>b.kind!=="door");
   if (selection && selection.kind==="box" && !f.boxes.find(b=>b.id===selection.id)) selection = null;
+  multiSelection = multiSelection.filter(s=>s.kind!=="box" || f.boxes.find(b=>b.id===s.id));
   updateSelPanel();
   scheduleAutosave();
   render();
@@ -4089,6 +4229,18 @@ function updateScaleStatus(){
 
 function updateSelPanel(){
   const panel = document.getElementById("selPanel");
+  const title = document.getElementById("selPanelTitle");
+  if (multiSelection.length){
+    // Group selection: just the heading + Delete button, no per-item fields
+    // (they don't generalize to a mixed group of walls/furniture/doors).
+    panel.classList.add("show");
+    title.textContent = `${multiSelection.length} items selected`;
+    ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap"].forEach(id=>{
+      document.getElementById(id).style.display = "none";
+    });
+    return;
+  }
+  title.textContent = "Selected";
   if (!selection){ panel.classList.remove("show"); return; }
   panel.classList.add("show");
   const isBox = selection.kind==="box";
