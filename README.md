@@ -17,6 +17,19 @@ macOS). Everything runs client-side.
 
 ## Basic workflow
 
+**Versions** — the (purple) tab strip above the floor tabs holds a complete,
+independent copy of every floor under one named tab: trace a floorplan, then
+rename its tab (double-click) to something like "ORIGINAL FLOORPLAN". Click
+the ⧉ icon on any version's tab to duplicate it into a new tab (e.g.
+"ORIGINAL FLOORPLAN copy") — every floor, wall, door, window and piece of
+furniture is deep-copied, so editing the copy never touches the version it
+came from. Switch between versions by clicking their tabs (instant, no
+reload) to compare floorplan ideas side by side; "+ New version" starts a
+fresh blank one instead of copying. The × on a tab deletes that version and
+every floor in it (you always need at least one). Undo/redo, Save/Load and
+autosave all cover every version at once, same as they already covered every
+floor within one.
+
 0. **Floors** — the tab strip at the top holds one tab per floor. "+ Add
    floor" makes a new blank one; click a tab to switch to it, double-click to
    rename, and the × on a tab deletes it (you always need at least one).
@@ -35,10 +48,10 @@ macOS). Everything runs client-side.
    a space once walls have been removed/moved. Press Escape or pick another
    tool to put it away.
 3. **Draw wall** — click-drag to trace each wall segment over the image.
-   New walls snap to the nearest 90° by default; hold Shift to open the
-   angle lock and draw freely. Endpoints separately snap to nearby
-   wall/window endpoints and edges when dragged close either way (see
-   Snapping below).
+   New walls snap to the nearest 45° (0°/45°/90°/135°/...) by default; hold
+   Shift to open the angle lock and draw freely. Endpoints separately snap
+   to nearby wall/window endpoints and edges when dragged close either way
+   (see Snapping below).
 4. **Window** — press-drag the Window button in Structure onto a wall to
    drop one (see workflow step 8 below); renders as a window symbol (thick
    white band with dark frame/mullion lines) instead of a solid wall. Drag
@@ -59,7 +72,7 @@ macOS). Everything runs client-side.
    (within a small pixel radius) to any nearby wall/window endpoint or onto
    another segment's edge, so adjoining walls line up without needing
    pixel-perfect dragging; failing that, a freshly-drawn wall locks to the
-   nearest 90° instead. Hold Shift during a wall/window drag to open the
+   nearest 45° instead. Hold Shift during a wall/window drag to open the
    angle lock and draw freely. Doors snap onto the nearest wall the same way
    (see above), so they end up at whatever angle that wall has.
 7. **Lock wall angles when resizing** — on by default (checkbox in
@@ -77,6 +90,14 @@ macOS). Everything runs client-side.
    horizontal/vertical), while hovering over the body shows a move cursor
    — so it's clear which a drag will do *before* you commit to it, rather
    than finding out by nudging something the wrong way.
+8b. **Round dining table** — in the Dining section of the Furniture palette,
+   alongside the rectangular one. Round as standard (its width and depth
+   start equal, and dragging a corner handle keeps it a true circle — both
+   axes follow whichever the cursor has moved further, so the circle grows
+   to keep containing the cursor). Hold Shift while dragging a corner to
+   stretch it into an independent oval instead — same "hold Shift to
+   unlock a default constraint" convention as angle-locked walls (above)
+   and 90°-snapped rotation.
 9. **Auto-detect walls (pixel-based)** — no AI, no API key, no cost,
    deterministic. Tracing a solid black line is a mechanical pattern-match,
    not a judgment call, so this handles it with actual image processing
@@ -295,8 +316,17 @@ macOS). Everything runs client-side.
 
 State lives in one JS object (`state` in `index.html`):
 
-- `state.floors`: an array of floor objects; `state.activeFloorId` says which
-  one is currently shown/edited. Each floor is fully independent:
+- `state.versions`: an array of version objects (see Versions above);
+  `state.activeVersionId` says which one is currently shown/edited. Every
+  floor-scoped function/field below is reached through the active version
+  (`activeVersion().floors`), never off `state` directly.
+- Each version is `{id, name, floors, activeFloorId}` — `floors` is the
+  array of floor objects described below, `activeFloorId` says which of
+  *that version's own* floors is currently shown/edited. Duplicating a
+  version (`cloneVersion`/`cloneFloorWithNewIds`) deep-copies every floor,
+  wall, box and label with a fresh id each, so the copy can never alias the
+  original's objects.
+- Each floor is fully independent:
   - `image`, `worldWidth`/`worldHeight` — the floor's background image and
     its native pixel size.
   - `walls`: line segments `{x1,y1,x2,y2,thicknessCm,type}` — position in
@@ -318,9 +348,10 @@ State lives in one JS object (`state` in `index.html`):
     geometry or calibration).
   - `calibration`: `{metersPerWorldUnit}`, derived from the one line you drew
     on that floor.
-- Saved `.json` files contain all floors at once. Older single-floor saves
-  (from before floors existed) still load fine — they migrate into a single
-  "Floor 1".
+- Saved `.json` files contain all versions (and every version's floors) at
+  once. Older saves from before versions existed still load fine — a
+  pre-versions multi-floor save migrates into a single "Version 1"; an
+  even older single-floor save migrates into "Version 1" → "Floor 1".
 
 Everything else (rendering, hit-testing, drag/resize/rotate math) is plain
 `<canvas>` 2D — no libraries.

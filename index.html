@@ -8,6 +8,7 @@
   :root{
     --bg:#1e2126; --panel:#262a31; --panel-border:#383d46; --text:#e8eaed; --text-dim:#9aa1ac;
     --accent:#4f8cff; --accent-text:#ffffff; --danger:#e5484d; --field-bg:#1a1d22;
+    --accent2:#9b6fe0; --accent2-text:#ffffff;
   }
   *{box-sizing:border-box;}
   html,body{height:100%;margin:0;}
@@ -15,6 +16,20 @@
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     background:var(--bg); color:var(--text); display:flex; flex-direction:column; height:100vh; overflow:hidden;
   }
+  #versionBar{
+    flex:0 0 auto; height:38px; display:flex; align-items:center; gap:8px; padding:0 10px;
+    background:#20232a; border-bottom:1px solid var(--panel-border);
+  }
+  #versionTabs{display:flex; gap:6px; flex:1; overflow-x:auto; height:100%; align-items:center;}
+  .versionTab{
+    display:flex; align-items:center; gap:6px; padding:5px 9px; border-radius:6px; background:var(--field-bg);
+    border:1px solid var(--panel-border); font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; user-select:none;
+  }
+  .versionTab:hover{border-color:var(--accent2);}
+  .versionTab.active{background:var(--accent2); color:var(--accent2-text); border-color:var(--accent2);}
+  .versionTabIcon{opacity:.55; padding:0 3px; border-radius:3px; line-height:1; font-weight:400;}
+  .versionTabIcon:hover{opacity:1; background:rgba(0,0,0,0.25);}
+  #btnAddVersion{flex:0 0 auto; white-space:nowrap; font-size:12px; padding:6px 9px;}
   #topbar{
     flex:0 0 auto; height:46px; display:flex; align-items:center; gap:8px; padding:0 10px;
     background:var(--panel); border-bottom:1px solid var(--panel-border);
@@ -75,6 +90,10 @@
 </style>
 </head>
 <body>
+<div id="versionBar">
+  <div id="versionTabs"></div>
+  <button id="btnAddVersion">+ New version</button>
+</div>
 <div id="topbar">
   <div id="floorTabs"></div>
   <button id="btnAddFloor">+ Add floor</button>
@@ -207,6 +226,9 @@
         <button id="btnFlipHinge">⇄ Flip hinge side</button>
         <button id="btnFlipSwing">⇅ Flip swing direction</button>
       </div>
+      <div class="row" id="fldStairDirWrap" style="display:none;">
+        <button id="btnFlipStairDir">⇅ Flip up/down</button>
+      </div>
       <button class="wide danger" id="btnDelete">Delete</button>
     </div>
 
@@ -276,6 +298,12 @@ const FURNITURE_TYPES = [
   {key:"fireplace",  label:"Fireplace",      wCm:110, dCm:35,  color:"#a8503c", category:"Living room"},
   // Dining
   {key:"dining",     label:"Dining table",   wCm:140, dCm:90,  color:"#e0a23c", category:"Dining"},
+  // Round as standard (wCm===dCm); drag a corner to resize and it stays a
+  // true circle by default — hold Shift to stretch it into an oval, same
+  // "hold Shift to unlock a default constraint" convention as angle-locked
+  // walls and 90°-snapped rotation elsewhere in this file. See
+  // ROUND_FURNITURE_TYPES.
+  {key:"dininground",label:"Dining table (round)", wCm:120, dCm:120, color:"#e0a23c", category:"Dining"},
   {key:"diningchair",label:"Dining chair",   wCm:45,  dCm:50,  color:"#d9995a", category:"Dining"},
   // Kitchen
   {key:"kitchen",    label:"Kitchen unit",   wCm:60,  dCm:60,  color:"#5fb3a3", category:"Kitchen"},
@@ -299,6 +327,12 @@ const FURNITURE_TYPES = [
   {key:"desk",       label:"Desk",           wCm:120, dCm:60,  color:"#3ea08a", category:"Office / other"},
   {key:"officechair",label:"Office chair",   wCm:55,  dCm:55,  color:"#4a9483", category:"Office / other"},
   {key:"radiator",   label:"Radiator",       wCm:100, dCm:10,  color:"#9aa5ad", category:"Office / other"},
+  // Structure
+  // dCm is the run length — drag a corner (same generic resize as any other
+  // furniture box) to stretch it to match a staircase of any length. Its
+  // up/down indicator arrow is a separate `direction` field, defaulted below
+  // and flipped from the selection panel — see fldStairDirWrap.
+  {key:"stairs",     label:"Staircase",      wCm:100, dCm:280, color:"#a67c52", category:"Structure", direction:"up"},
 ];
 const DOOR_DEFAULT = {wCm:80, dCm:10, color:"#c9a227"};
 const WINDOW_THICKNESS_CM = 10;
@@ -542,20 +576,38 @@ function makeFloor(name){
     labels: [],           // {id, x, y, text} — optional AI-read room names/dimension text, toggleable layer
   };
 }
-function makeInitialState(){
+// A "version" is a complete, independent copy of every floor — the tool's
+// save-point/branch mechanism (see the versionBar UI): trace a floorplan,
+// then duplicate the version to explore a change without touching the
+// original, switch between them instantly (no reload — just swapping which
+// version's floors are the active ones), and keep as many live at once as
+// wanted. Nesting floors inside versions (rather than a flat list) means
+// every existing floor-scoped function (activeFloor, switchFloor, addFloor,
+// ...) only needed its `state.floors`/`state.activeFloorId` reads redirected
+// to `activeVersion().floors`/`.activeFloorId` — no other code had to change.
+function makeVersion(name){
   const f = makeFloor("Floor 1");
-  return { floors: [f], activeFloorId: f.id };
+  return { id: newId(), name: name || "Version", floors: [f], activeFloorId: f.id };
+}
+function makeInitialState(){
+  const v = makeVersion("Version 1");
+  return { versions: [v], activeVersionId: v.id };
 }
 let state = makeInitialState();
 
+function activeVersion(){
+  return state.versions.find(v => v.id === state.activeVersionId) || state.versions[0];
+}
 function activeFloor(){
-  return state.floors.find(f => f.id === state.activeFloorId) || state.floors[0];
+  const v = activeVersion();
+  return v.floors.find(f => f.id === v.activeFloorId) || v.floors[0];
 }
 
 // ---------------------------------------------------------------------------
-// Undo / redo — snapshot-based, covering the whole `state` object (all
-// floors), so undo also switches back to whichever floor was active at that
-// point. Each undo-stack entry is the state as it was BEFORE a change.
+// Undo / redo — snapshot-based, covering the whole `state` object (every
+// version's every floor), so undo also switches back to whichever version
+// and floor were active at that point. Each undo-stack entry is the state
+// as it was BEFORE a change.
 // ---------------------------------------------------------------------------
 const UNDO_LIMIT = 100;
 let undoStack = [];
@@ -798,26 +850,45 @@ function normalizeFloor(f){
     labels: f.labels || [],
   };
 }
+// data.versions is the current save shape; the other two branches migrate
+// what autosave/.json files looked like before versions existed — most
+// importantly the pre-versions {floors, activeFloorId} shape, since that's
+// exactly what's sitting in any existing browser's autosave right now (same
+// AUTOSAVE_KEY, deliberately not bumped) and must keep loading correctly.
+function normalizeVersion(v){
+  const floors = (Array.isArray(v.floors) && v.floors.length) ? v.floors.map(normalizeFloor) : [makeFloor("Floor 1")];
+  const activeFloorId = floors.some(f=>f.id===v.activeFloorId) ? v.activeFloorId : floors[0].id;
+  return { id: (typeof v.id === "number") ? v.id : newId(), name: v.name || "Version", floors, activeFloorId };
+}
 function applyLoadedState(data){
-  let floors, activeFloorId;
-  if (data && Array.isArray(data.floors) && data.floors.length){
-    floors = data.floors.map(normalizeFloor);
-    activeFloorId = floors.some(f=>f.id===data.activeFloorId) ? data.activeFloorId : floors[0].id;
+  let versions, activeVersionId;
+  if (data && Array.isArray(data.versions) && data.versions.length){
+    versions = data.versions.map(normalizeVersion);
+    activeVersionId = versions.some(v=>v.id===data.activeVersionId) ? data.activeVersionId : versions[0].id;
+  } else if (data && Array.isArray(data.floors) && data.floors.length){
+    // migrate pre-versions multi-floor save/autosave: wrap as one version
+    const floors = data.floors.map(normalizeFloor);
+    const activeFloorId = floors.some(f=>f.id===data.activeFloorId) ? data.activeFloorId : floors[0].id;
+    const v = { id: newId(), name: "Version 1", floors, activeFloorId };
+    versions = [v]; activeVersionId = v.id;
   } else if (data && (data.image || data.walls || data.boxes || data.worldWidth)) {
-    // migrate old single-floor save format
+    // migrate even older single-floor save format
     const f = normalizeFloor({...data, name:"Floor 1"});
-    floors = [f];
-    activeFloorId = f.id;
+    const v = { id: newId(), name: "Version 1", floors: [f], activeFloorId: f.id };
+    versions = [v]; activeVersionId = v.id;
   } else {
     const init = makeInitialState();
-    floors = init.floors; activeFloorId = init.activeFloorId;
+    versions = init.versions; activeVersionId = init.activeVersionId;
   }
-  state = {floors, activeFloorId};
+  state = {versions, activeVersionId};
 
   let maxId = 0;
-  floors.forEach(f=>{
-    if (f.id>maxId) maxId=f.id;
-    [...f.walls, ...f.boxes].forEach(o=>{ if (o.id>maxId) maxId=o.id; });
+  versions.forEach(v=>{
+    if (v.id>maxId) maxId=v.id;
+    v.floors.forEach(f=>{
+      if (f.id>maxId) maxId=f.id;
+      [...f.walls, ...f.boxes].forEach(o=>{ if (o.id>maxId) maxId=o.id; });
+    });
   });
   idCounter = Math.max(idCounter, maxId+1);
 
@@ -827,6 +898,7 @@ function applyLoadedState(data){
   loadImageElementForActiveFloor();
   updateScaleStatus();
   updateSelPanel();
+  renderVersionTabs();
   renderFloorTabs();
   resizeCanvas();
 }
@@ -882,8 +954,9 @@ function loadImageElementForActiveFloor(){
   }
 }
 function switchFloor(id){
-  if (id === state.activeFloorId) return;
-  state.activeFloorId = id;
+  const v = activeVersion();
+  if (id === v.activeFloorId) return;
+  v.activeFloorId = id;
   selection = null;
   multiSelection = [];
   drag = null;
@@ -895,13 +968,14 @@ function switchFloor(id){
 }
 function addFloor(){
   pushUndoSnapshot();
-  const f = makeFloor("Floor " + (state.floors.length+1));
-  state.floors.push(f);
+  const v = activeVersion();
+  const f = makeFloor("Floor " + (v.floors.length+1));
+  v.floors.push(f);
   switchFloor(f.id);
   scheduleAutosave();
 }
 function renameFloor(id){
-  const f = state.floors.find(x=>x.id===id);
+  const f = activeVersion().floors.find(x=>x.id===id);
   if (!f) return;
   const name = prompt("Floor name", f.name);
   if (name && name.trim()){
@@ -912,22 +986,24 @@ function renameFloor(id){
   }
 }
 function deleteFloor(id){
-  if (state.floors.length <= 1){ alert("You need at least one floor."); return; }
-  const f = state.floors.find(x=>x.id===id);
+  const v = activeVersion();
+  if (v.floors.length <= 1){ alert("You need at least one floor."); return; }
+  const f = v.floors.find(x=>x.id===id);
   if (!f) return;
   if (!confirm(`Delete "${f.name}"? (Ctrl/Cmd+Z will undo this.)`)) return;
   pushUndoSnapshot();
-  const wasActive = id === state.activeFloorId;
-  state.floors = state.floors.filter(x=>x.id!==id);
-  if (wasActive) switchFloor(state.floors[0].id);
+  const wasActive = id === v.activeFloorId;
+  v.floors = v.floors.filter(x=>x.id!==id);
+  if (wasActive) switchFloor(v.floors[0].id);
   else { renderFloorTabs(); scheduleAutosave(); }
 }
 function renderFloorTabs(){
   const el = document.getElementById("floorTabs");
   el.innerHTML = "";
-  state.floors.forEach(f=>{
+  const v = activeVersion();
+  v.floors.forEach(f=>{
     const tab = document.createElement("div");
-    tab.className = "floorTab" + (f.id===state.activeFloorId ? " active" : "");
+    tab.className = "floorTab" + (f.id===v.activeFloorId ? " active" : "");
     tab.title = "Click to switch • double-click to rename";
 
     const nameSpan = document.createElement("span");
@@ -943,6 +1019,123 @@ function renderFloorTabs(){
 
     tab.addEventListener("click", ()=>switchFloor(f.id));
     tab.addEventListener("dblclick", ()=>renameFloor(f.id));
+    el.appendChild(tab);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Versions — see the comment on makeVersion() above for the overall idea.
+// ---------------------------------------------------------------------------
+function uniqueVersionName(base){
+  const existing = new Set(state.versions.map(v=>v.name));
+  if (!existing.has(base)) return base;
+  let i = 2;
+  while (existing.has(`${base} ${i}`)) i++;
+  return `${base} ${i}`;
+}
+// Deep-copies one floor, including a fresh id for it and for every wall/
+// box/label inside it — so the clone can be edited (including undo/redo,
+// which snapshots the whole `state`) without ever aliasing the original's
+// objects. A JSON round-trip is enough to deep-copy (no functions/Dates
+// anywhere in this data model, image included — it's just a dataURL string).
+function cloneFloorWithNewIds(floor){
+  const f = JSON.parse(JSON.stringify(floor));
+  f.id = newId();
+  f.walls.forEach(w=>{ w.id = newId(); });
+  f.boxes.forEach(b=>{ b.id = newId(); });
+  (f.labels||[]).forEach(l=>{ l.id = newId(); });
+  return f;
+}
+function cloneVersion(version, name){
+  const activeIdx = Math.max(0, version.floors.findIndex(f=>f.id===version.activeFloorId));
+  const floors = version.floors.map(cloneFloorWithNewIds);
+  return { id: newId(), name, floors, activeFloorId: floors[activeIdx].id };
+}
+function switchVersion(id){
+  if (id === state.activeVersionId) return;
+  state.activeVersionId = id;
+  selection = null;
+  multiSelection = [];
+  drag = null;
+  updateSelPanel();
+  loadImageElementForActiveFloor();
+  updateScaleStatus();
+  renderVersionTabs();
+  renderFloorTabs();
+  resizeCanvas();
+}
+function addVersion(){
+  pushUndoSnapshot();
+  const v = makeVersion(uniqueVersionName("Version " + (state.versions.length+1)));
+  state.versions.push(v);
+  switchVersion(v.id);
+  scheduleAutosave();
+}
+// "Copy this tab" — the mechanism behind exploring multiple floorplan ideas
+// at once: duplicate whichever version (active or not) into a fully
+// independent new tab, switch to it immediately, and keep editing without
+// touching the original. Auto-named "<name> copy"/"<name> copy 2"/... so
+// there's no prompt in the way, same as addFloor()'s "Floor N" default —
+// double-click the new tab to rename it, same as a floor tab.
+function duplicateVersion(id){
+  const v = state.versions.find(x=>x.id===id);
+  if (!v) return;
+  pushUndoSnapshot();
+  const clone = cloneVersion(v, uniqueVersionName(`${v.name} copy`));
+  state.versions.push(clone);
+  switchVersion(clone.id);
+  scheduleAutosave();
+}
+function renameVersion(id){
+  const v = state.versions.find(x=>x.id===id);
+  if (!v) return;
+  const name = prompt("Version name", v.name);
+  if (name && name.trim()){
+    pushUndoSnapshot();
+    v.name = name.trim();
+    renderVersionTabs();
+    scheduleAutosave();
+  }
+}
+function deleteVersion(id){
+  if (state.versions.length <= 1){ alert("You need at least one version."); return; }
+  const v = state.versions.find(x=>x.id===id);
+  if (!v) return;
+  if (!confirm(`Delete "${v.name}" and all its floors? (Ctrl/Cmd+Z will undo this.)`)) return;
+  pushUndoSnapshot();
+  const wasActive = id === state.activeVersionId;
+  state.versions = state.versions.filter(x=>x.id!==id);
+  if (wasActive) switchVersion(state.versions[0].id);
+  else { renderVersionTabs(); scheduleAutosave(); }
+}
+function renderVersionTabs(){
+  const el = document.getElementById("versionTabs");
+  el.innerHTML = "";
+  state.versions.forEach(v=>{
+    const tab = document.createElement("div");
+    tab.className = "versionTab" + (v.id===state.activeVersionId ? " active" : "");
+    tab.title = "Click to switch • double-click to rename";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = v.name;
+    tab.appendChild(nameSpan);
+
+    const dupBtn = document.createElement("span");
+    dupBtn.className = "versionTabIcon";
+    dupBtn.textContent = "⧉";
+    dupBtn.title = "Duplicate this version into a new tab";
+    dupBtn.addEventListener("click", (e)=>{ e.stopPropagation(); duplicateVersion(v.id); });
+    tab.appendChild(dupBtn);
+
+    const closeBtn = document.createElement("span");
+    closeBtn.className = "versionTabIcon";
+    closeBtn.textContent = "×";
+    closeBtn.title = "Delete version";
+    closeBtn.addEventListener("click", (e)=>{ e.stopPropagation(); deleteVersion(v.id); });
+    tab.appendChild(closeBtn);
+
+    tab.addEventListener("click", ()=>switchVersion(v.id));
+    tab.addEventListener("dblclick", ()=>renameVersion(v.id));
     el.appendChild(tab);
   });
 }
@@ -1409,6 +1602,30 @@ function drawDiningDetail(hw,hd){
     }
   }
 }
+// Chairs placed at evenly spaced ANGLES around the inside rim (not evenly
+// spaced by arc length — bunches up a little on a heavily-stretched oval,
+// but this is a schematic icon, not a precise layout, same bar as every
+// other FURNITURE_DETAIL_DRAWERS entry). Stays inside the table's own
+// elliptical footprint, same "inset toward centre" convention the
+// rectangular dining table's own chairs use — the clip in drawFurnitureShape
+// would hide anything drawn outside it.
+function drawDiningRoundDetail(hw,hd){
+  const inset = Math.min(hw,hd)*0.16;
+  ctx.beginPath();
+  ctx.ellipse(0,0, Math.max(0,hw-inset), Math.max(0,hd-inset), 0, 0, Math.PI*2);
+  ctx.stroke(); // tabletop surface edge
+
+  const approxPerimeter = Math.PI*(hw+hd); // good enough for a chair count, not exact
+  const count = Math.max(3, Math.min(10, Math.round(approxPerimeter/45)));
+  const chairSize = Math.max(4, Math.min(hw,hd)*0.26);
+  const chairInset = Math.min(hw,hd)*0.22;
+  for (let i=0;i<count;i++){
+    const a = (i/count)*Math.PI*2;
+    const cx = Math.cos(a)*(hw-chairInset), cy = Math.sin(a)*(hd-chairInset);
+    roundRectPath(cx-chairSize/2, cy-chairSize/2, chairSize, chairSize, 2);
+    ctx.fill();
+  }
+}
 function drawCoffeeDetail(hw,hd){
   const inset = Math.min(hw,hd)*0.22;
   roundRectPath(-hw+inset, -hd+inset, (hw-inset)*2, (hd-inset)*2, 3);
@@ -1528,10 +1745,66 @@ function drawRadiatorDetail(hw,hd){
   for (let i=1;i<fins;i++){ const x=-hw+(hw*2)*i/fins; ctx.moveTo(x,-hd); ctx.lineTo(x,hd); }
   ctx.stroke();
 }
+// Staircase — the run is along the local depth axis (hd), same convention
+// as every other icon's "front" edge, so rotating the box (like any other
+// furniture) points the run whichever way it actually goes. Tread count is
+// derived from the box's real depth in cm so a longer (stretched) flight
+// visibly gets more treads instead of a few stretched-out lines. The
+// direction arrow + UP/DN text is the only way to tell an ascending flight
+// from a descending one — colour-coded too (green = up, amber = down) so it
+// still reads at a glance when zoomed out past where the letters resolve.
+function drawStaircaseDetail(hw,hd,box){
+  const dCm = (box && box.dCm) || hd*2;
+  const treads = Math.max(3, Math.min(30, Math.round(dCm/28)));
+  ctx.beginPath();
+  for (let i=1;i<treads;i++){
+    const y = -hd + (hd*2)*i/treads;
+    ctx.moveTo(-hw,y); ctx.lineTo(hw,y);
+  }
+  ctx.stroke();
+
+  const dir = (box && box.direction) === "down" ? "down" : "up";
+  const tailY = dir === "up" ? hd*0.8 : -hd*0.8;
+  const headY = dir === "up" ? -hd*0.8 : hd*0.8;
+  const headLen = Math.min(hd*0.35, hw*0.6, 14);
+  const headW = headLen*0.8;
+  const travelDir = Math.sign(headY - tailY) || 1;
+  const backY = headY - travelDir*headLen;
+  const color = dir === "up" ? "rgba(70,170,110,0.95)" : "rgba(210,140,50,0.95)";
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(1.5, Math.min(hw,hd)*0.06);
+  ctx.beginPath();
+  ctx.moveTo(0,tailY); ctx.lineTo(0,backY);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0,headY);
+  ctx.lineTo(-headW/2,backY);
+  ctx.lineTo(headW/2,backY);
+  ctx.closePath();
+  ctx.fill();
+
+  // The arrow above stays in the box's rotated frame (it has to point along
+  // the actual run), but the letters must not rotate with it — at 90° they'd
+  // read sideways, which defeats the point of labelling the direction at all.
+  // Counter-rotating about the text's own anchor keeps it positioned with the
+  // arrow head while drawing upright, matching drawFurnitureLabel's behaviour.
+  const fontSize = Math.max(9, Math.min(hw*0.9, hd*0.28));
+  ctx.translate(0, backY - travelDir*(fontSize*0.7));
+  ctx.rotate(-((box && box.rotation) || 0));
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(dir === "up" ? "UP" : "DN", 0, 0);
+  ctx.restore();
+}
 const FURNITURE_DETAIL_DRAWERS = {
   sofa: drawSofaDetail,
   armchair: drawArmchairDetail,
   dining: drawDiningDetail,
+  dininground: drawDiningRoundDetail,
   coffee: drawCoffeeDetail,
   beddbl: (hw,hd)=>drawBedDetail(hw,hd,2),
   bedsgl: (hw,hd)=>drawBedDetail(hw,hd,1),
@@ -1555,28 +1828,44 @@ const FURNITURE_DETAIL_DRAWERS = {
   basin: drawBasinDetail,
   officechair: drawOfficeChairDetail,
   radiator: drawRadiatorDetail,
+  stairs: drawStaircaseDetail,
 };
+// Furniture whose footprint is a true ellipse (a circle at wCm===dCm)
+// rather than roundRectPath's rounded rectangle — also drives resize-box's
+// "hold Shift to stretch into an oval" constraint in the pointermove
+// handler below, and FURNITURE_DETAIL_DRAWERS entries for these types clip
+// to the ellipse, not a rect (see furnitureFootprintPath).
+const ROUND_FURNITURE_TYPES = new Set(["dininground"]);
+function furnitureFootprintPath(type, hw, hd){
+  if (ROUND_FURNITURE_TYPES.has(type)){
+    ctx.beginPath();
+    ctx.ellipse(0,0,hw,hd,0,0,Math.PI*2);
+    ctx.closePath();
+  } else {
+    const r = Math.min(6, hw*0.3, hd*0.3);
+    roundRectPath(-hw,-hd,hw*2,hd*2,r);
+  }
+}
 // Draws a furniture footprint plus its type's detail shapes. Expects the
 // canvas already translated/rotated to the box's centre — see drawBoxes()
 // and drawStampPreview().
-function drawFurnitureShape(type, wScreen, dScreen, color, isSel){
+function drawFurnitureShape(type, wScreen, dScreen, color, isSel, box){
   const hw = wScreen/2, hd = dScreen/2;
-  const r = Math.min(6, hw*0.3, hd*0.3);
   ctx.fillStyle = color + "cc";
   ctx.strokeStyle = isSel ? "#ffffff" : "#00000055";
   ctx.lineWidth = isSel ? 2 : 1;
-  roundRectPath(-hw,-hd,wScreen,dScreen,r);
+  furnitureFootprintPath(type, hw, hd);
   ctx.fill(); ctx.stroke();
 
   const drawDetail = FURNITURE_DETAIL_DRAWERS[type];
   if (drawDetail){
     ctx.save();
-    roundRectPath(-hw,-hd,wScreen,dScreen,r);
+    furnitureFootprintPath(type, hw, hd);
     ctx.clip(); // keep detail shapes inside the footprint
     ctx.fillStyle = "rgba(0,0,0,0.20)";
     ctx.strokeStyle = "rgba(0,0,0,0.35)";
     ctx.lineWidth = 1;
-    drawDetail(hw,hd);
+    drawDetail(hw,hd,box);
     ctx.restore();
   }
 }
@@ -1640,7 +1929,7 @@ function drawStampPreview(spec, point){
   ctx.save();
   ctx.globalAlpha = 0.55;
   ctx.translate(c.x,c.y);
-  drawFurnitureShape(spec.type, wScreen, dScreen, spec.color, false);
+  drawFurnitureShape(spec.type, wScreen, dScreen, spec.color, false, spec);
   drawFurnitureLabel(spec.label, 0, 0, wScreen, dScreen);
   ctx.restore();
 }
@@ -1662,7 +1951,7 @@ function drawBoxes(){
       ctx.save();
       ctx.rotate(b.rotation);
       const isSel = isItemSelected("box", b.id);
-      drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel);
+      drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel, b);
       ctx.restore();
       // Label drawn unrotated (translate-only ctx) so it stays upright no
       // matter which way the furniture itself is turned.
@@ -2004,8 +2293,8 @@ function setTool(tool){
 
 function updateHint(){
   const hints = {
-    select: "Click an item to select it. Drag to move; drag a corner to resize; drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Drag from empty space to rubber-band select everything the box touches, or Shift-click items one at a time to build up a selection — drag any of them to move the whole group, or Delete/Backspace to remove it all at once. Ctrl/Cmd+C/V copies and pastes a single selected piece of furniture. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
-    wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. New walls snap to the nearest 90° by default; hold Shift to open up the angle and draw freely (endpoints still snap to nearby wall/window ends, edges, and the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line).",
+    select: "Click an item to select it. Drag to move; drag a corner to resize (the round dining table stays a true circle by default — hold Shift while resizing to stretch it into an oval); drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Drag from empty space to rubber-band select everything the box touches, or Shift-click items one at a time to build up a selection — drag any of them to move the whole group, or Delete/Backspace to remove it all at once. Ctrl/Cmd+C/V copies and pastes a single selected piece of furniture. Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
+    wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. New walls snap to the nearest 45° (0°/45°/90°/135°/...) by default; hold Shift to open up the angle and draw freely (endpoints still snap to nearby wall/window ends, edges, and the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line).",
     calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
     "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
     measure: "Click and drag anywhere to measure a distance (needs the scale calibrated first). Snaps onto nearby wall ends/edges by default — hold Shift for a free-form line. Stays armed for repeat measurements; press Escape or pick another tool to stop.",
@@ -2036,6 +2325,7 @@ function addBoxAt(spec, world, rotation){
     color: spec.color || "#4f8cff",
   };
   if (spec.kind === "door"){ box.hinge = spec.hinge || -1; box.swing = spec.swing || -1; }
+  if (box.type === "stairs"){ box.direction = spec.direction || "up"; }
   f.boxes.push(box);
   resolveKitchenUnitOverlaps(box); // no-op unless box is a kitchen appliance placed over a kitchen unit
   select("box", box.id);
@@ -3446,8 +3736,9 @@ async function runSplitFloors(){
     });
 
     pushUndoSnapshot();
-    const idx = state.floors.findIndex(x=>x.id===floor.id);
-    state.floors.splice(idx, 1, ...newFloors);
+    const v = activeVersion();
+    const idx = v.floors.findIndex(x=>x.id===floor.id);
+    v.floors.splice(idx, 1, ...newFloors);
     switchFloor(newFloors[0].id);
     scheduleAutosave();
     statusEl.textContent = `Split into ${newFloors.length} floors: ${names}. Run "Detect walls, doors & dimensions" on each one.`;
@@ -3467,12 +3758,15 @@ function getMouseScreen(e){
   const rect = cv.getBoundingClientRect();
   return {x: e.clientX-rect.left, y: e.clientY-rect.top};
 }
-// Locks a line's direction to the nearest 90° (keeping its length) — the
-// default for a freshly-drawn wall; see the draw-wall pointermove handler.
-function snapAngle90(x1,y1,x2,y2){
+// Locks a line's direction to the nearest 45° (keeping its length) — the
+// default for a freshly-drawn wall (0/45/90/135/180/...); see the
+// draw-wall pointermove handler. Holding Shift while drawing bypasses this
+// entirely (full freedom), same bypass convention as every other snap in
+// this file.
+function snapAngle45(x1,y1,x2,y2){
   const dx=x2-x1, dy=y2-y1;
   const len = Math.hypot(dx,dy);
-  const ang = Math.round(Math.atan2(dy,dx)/(Math.PI/2))*(Math.PI/2);
+  const ang = Math.round(Math.atan2(dy,dx)/(Math.PI/4))*(Math.PI/4);
   return {x2: x1+Math.cos(ang)*len, y2: y1+Math.sin(ang)*len};
 }
 // Same idea for a single angle value (furniture rotation) rather than a
@@ -3828,11 +4122,11 @@ window.addEventListener("pointermove", (e)=>{
         // Default: a point near existing geometry (wall/window end, edge,
         // or the infinite line through a wall) wins so new walls still
         // line up with what's already there; otherwise lock the new
-        // wall's own angle to the nearest 90°.
+        // wall's own angle to the nearest 45° (0/45/90/135/...).
         const snap = snapToNearbyWalls(mw, null);
         if (snap){ drag.x2 = snap.x; drag.y2 = snap.y; }
         else {
-          const snapped = snapAngle90(drag.x1,drag.y1,mw.x,mw.y);
+          const snapped = snapAngle45(drag.x1,drag.y1,mw.x,mw.y);
           drag.x2 = snapped.x2; drag.y2 = snapped.y2;
         }
       }
@@ -3976,8 +4270,18 @@ window.addEventListener("pointermove", (e)=>{
   if (drag.type === "resize-box"){
     const b = getBox(drag.id);
     const local = rotate(mw.x-drag.fixedWorld.x, mw.y-drag.fixedWorld.y, -drag.rotation);
-    const newWorldW = Math.max(Math.abs(local.x), cmToWorld(5));
-    const newWorldH = Math.max(Math.abs(local.y), cmToWorld(5));
+    let newWorldW = Math.max(Math.abs(local.x), cmToWorld(5));
+    let newWorldH = Math.max(Math.abs(local.y), cmToWorld(5));
+    // Round furniture (ROUND_FURNITURE_TYPES) stays a true circle by
+    // default — both axes follow whichever the cursor has dragged further,
+    // so the shape grows to keep containing the cursor — and only stretches
+    // into an independent oval while Shift is held, same "hold Shift to
+    // unlock a default constraint" convention as angle-locked walls and
+    // 90°-snapped rotation elsewhere in this file.
+    if (ROUND_FURNITURE_TYPES.has(b.type) && !e.shiftKey){
+      const d = Math.max(newWorldW, newWorldH);
+      newWorldW = d; newWorldH = d;
+    }
     const signX = local.x>=0 ? 1 : -1, signY = local.y>=0 ? 1 : -1;
     const centerLocal = {x: signX*newWorldW/2, y: signY*newWorldH/2};
     const centerWorldOffset = rotate(centerLocal.x, centerLocal.y, drag.rotation);
@@ -4153,7 +4457,7 @@ function copySelection(){
   if (!(selection && selection.kind==="box")) return;
   const b = getBox(selection.id);
   if (!b || b.kind !== "furniture") return;
-  clipboardBox = {kind:b.kind, type:b.type, label:b.label, wCm:b.wCm, dCm:b.dCm, rotation:b.rotation, color:b.color};
+  clipboardBox = {kind:b.kind, type:b.type, label:b.label, wCm:b.wCm, dCm:b.dCm, rotation:b.rotation, color:b.color, direction:b.direction};
 }
 function pasteClipboard(){
   if (!clipboardBox) return;
@@ -4235,7 +4539,7 @@ function updateSelPanel(){
     // (they don't generalize to a mixed group of walls/furniture/doors).
     panel.classList.add("show");
     title.textContent = `${multiSelection.length} items selected`;
-    ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap"].forEach(id=>{
+    ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap","fldStairDirWrap"].forEach(id=>{
       document.getElementById(id).style.display = "none";
     });
     return;
@@ -4245,12 +4549,14 @@ function updateSelPanel(){
   panel.classList.add("show");
   const isBox = selection.kind==="box";
   const isDoor = isBox && getBox(selection.id) && getBox(selection.id).kind==="door";
+  const isStairs = isBox && getBox(selection.id) && getBox(selection.id).type==="stairs";
   document.getElementById("fldLabelWrap").style.display = isBox ? "flex" : "none";
   document.getElementById("fldSizeWrap").style.display = isBox ? "grid" : "none";
   document.getElementById("fldRotWrap").style.display = isBox ? "flex" : "none";
   document.getElementById("fldLenWrap").style.display = isBox ? "none" : "flex";
   document.getElementById("fldWallThicknessWrap").style.display = isBox ? "none" : "flex";
   document.getElementById("fldDoorSwingWrap").style.display = isDoor ? "flex" : "none";
+  document.getElementById("fldStairDirWrap").style.display = isStairs ? "flex" : "none";
 
   if (isBox){
     const b = getBox(selection.id);
@@ -4259,6 +4565,10 @@ function updateSelPanel(){
     document.getElementById("fldW").value = Math.round(b.wCm);
     document.getElementById("fldD").value = Math.round(b.dCm);
     document.getElementById("fldRot").value = Math.round(b.rotation*180/Math.PI) % 360;
+    if (isStairs){
+      document.getElementById("btnFlipStairDir").textContent =
+        (b.direction === "down" ? "⇅ Going down (click to flip)" : "⇅ Going up (click to flip)");
+    }
   } else {
     const w = getWall(selection.id);
     if (!w) return;
@@ -4312,6 +4622,13 @@ document.getElementById("btnFlipSwing").addEventListener("click", ()=>{
   const b = getBox(selection.id); if (!b || b.kind!=="door") return;
   pushUndoSnapshot();
   b.swing = (b.swing||-1) * -1; scheduleAutosave(); render();
+});
+document.getElementById("btnFlipStairDir").addEventListener("click", ()=>{
+  if (!selection || selection.kind!=="box") return;
+  const b = getBox(selection.id); if (!b || b.type!=="stairs") return;
+  pushUndoSnapshot();
+  b.direction = (b.direction === "down") ? "up" : "down";
+  scheduleAutosave(); updateSelPanel(); render();
 });
 
 document.getElementById("btnSelect").addEventListener("click", ()=>setTool("select"));
@@ -4434,11 +4751,12 @@ document.getElementById("loadInput").addEventListener("change", (e)=>{
 });
 document.getElementById("btnExportPng").addEventListener("click", exportPng);
 document.getElementById("btnClear").addEventListener("click", ()=>{
-  if (!confirm("Clear ALL floors and start a new project? (Ctrl/Cmd+Z will undo this.)")) return;
+  if (!confirm("Clear ALL versions and floors and start a new project? (Ctrl/Cmd+Z will undo this.)")) return;
   pushUndoSnapshot();
   applyLoadedState({});
   localStorage.removeItem(AUTOSAVE_KEY);
 });
+document.getElementById("btnAddVersion").addEventListener("click", addVersion);
 document.getElementById("btnAddFloor").addEventListener("click", addFloor);
 document.getElementById("btnUndo").addEventListener("click", undo);
 document.getElementById("btnRedo").addEventListener("click", redo);
@@ -4470,6 +4788,7 @@ buildFurniturePalette();
 initAISettings();
 setTool("select");
 restoreAutosave();       // may replace `state` wholesale; harmless no-op otherwise
+renderVersionTabs();
 renderFloorTabs();
 updateScaleStatus();
 resizeCanvas();
