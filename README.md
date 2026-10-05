@@ -311,6 +311,22 @@ floor within one.
     also autosaves to this browser's local storage, so a refresh won't lose
     work — Save is for backups / moving between machines.
 18. **Export PNG** — flattens the current view to an image, handles hidden.
+19. **Room areas** — "Areas" section in the sidebar. Automatically computed
+    from the traced walls: rasterizes them at their real thickness and
+    flood-fills every fully enclosed gap as a room, so it only works where
+    the walls actually form a closed loop around a space — a wall that's a
+    few pixels short of reaching another is bridged automatically, but a
+    genuinely missing wall (or a floor that isn't fully traced yet) makes
+    that space merge with its neighbour, or leak to the outside and not get
+    counted at all, rather than silently guessing. A door never breaks this
+    — it's drawn with a gap but never actually cut out of the wall's own
+    traced line (see the boxes comment in the Data model below), so a
+    doorway doesn't split a room in two. Shows each room's area (m² and
+    ft²) as a label on the canvas (toggle: "Show area on each room"), plus
+    a running total for the current floor and for every floor in the
+    current version ("whole house"). Nothing here is saved in the project
+    `.json` — it's recomputed fresh from the walls every time, so it can
+    never go stale or drift from what's actually traced.
 
 ## Data model (for future edits)
 

@@ -191,6 +191,13 @@
     </section>
 
     <section>
+      <h2>Areas</h2>
+      <label class="chk" style="font-size:11.5px;color:var(--text-dim);"><input type="checkbox" id="fldShowRoomAreas" checked> 📐 Show area on each room</label>
+      <div id="roomAreaStats" style="font-size:11.5px;color:var(--text-dim);line-height:1.5;"></div>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">Computed from the traced walls — rasterizes them and flood-fills each fully enclosed gap as a room, so it only works where the walls actually form a closed loop (a wall that doesn't quite reach another, or a floor that isn't fully traced yet, makes that space merge with its neighbour or the outside instead of being counted). A door doesn't break this — it's drawn as an opening but never actually cut out of the wall's own traced line, so a doorway doesn't split a room in two.</p>
+    </section>
+
+    <section>
       <h2>Project</h2>
       <div class="grid2">
         <button id="btnSave">💾 Save</button>
@@ -685,6 +692,7 @@ let bgOpacity = 1;   // 0-1, background floorplan image opacity (view-only, not 
 let showLabels = true;  // view-only toggle for the AI text-label layer
 let showOverlay = true; // view-only toggle for traced walls/windows/doors/furniture, to compare against the bare image
 let showClearance = false; // view-only toggle for ideal furniture clearance guide zones — see CLEARANCE_ZONES
+let showRoomAreas = true; // view-only toggle for per-room area labels — see computeRoomAreas
 let zoomLevel = 1;      // 1 = fit the window (default); <1 zooms out within the same viewport (reveals content drawn outside the image bounds); >1 grows the canvas so the browser's native scroll can pan around it
 let wallHoverPoint = null; // world {x,y} the wall tool's cursor square is drawn at (the actual/snapped point a click would start drawing from) — null when not hovering the canvas with the wall tool active
 let lockWallAngles = true; // dragging a wall/window endpoint changes its length along the existing angle only, by default (most walls in a floor plan are already correctly angled — it's the length that needs trimming)
@@ -1304,6 +1312,7 @@ function render(){
     drawWalls();
     drawBoxes();
     if (showClearance) drawClearanceGuides();
+    if (showRoomAreas) drawRoomAreaLabels();
   }
   if (showLabels) drawLabelsLayer();
 
@@ -1316,6 +1325,7 @@ function render(){
   if (drag && drag.type === "marquee") drawMarquee(drag);
 
   if (selection && showOverlay) drawSelectionHandles();
+  if (!drag) updateRoomAreaStats();
 }
 
 // Rubber-band selection box — drawn in screen space over whatever's
@@ -2009,6 +2019,35 @@ function drawClearanceZone(zone, hw, hd, c, rotation){
   drawClearanceLabel(zone.label, c.x+off.x, c.y+off.y, aabb.w, aabb.h);
 }
 
+function formatAreaM2(m2){
+  return m2.toFixed(1)+" m² ("+Math.round(m2*M2_TO_FT2)+" ft²)";
+}
+// Per-room area labels — see computeRoomAreas/getRoomAreasForFloor. A dark
+// pill behind the text (same pattern as the measure tool's drawLengthLabel)
+// since this sits over a busy floorplan image/furniture, not plain canvas.
+function drawRoomAreaLabels(){
+  const f = activeFloor();
+  const {rooms} = getRoomAreasForFloor(f);
+  if (!rooms.length) return;
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  rooms.forEach(r=>{
+    const p = toScreen(r.cx, r.cy);
+    const text = formatAreaM2(r.areaM2);
+    const wpx = ctx.measureText(text).width;
+    // Skip once the room's own on-screen footprint (shrinks/grows with
+    // zoom, unlike the label's fixed font size) is too small to hold the
+    // pill without it dwarfing the room it's meant to label.
+    if (r.wWorld*fitScale < wpx+14 || r.hWorld*fitScale < 24) return;
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    roundRectPath(p.x-wpx/2-5, p.y-10, wpx+10, 20, 4);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(text, p.x, p.y+1);
+  });
+}
+
 function drawDoorSymbol(wScreen, dScreen, hingeSign, swingSign){
   // Local frame: opening runs along the x axis, centred at 0.
   // hingeSign: -1 = hinge at the left end of the opening, +1 = right end.
@@ -2591,6 +2630,98 @@ function bridgeWallSegments(segs, horizontal, dark, w, h){
     }
   }
   return segs;
+}
+
+// ---------------------------------------------------------------------------
+// Room area calculation — fully derived, never persisted: rasterize every
+// traced wall (type:"wall" only — a window sits on its host wall's own
+// already-counted line, and a door is never cut into the wall's stored
+// geometry at all, only rendered with a gap, see the boxes comment on
+// makeFloor — so a normally-traced floor's walls already form closed loops
+// around each room with no special doorway handling needed) onto an
+// offscreen canvas at the wall's own real thickness, then reuse this same
+// file's `morphPass`/`connectedComponents` (built for the pixel wall
+// detector above) to flood-fill the enclosed gaps: each connected empty
+// region bounded on every side is a room, its pixel count converts straight
+// to real-world area via the floor's own calibration, and the one region
+// that touches the raster's own edge is "outside", not a room.
+// ---------------------------------------------------------------------------
+const ROOM_GAP_CLOSE_PX = 6; // bridges a wall endpoint that's a few px short of actually touching another (common even with endpoint snapping) — small enough not to bridge a genuinely missing wall
+const ROOM_MIN_AREA_M2 = 0.25; // drops slivers — corner artifacts, a gap the closing pass only partly bridged
+const M2_TO_FT2 = 10.7639;
+function metersPerWorldUnitForFloor(floor){
+  // Same fallback as metersPerWorldUnit() (10m guessed across the image)
+  // but parameterized — the real function always reads the ACTIVE floor,
+  // and whole-house totals need every floor, not just whichever is on screen.
+  return floor.calibration ? floor.calibration.metersPerWorldUnit : 10/floor.worldWidth;
+}
+function rasterizeWallsMask(floor){
+  const w = Math.max(1, Math.round(floor.worldWidth)), h = Math.max(1, Math.round(floor.worldHeight));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const rctx = c.getContext("2d");
+  rctx.fillStyle = "#fff";
+  rctx.fillRect(0,0,w,h);
+  rctx.fillStyle = "#000";
+  rctx.strokeStyle = "#000";
+  rctx.lineCap = "square";
+  const mpwu = metersPerWorldUnitForFloor(floor);
+  floor.walls.forEach(wall=>{
+    if ((wall.type||"wall") !== "wall") return;
+    const thicknessWorld = (wall.thicknessCm/100)/mpwu;
+    rctx.lineWidth = Math.max(1, thicknessWorld);
+    rctx.beginPath();
+    rctx.moveTo(wall.x1, wall.y1);
+    rctx.lineTo(wall.x2, wall.y2);
+    rctx.stroke();
+  });
+  return computeDarkMask(rctx.getImageData(0,0,w,h), 128).dark;
+}
+// Returns {rooms:[{areaM2,cx,cy}], totalM2} — cx/cy are world coords (the
+// enclosed region's bounding-box centre; a simple, cheap stand-in for a
+// true centroid that's wrong only for an unusually concave/L-shaped room,
+// where it can land slightly outside the room it labels).
+function computeRoomAreas(floor){
+  const w = Math.max(1, Math.round(floor.worldWidth)), h = Math.max(1, Math.round(floor.worldHeight));
+  if (!floor.walls.some(x=>(x.type||"wall")==="wall")) return {rooms: [], totalM2: 0};
+  const wallMask = rasterizeWallsMask(floor);
+  const closed = morphPass(morphPass(wallMask, w, h, ROOM_GAP_CLOSE_PX, ROOM_GAP_CLOSE_PX, true), w, h, ROOM_GAP_CLOSE_PX, ROOM_GAP_CLOSE_PX, false);
+  const empty = new Uint8Array(closed.length);
+  for (let i=0;i<closed.length;i++) empty[i] = closed[i] ? 0 : 1;
+  const comps = connectedComponents(empty, w, h);
+
+  const pxAreaM2 = metersPerWorldUnitForFloor(floor) ** 2; // one raster pixel == one world unit at this 1:1 rasterization
+  const rooms = [];
+  comps.forEach(c=>{
+    // The region touching the raster's own edge is the exterior (or, on a
+    // not-fully-enclosed floor, leaked out to it) — never a real room.
+    if (c.minX===0 || c.minY===0 || c.maxX===w-1 || c.maxY===h-1) return;
+    const areaM2 = c.count * pxAreaM2;
+    if (areaM2 < ROOM_MIN_AREA_M2) return;
+    rooms.push({areaM2, cx:(c.minX+c.maxX)/2, cy:(c.minY+c.maxY)/2, wWorld:c.maxX-c.minX, hWorld:c.maxY-c.minY});
+  });
+  rooms.sort((a,b)=> a.cy-b.cy || a.cx-b.cx);
+  return {rooms, totalM2: rooms.reduce((s,r)=>s+r.areaM2, 0)};
+}
+// Cached per floor id — recomputed only when that floor's own walls/
+// calibration/size actually change (cheap fingerprint check below) AND
+// nothing is actively being dragged, so resizing/dragging a wall with the
+// overlay on never re-runs the raster+flood-fill on every pointermove
+// frame; the overlay just shows its last-settled result until you let go.
+const roomAreaCache = new Map(); // floorId -> {fp, rooms, totalM2}
+function roomAreasFingerprint(floor){
+  let s = floor.worldWidth + "x" + floor.worldHeight + "|" + metersPerWorldUnitForFloor(floor) + "|";
+  floor.walls.forEach(w=>{ if ((w.type||"wall")==="wall") s += `${w.id}:${w.x1|0},${w.y1|0},${w.x2|0},${w.y2|0},${w.thicknessCm|0};`; });
+  return s;
+}
+function getRoomAreasForFloor(floor){
+  const cached = roomAreaCache.get(floor.id);
+  const fp = roomAreasFingerprint(floor);
+  if (cached && (cached.fp === fp || drag)) return cached;
+  const result = computeRoomAreas(floor);
+  const entry = {fp, ...result};
+  roomAreaCache.set(floor.id, entry);
+  return entry;
 }
 
 // ---------------------------------------------------------------------------
@@ -4531,6 +4662,36 @@ function updateScaleStatus(){
   }
 }
 
+// Reuses the exact same per-floor cache drawRoomAreaLabels() already fills
+// (getRoomAreasForFloor), so calling this every render() costs almost
+// nothing beyond the first time a floor's walls actually change — see the
+// comment on roomAreaCache.
+function updateRoomAreaStats(){
+  const el = document.getElementById("roomAreaStats");
+  if (!el) return;
+  el.textContent = "";
+  const floor = activeFloor();
+  const version = activeVersion();
+  const thisFloor = getRoomAreasForFloor(floor);
+  let houseTotal = 0, anyUncalibrated = !floor.calibration;
+  version.floors.forEach(f=>{
+    houseTotal += getRoomAreasForFloor(f).totalM2;
+    if (!f.calibration) anyUncalibrated = true;
+  });
+  const line1 = document.createElement("div");
+  line1.textContent = `This floor: ${thisFloor.rooms.length} room${thisFloor.rooms.length===1?"":"s"}, ${formatAreaM2(thisFloor.totalM2)}`;
+  const line2 = document.createElement("div");
+  line2.textContent = `Whole house (${version.floors.length} floor${version.floors.length===1?"":"s"}): ${formatAreaM2(houseTotal)}`;
+  el.appendChild(line1);
+  el.appendChild(line2);
+  if (anyUncalibrated){
+    const warn = document.createElement("div");
+    warn.style.color = "#d9995a";
+    warn.textContent = "One or more floors aren't calibrated — their areas are a rough estimate.";
+    el.appendChild(warn);
+  }
+}
+
 function updateSelPanel(){
   const panel = document.getElementById("selPanel");
   const title = document.getElementById("selPanelTitle");
@@ -4702,6 +4863,10 @@ document.getElementById("fldShowOverlay").addEventListener("change", (e)=>{
 });
 document.getElementById("fldShowClearance").addEventListener("change", (e)=>{
   showClearance = e.target.checked;
+  render();
+});
+document.getElementById("fldShowRoomAreas").addEventListener("change", (e)=>{
+  showRoomAreas = e.target.checked;
   render();
 });
 document.getElementById("fldLockWallAngles").addEventListener("change", (e)=>{
