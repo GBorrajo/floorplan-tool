@@ -328,6 +328,147 @@ floor within one.
     `.json` — it's recomputed fresh from the walls every time, so it can
     never go stale or drift from what's actually traced.
 
+## Flooring (2026-10-08)
+
+The right-hand **Flooring** panel is a searchable library of ~330 built-in
+floors (wood planks/herringbone/chevron/parquet, laminate & vinyl, ceramic
+and porcelain tile, natural stone, carpet, microcement & concrete, plus
+cork/rubber/lino/outdoor). Every one is drawn by the tool itself as a
+seamless texture at true size from the floor's calibration — no image files.
+
+- **Drag** a swatch onto a room to lay it; or **click** a swatch to arm it
+  and click each room in turn (click the swatch again or press Escape to
+  stop). The "No flooring" swatch strips a room the same two ways.
+- A "room" is exactly what the area calculator finds: a fully enclosed gap
+  between traced walls. No area label on a space means it can't be floored.
+- **Rooms on this floor** lists every room with its flooring; hover a row to
+  highlight the room, ↻ Turn turns the lay direction 45° (double-clicking
+  the room on the canvas does the same), ✕ removes it.
+- **Schedule** totals m² per flooring across every floor of the current
+  version, with an "order" figure that adds the wastage % you set.
+- Room labels show the flooring name under the area when there's space.
+- Flooring is stored per floor as `floorings: [{x,y,material,rotation}]` —
+  a point inside the room plus a material id — and is copied with versions,
+  saved in the .json, and covered by undo/redo.
+
+Not done yet: real retailer products with photos (the likely next step),
+and uploading your own sample photo as a swatch.
+
+## Rugs (2026-10-08)
+
+Furniture → **Rugs**: pick one of 40 colours, then a shape (rectangular,
+square, round, runner) and click the canvas to lay it. A rug is an ordinary
+furniture box (`type: "rug"` / `"ruground"`) that always draws, and is
+clicked, *underneath* every other piece of furniture — enforced at draw
+time (`boxesInDrawOrder`), not by array order, so it holds no matter when
+the rug was added. Select a rug and pick a colour (sidebar or the selection
+panel) to recolour it. Round rugs stay circular on resize; Shift = oval.
+
+## Copy/paste between floors, and staircases with turns (2026-10-09)
+
+**Copy/paste** (Ctrl/Cmd+C / V, or the buttons under "Copy between floors")
+now covers the whole selection: any mix of walls, windows, doors and
+furniture, one item or a group. Ctrl/Cmd+A selects everything on the floor.
+Pasting onto a different floor lands at the same coordinates (scaled if the
+two floors are calibrated differently, so real sizes are kept); a blank
+floor takes on the source floor's scale. Pasting on the same floor, or
+again, steps each copy 20cm. Pasted items come back selected as a group.
+Doors/windows stay attached to their wall if the wall was copied too.
+Flooring is not copied.
+
+**Staircases** can turn. Select one: drag a ＋ to add a turn in that flight,
+drag dots to set angle/length (15° steps; Shift = any angle), click a
+turn's dot then "Make this turn curved/sharp" in the selection panel
+(sharp = mitred landing, curved = winding steps), double-click a dot to
+remove it. Stored on the stairs box as `path` (centreline points in cm,
+box-local, bottom step to top, `curve:true` on curved turns) plus
+`stairWidthCm`; a staircase with no `path` is a plain straight flight.
+
+## Curved walls and door types (2026-10-18)
+
+**Curved walls**: select a wall and drag the amber dot in its middle to bend
+it into an arc (same mechanism as a bay window; stored as the wall's
+`bowCm`). Drag it back to the line, or use "Straighten", to undo the bend.
+Room areas, door cuts, door/window snapping and the length readout all
+follow the curve; a door dropped on a curved wall turns to sit along it.
+
+**Round a corner** (Structure → "◜ Round a corner"): hover where two
+straight walls meet (an amber dot marks the corner — walls that overshoot or
+stop just short of each other still count), click for a 1m-radius curve, or
+press and drag outward to size it with a live radius readout. Both walls are
+trimmed back and joined by an ordinary curved wall tangent to each, so the
+result can be bent, straightened or deleted like any wall. Works at any
+corner angle, not just 90°. Stays armed until Escape / another tool.
+
+**Door types**: Door, Double doors, French doors, Sliding doors, Bifold
+doors, Pocket door, Opening — each its own drag-onto-a-wall button, stored
+as the door's `doorType` (missing = the original single door). A selected
+door shows a handle at each end: drag either one to stretch the door to any
+width (sliding doors gain a panel per ~1.5m, bifolds a leaf per ~65cm).
+Change a placed door's type from the selection panel.
+
+## Build / Flooring / Furnish modes (2026-10-21)
+
+The sidebar works in three stages, switched at the top (remembered between
+visits). Sections opt in with `data-modes="build|flooring|furnish"`.
+
+- **Build**: image & scale, walls, doors, windows, staircase, round-a-corner,
+  copy between floors, detection — and **Rooms**: every enclosed room with a
+  dropdown to say what it is (or a custom name). Stored per floor as
+  `roomNames: [{x,y,name}]` (same point-in-room scheme as flooring).
+- **Flooring**: the flooring library (now in the left bar; the right-hand
+  panel is gone).
+- **Furnish**: click a room's floor and it's focused — every other room dims
+  20% — and the bar lists what belongs in that kind of room first
+  (ROOM_TYPES), then everything else by group. Pick an item, then click on
+  the plan to place it; wall-standing things (WALL_BACKED_TYPES) dropped near
+  a wall turn and sit flush against it. Kitchen units, wardrobes, shelves and
+  dining chairs can also be pressed and dragged to lay a run, previewed live:
+  - the drag is smoothed into straight 45° legs, so an L or U drawn by hand
+    becomes an L or U run that follows the walls;
+  - an end within 70cm of a wall across its path goes right up to it, and a
+    drag through a wall stops at it;
+  - kitchen units are 60cm each; each square corner gets an L-shaped corner
+    unit (90cm arms, `kitchencorner`), and a leg closed at both ends (wall or
+    corner unit) has its last unit stretched or shrunk to fit exactly;
+  - dining chairs go at 60cm centres, tucked 10cm under and facing a
+    rectangular table they run alongside (clipped to its edge), or facing a
+    round table's centre.
+  Each run is one undo step and comes back selected.
+- Plain drag on empty floor is the selection box again (Shift adds to it);
+  a click on empty floor focuses that room (Build / Furnish).
+- Rug colours/shapes, custom items and clearance guides live in Furnish.
+
+## Sofas: drop, then stretch or L-shape from the ends (2026-10-21, third pass)
+
+In Furnish, pick Sofa: the outline follows the cursor, turned to face away
+from any wall within 1.5m (direction only — never pulled against it), and a
+click drops a 2-seater (160cm) exactly there, then switches to Select with
+it selected. A selected sofa has a handle at each end:
+- **straight sofa**: drag either end along the sofa to lengthen it (never
+  below 160cm); the name updates live (2, 2.5 (175+), 3 (200+), 4 (230+),
+  5 seater (270+)) beside the cursor. Pull an end out into the room past
+  the seat depth (+30cm) and that end becomes the return of an L-shaped
+  corner sofa, its outer corner following the cursor; push back to
+  straighten.
+- **corner sofa**: the main body's end handle changes only the main
+  length; the return's end handle changes only the return (push it back
+  in to straighten the sofa).
+Each drag is one undo step. Stored as a sofa box with `cornerSide` (±1) and
+`sofaDepthCm`; `autoLabel` keeps the name following the size until a label
+is typed.
+
+## Autosave moved to IndexedDB (2026-10-21)
+
+Autosave used localStorage, whose ~5MB-per-site quota a real project
+outgrew (floorplan images are stored inside the project as base64, and
+"New version" copies them) — every autosave then failed with
+QuotaExceededError and a refresh brought back the last copy that fitted.
+It now writes to IndexedDB (quota is a share of free disk). Startup reads
+IndexedDB first, then any old localStorage copy (deleted after the first
+successful IndexedDB save). Nothing is written until that read finishes,
+and nothing is rewritten unless something changed.
+
 ## Data model (for future edits)
 
 State lives in one JS object (`state` in `index.html`):
