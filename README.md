@@ -439,6 +439,51 @@ visits). Sections opt in with `data-modes="build|flooring|furnish"`.
   a click on empty floor focuses that room (Build / Furnish).
 - Rug colours/shapes, custom items and clearance guides live in Furnish.
 
+## View fitting and steadiness (2026-10-21)
+
+"Fit" now fits the image *and* everything traced (walls/furniture that run
+past the image's edges included — `contentBounds`/`fitView`). The view is
+refitted only on load, switching floor, opening a new image, and the Fit
+button. Everything else — undo/redo, paste, version switch, window resize,
+the zoom slider — keeps whatever is in the middle of the view where it is
+(`resizeCanvas()` with no options), instead of re-centring.
+
+## Furniture can't go into walls (2026-10-21)
+
+Placing or dragging furniture into a wall pushes it back out to the wall
+face (door openings stay passable). Drags move in 4cm steps with the
+push-out after each, so things slide along a wall and can't tunnel through
+a thin partition on a fast drag. Shift while dragging bypasses it. See
+pushOutOfWalls / moveClearOfWalls.
+
+## Kitchen appliances and units (2026-10-21)
+
+- **Under-counter appliances** — dishwasher, washing machine, tumble dryer,
+  standalone oven — dropped on a kitchen unit go *under* it: the unit stays,
+  records `under: <type>`, is tinted toward the appliance's colour and
+  labelled e.g. "Dishwasher (under)". The appliance keeps its own 60cm
+  width whatever unit it lands on: the run is re-cut so a 60cm unit sits
+  over it, lined up with an existing cabinet edge (the nearest one that
+  doesn't leave an offcut under 30cm), and the rest of the run is
+  re-divided around it. Change or clear it from the unit's "Under the
+  worktop" dropdown. Not over a unit, they stand on their own.
+- **Full-height / own-worktop** items — fridge freezer, cooker, sink,
+  stacked washer-dryer — replace the units they cover. A sink stays exactly
+  where it's dropped along the run (only its back snaps, to the wall). For
+  the others: if the units
+  left on one side come to under 45cm, the appliance slides over to close
+  that side up and the space goes to the other side; the plain units on
+  each side are re-divided into 60cm units with one odd unit (30–90cm)
+  next to the appliance; an offcut still under 30cm is absorbed into a
+  corner unit it touches (its arm grows) or kept as a "Filler".
+- **Moving an appliance along a run** — a sink, hob, fridge freezer or
+  stacked washer-dryer dragged out of its place leaves no gap: the old slot
+  is filled with a unit and that run re-divided (only if it was in a run —
+  a unit on the same wall line butting against one of its sides).
+- **Stacking** — a tumble dryer dropped on a washing machine (or the other
+  way round) becomes one "Washer + dryer (stacked)"; it's also in the list.
+- New items: Tumble dryer, Standalone oven, Washer + dryer (stacked).
+
 ## Sofas: drop, then stretch or L-shape from the ends (2026-10-21, third pass)
 
 In Furnish, pick Sofa: the outline follows the cursor, turned to face away

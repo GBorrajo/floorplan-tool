@@ -338,6 +338,16 @@
         <button id="btnFlipHinge">⇄ Flip hinge side</button>
         <button id="btnFlipSwing">⇅ Flip swing direction</button>
       </div>
+      <div class="field" id="fldUnderWrap" style="display:none;">
+        <label>Under the worktop</label>
+        <select id="fldUnder" style="font:inherit;font-size:13px;background:var(--field-bg);color:var(--text);border:1px solid var(--panel-border);border-radius:5px;padding:6px 7px;">
+          <option value="">Nothing (cupboard)</option>
+          <option value="dishwasher">Dishwasher</option>
+          <option value="washer">Washing machine</option>
+          <option value="dryer">Tumble dryer</option>
+          <option value="oven">Oven</option>
+        </select>
+      </div>
       <div class="field" id="fldRugColorWrap" style="display:none;">
         <label>Rug colour</label>
         <div class="rugChips" id="selRugChips"></div>
@@ -437,6 +447,9 @@ const FURNITURE_TYPES = [
   {key:"fridge",     label:"Fridge freezer", wCm:60,  dCm:65,  color:"#7fa8d9", category:"Kitchen"},
   {key:"dishwasher", label:"Dishwasher",     wCm:60,  dCm:60,  color:"#6fa3c9", category:"Kitchen"},
   {key:"washer",     label:"Washing machine",wCm:60,  dCm:60,  color:"#5a8fc7", category:"Kitchen"},
+  {key:"dryer",      label:"Tumble dryer",   wCm:60,  dCm:60,  color:"#7d8fb8", category:"Kitchen"},
+  {key:"washerstack",label:"Washer + dryer (stacked)", wCm:60, dCm:65, color:"#5a7fb0", category:"Kitchen"},
+  {key:"oven",       label:"Standalone oven",wCm:60,  dCm:60,  color:"#c9714f", category:"Kitchen"},
   // Bedroom
   {key:"beddbl",     label:"Bed (double)",   wCm:140, dCm:190, color:"#e0637c", category:"Bedroom"},
   {key:"bedsgl",     label:"Bed (single)",   wCm:90,  dCm:190, color:"#e0637c", category:"Bedroom"},
@@ -933,11 +946,40 @@ function computeFit(){
   // literally impossible to see); >1 grows it past the viewport, and the
   // canvas itself grows to match (see resizeCanvas) so native scrolling
   // reaches the rest.
-  const sx = baseCanvasW / f.worldWidth;
-  const sy = baseCanvasH / f.worldHeight;
-  fitScale = Math.min(sx, sy) * zoomLevel;
-  offsetX = (canvasW - f.worldWidth*fitScale) / 2;
-  offsetY = (canvasH - f.worldHeight*fitScale) / 2;
+  //
+  // What "fit" fits is viewBounds — the image AND everything traced, which
+  // can run past the image's edges (see fitView) — and it's only
+  // recalculated when the view is deliberately refitted, never as a side
+  // effect of editing, so the view doesn't creep while you draw.
+  const vb = viewBounds || {minX:0, minY:0, maxX:f.worldWidth, maxY:f.worldHeight};
+  const vw = Math.max(1, vb.maxX-vb.minX), vh = Math.max(1, vb.maxY-vb.minY);
+  fitScale = Math.min(baseCanvasW / vw, baseCanvasH / vh) * zoomLevel;
+  offsetX = canvasW/2 - (vb.minX + vw/2)*fitScale;
+  offsetY = canvasH/2 - (vb.minY + vh/2)*fitScale;
+}
+// The floor's image plus everything traced on it (walls at their thickness,
+// furniture, doors), with a small margin — what fitting the view shows.
+let viewBounds = null;
+function contentBounds(floor){
+  let minX = 0, minY = 0, maxX = floor.worldWidth, maxY = floor.worldHeight;
+  const add = (x, y)=>{ minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+  floor.walls.forEach(w=>{
+    const h = cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)/2;
+    wallCenterlinePoints(w).forEach(p=>{ add(p.x-h, p.y-h); add(p.x+h, p.y+h); });
+  });
+  floor.boxes.forEach(b=>{ const a = boxWorldAabb(b); add(a.minX, a.minY); add(a.maxX, a.maxY); });
+  const pad = Math.max(maxX-minX, maxY-minY)*0.03;
+  return {minX:minX-pad, minY:minY-pad, maxX:maxX+pad, maxY:maxY+pad};
+}
+// Refit: show the whole of the active floor's image and drawing, centred,
+// at 100% zoom. Done on load, on switching floor, on a new image, and by
+// the Fit button — nothing else moves the view on its own.
+function fitView(){
+  viewBounds = contentBounds(activeFloor());
+  zoomLevel = 1;
+  const z = document.getElementById("fldZoom"); if (z) z.value = 100;
+  const zp = document.getElementById("zoomPct"); if (zp) zp.textContent = "100%";
+  resizeCanvas({recenter:true});
 }
 function toScreen(x, y){ return {x: offsetX + x*fitScale, y: offsetY + y*fitScale}; }
 function toWorld(x, y){ return {x: (x-offsetX)/fitScale, y: (y-offsetY)/fitScale}; }
@@ -1129,6 +1171,7 @@ function loadProjectFile(file){
       const parsed = JSON.parse(reader.result);
       pushUndoSnapshot();
       applyLoadedState(parsed);
+      fitView();
       scheduleAutosave();
     }
     catch(e){ alert("Could not read that file: " + e.message); }
@@ -1177,7 +1220,7 @@ function switchFloor(id){
   loadImageElementForActiveFloor();
   updateScaleStatus();
   renderFloorTabs();
-  resizeCanvas();
+  fitView();
 }
 function addFloor(){
   pushUndoSnapshot();
@@ -1406,7 +1449,7 @@ async function loadImageFile(file){
       multiSelection = [];
       updateScaleStatus();
       updateSelPanel();
-      resizeCanvas();
+      fitView();
       scheduleAutosave();
     };
     img.onerror = ()=>{
@@ -1428,7 +1471,17 @@ async function loadImageFile(file){
 // (viewportX,viewportY) in the visible viewport, i.e. zooming keeps
 // whatever's under the cursor/pinch fixed in place rather than jumping the
 // view back to centre. Used by wheel-pinch/ctrl-scroll zoom.
-function resizeCanvas(anchor){
+// `opt`: {worldPoint, viewportX, viewportY} keeps that world point under
+// that spot in the viewport (cursor-anchored zoom); {recenter:true} centres
+// the drawing; nothing keeps whatever is in the middle of the view right
+// where it is — so undo, paste, a window resize or the zoom slider never
+// jump the view away from what you're looking at.
+function resizeCanvas(opt){
+  opt = opt || {};
+  const keep = (!opt.worldPoint && !opt.recenter && baseCanvasW > 0 && fitScale > 0)
+    ? {worldPoint: toWorld(wrap.scrollLeft + baseCanvasW/2, wrap.scrollTop + baseCanvasH/2), viewportX: baseCanvasW/2, viewportY: baseCanvasH/2}
+    : null;
+  const anchor = opt.worldPoint ? opt : keep;
   const rect = wrap.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   // A 0×0 (or otherwise degenerate) measurement means the browser hasn't
@@ -1441,7 +1494,7 @@ function resizeCanvas(anchor){
   } else if (baseCanvasW === 0 || baseCanvasH === 0){
     // No good size yet at all (first paint) — try again next frame rather
     // than rendering at zero size.
-    requestAnimationFrame(()=>resizeCanvas());
+    requestAnimationFrame(()=>resizeCanvas(opt));
     return;
   } else {
     console.warn("resizeCanvas: canvasWrap measured 0×0, reusing last known size", baseCanvasW, baseCanvasH);
@@ -1461,9 +1514,7 @@ function resizeCanvas(anchor){
     wrap.scrollLeft = s.x - anchor.viewportX;
     wrap.scrollTop = s.y - anchor.viewportY;
   } else {
-    // Keep the view centred by default whenever the canvas is resized (new
-    // floor/image, zoom change, window resize) — matches how the content was
-    // already always centred within the canvas even before zoom existed.
+    // recentre: the drawing sits centred in the canvas (see computeFit), so centre the scroll too
     wrap.scrollLeft = (canvasW - baseCanvasW) / 2;
     wrap.scrollTop = (canvasH - baseCanvasH) / 2;
   }
@@ -2104,6 +2155,22 @@ function drawWasherDetail(hw,hd){
   ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // control panel
   ctx.beginPath(); ctx.arc(0, hd*0.15, Math.min(hw,hd)*0.55, 0, Math.PI*2); ctx.stroke(); // drum door
 }
+function drawDryerDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // control panel
+  const r = Math.min(hw,hd)*0.55;
+  ctx.beginPath(); ctx.arc(0, hd*0.15, r, 0, Math.PI*2); ctx.stroke(); // door
+  ctx.beginPath(); ctx.moveTo(-r*0.5, hd*0.15); ctx.lineTo(r*0.5, hd*0.15); ctx.stroke(); // lint filter
+}
+// Seen from above only the top machine shows, so a stack is drawn as the
+// dryer on top with the washer's edge peeking out behind it.
+function drawWasherStackDetail(hw,hd){
+  ctx.strokeRect(-hw+3, -hd+3, hw*2-6, hd*2-6);
+  drawDryerDetail(hw*0.9, hd*0.9);
+}
+function drawOvenDetail(hw,hd){
+  ctx.fillRect(-hw,-hd, hw*2, hd*2*0.15); // control panel
+  roundRectPath(-hw*0.6, -hd*0.35, hw*1.2, hd*0.9, 3); ctx.stroke(); // door window
+}
 function drawDrawersDetail(hw,hd){
   const rows = 3;
   ctx.beginPath();
@@ -2337,6 +2404,9 @@ const FURNITURE_DETAIL_DRAWERS = {
   fridge: drawFridgeDetail,
   dishwasher: drawDishwasherDetail,
   washer: drawWasherDetail,
+  dryer: drawDryerDetail,
+  washerstack: drawWasherStackDetail,
+  oven: drawOvenDetail,
   drawers: drawDrawersDetail,
   bedside: drawCoffeeDetail,
   toilet: drawToiletDetail,
@@ -2354,9 +2424,10 @@ const FURNITURE_DETAIL_DRAWERS = {
 // handler below, and FURNITURE_DETAIL_DRAWERS entries for these types clip
 // to the ellipse, not a rect (see furnitureFootprintPath).
 const ROUND_FURNITURE_TYPES = new Set(["dininground", "ruground"]);
-function furnitureFootprintPath(type, hw, hd){
+function furnitureFootprintPath(type, hw, hd, box){
   if (type === "kitchencorner"){
-    const aw = hw*2*(60/90), ah = hd*2*(60/90); // arm depth: 60 of the 90cm
+    // arms are always 60cm deep; an arm can be longer than 90cm once it has absorbed an offcut (see absorbIntoCornerUnit)
+    const aw = hw*2*(60/((box && box.wCm) || 90)), ah = hd*2*(60/((box && box.dCm) || 90));
     ctx.beginPath();
     ctx.moveTo(-hw,-hd); ctx.lineTo(hw,-hd); ctx.lineTo(hw,-hd+ah); ctx.lineTo(-hw+aw,-hd+ah); ctx.lineTo(-hw+aw,hd); ctx.lineTo(-hw,hd);
     ctx.closePath();
@@ -2381,13 +2452,13 @@ function drawFurnitureShape(type, wScreen, dScreen, color, isSel, box){
   ctx.fillStyle = RUG_TYPES.has(type) ? color : color + "cc"; // a rug is solid — the floor shouldn't show through it
   ctx.strokeStyle = isSel ? "#ffffff" : "#00000055";
   ctx.lineWidth = isSel ? 2 : 1;
-  furnitureFootprintPath(type, hw, hd);
+  furnitureFootprintPath(type, hw, hd, box);
   ctx.fill(); ctx.stroke();
 
   const drawDetail = FURNITURE_DETAIL_DRAWERS[type];
   if (drawDetail){
     ctx.save();
-    furnitureFootprintPath(type, hw, hd);
+    furnitureFootprintPath(type, hw, hd, box);
     ctx.clip(); // keep detail shapes inside the footprint
     ctx.fillStyle = "rgba(0,0,0,0.20)";
     ctx.strokeStyle = "rgba(0,0,0,0.35)";
@@ -2482,7 +2553,13 @@ function drawBoxes(){
       ctx.save();
       ctx.rotate(b.rotation);
       const isSel = isItemSelected("box", b.id);
-      drawFurnitureShape(b.type, wScreen, dScreen, b.color, isSel, b);
+      const underSpec = b.type === "kitchen" && b.under ? furnitureSpec(b.under) : null;
+      drawFurnitureShape(b.type, wScreen, dScreen, underSpec ? mixHex(b.color, underSpec.color, 0.45) : b.color, isSel, b);
+      if (underSpec){
+        // the appliance's own outline, faint, as if seen through the worktop
+        const dd = FURNITURE_DETAIL_DRAWERS[b.under];
+        if (dd){ ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.strokeStyle = "rgba(0,0,0,0.45)"; ctx.setLineDash([3,2]); dd(wScreen/2*0.85, dScreen/2*0.85, b); ctx.restore(); }
+      }
       ctx.restore();
       // Label drawn unrotated (translate-only ctx) so it stays upright no
       // matter which way the furniture itself is turned.
@@ -2492,6 +2569,8 @@ function drawBoxes(){
         const Dp = (b.sofaDepthCm||SOFA_DEPTH_CM)/b.wCm*wScreen, off = rotate(-b.cornerSide*Dp/2, -dScreen/2+Dp/2, b.rotation);
         const lab = rotatedAabbSize(wScreen-Dp, Dp, b.rotation);
         drawFurnitureLabel(b.autoLabel ? sofaName(b) : b.label, off.x, off.y, lab.w, lab.h);
+      } else if (b.type === "kitchen" && b.under){
+        drawFurnitureLabel(`${furnitureSpec(b.under).label} (under)`, 0, 0, aabb.w, aabb.h);
       } else if (!isRug(b) && !(b.type === "stairs" && b.path)) drawFurnitureLabel(b.type === "sofa" && b.autoLabel ? sofaName(b) : b.label, 0, 0, aabb.w, aabb.h); // a rug is mostly hidden under labelled furniture — its own label would just add clutter
     }
     ctx.restore();
@@ -3042,10 +3121,11 @@ function addBoxAt(spec, world, rotation){
     if (spec.autoLabel) box.autoLabel = true;
   }
   f.boxes.push(box);
-  resolveKitchenUnitOverlaps(box); // no-op unless box is a kitchen appliance placed over a kitchen unit
-  select("box", box.id);
+  // an appliance dropped on kitchen units cuts them, goes under one, or stacks — what stands for it afterwards is what gets selected
+  const result = resolveKitchenUnitOverlaps(box) || box;
+  select("box", result.id);
   scheduleAutosave();
-  return box;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -4746,67 +4826,364 @@ function snapBoxToNearbyBoxes(box, candidateX, candidateY){
 // afterward), so the cut has to actually happen to the stored boxes once,
 // at the moment the appliance is placed/dropped.
 // ---------------------------------------------------------------------------
-const KITCHEN_APPLIANCE_TYPES = ["fridge","cooker","sink","dishwasher","washer"];
-const KITCHEN_UNIT_MIN_PIECE_CM = 8; // a remainder shorter than this is discarded rather than kept as an unusable sliver
+// ---------------------------------------------------------------------------
+// Furniture can't overlap walls. Every wall (curved ones as their sampled
+// pieces) is a thick rectangle — with door openings left open, so things
+// can still go through a doorway — and a piece of furniture that overlaps
+// one is pushed straight back out by the smallest move that clears it
+// (separating-axis test), a few rounds over so a corner of two walls is
+// cleared too. Touching a wall face exactly is fine. Shift while dragging
+// bypasses it, like every other snap.
+// ---------------------------------------------------------------------------
+const WALL_CONTACT_EPS_CM = 0.3;
+function wallObstacles(){
+  const f = activeFloor(), doors = f.boxes.filter(b => b.kind === "door"), out = [];
+  f.walls.forEach(w=>{
+    if ((w.type||"wall") !== "wall") return;
+    const half = cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)/2;
+    const segs = isCurvedWall(w) ? curvedWallVisiblePieces(w, doors).flatMap(pointsToSegments) : wallVisibleSegments(w, doors);
+    segs.forEach(sg=>{
+      const dx = sg.x2-sg.x1, dy = sg.y2-sg.y1, l = Math.hypot(dx, dy);
+      if (l < 1e-6) return;
+      const nx = -dy/l*half, ny = dx/l*half;
+      out.push([{x:sg.x1+nx, y:sg.y1+ny}, {x:sg.x2+nx, y:sg.y2+ny}, {x:sg.x2-nx, y:sg.y2-ny}, {x:sg.x1-nx, y:sg.y1-ny}]);
+    });
+  });
+  return out;
+}
+// Smallest translation moving convex polygon A clear of B, or null if they don't (meaningfully) overlap.
+function polygonMTV(A, B){
+  const eps = cmToWorld(WALL_CONTACT_EPS_CM);
+  const cA = A.reduce((s,p)=>({x:s.x+p.x/A.length, y:s.y+p.y/A.length}), {x:0,y:0});
+  const cB = B.reduce((s,p)=>({x:s.x+p.x/B.length, y:s.y+p.y/B.length}), {x:0,y:0});
+  let best = null, bestOv = Infinity;
+  for (const P of [A, B]) for (let i=0;i<P.length;i++){
+    const p = P[i], q = P[(i+1)%P.length], ex = q.x-p.x, ey = q.y-p.y, l = Math.hypot(ex, ey);
+    if (l < 1e-9) continue;
+    const ax = {x:-ey/l, y:ex/l};
+    const proj = Q => Q.map(v => v.x*ax.x + v.y*ax.y);
+    const pa = proj(A), pb = proj(B);
+    const ov = Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb));
+    if (ov <= eps) return null; // a separating axis: no overlap
+    if (ov < bestOv){
+      bestOv = ov;
+      const sgn = ((cA.x-cB.x)*ax.x + (cA.y-cB.y)*ax.y) < 0 ? -1 : 1;
+      best = {x:ax.x*ov*sgn, y:ax.y*ov*sgn};
+    }
+  }
+  return best;
+}
+// Moves a dragged box from where it was to where the cursor wants it in
+// short steps, clearing walls after each one — so it always comes back out
+// on the side it approached from and slides along the face, rather than a
+// fast drag jumping it past a thin wall's middle and out the other side.
+function moveClearOfWalls(box, fromX, fromY, toX, toY){
+  if (box.type === "stairs" && box.path){ box.x = toX; box.y = toY; return; }
+  const step = cmToWorld(4), dist = Math.hypot(toX-fromX, toY-fromY), n = Math.max(1, Math.ceil(dist/step));
+  // each step adds the same small slice of the move to wherever the last step actually ended up (after any push-out)
+  const ax = (toX-fromX)/n, ay = (toY-fromY)/n;
+  box.x = fromX; box.y = fromY;
+  for (let i=0;i<n;i++){
+    box.x += ax; box.y += ay;
+    pushOutOfWalls(box);
+  }
+}
+// Moves `box` (anything with x, y, wCm, dCm, rotation) out of any wall it overlaps.
+function pushOutOfWalls(box){
+  if (box.type === "stairs" && box.path) return; // a turning staircase's box is just its bounding box — too rough to test
+  const walls = wallObstacles();
+  for (let round=0; round<6; round++){
+    let moved = false;
+    for (const W of walls){
+      const mtv = polygonMTV(boxWorldCorners(box), W);
+      if (mtv){ box.x += mtv.x; box.y += mtv.y; moved = true; }
+    }
+    if (!moved) break;
+  }
+}
 
+// Kitchen appliances meeting kitchen units. Three kinds:
+// - under-counter (dishwasher, washing machine, tumble dryer, oven): they
+//   live beneath the worktop, so dropped on a unit they don't cut it — the
+//   unit records what's under it (`under`) and shows it by name and a
+//   colour tint (see drawBoxes). Not over a unit, they stand on their own.
+// - full-height / own-worktop (fridge freezer, cooker, sink, washer-dryer
+//   stack): they replace whatever units they cover. The plain units left on
+//   either side are then re-divided into standard 60cm units (one stretched
+//   or shrunk to take up the difference, never under 30cm), so no thin
+//   offcuts are left; an offcut too small even for that is absorbed into a
+//   corner unit it touches, or kept as a filler.
+// - a washing machine and tumble dryer dropped on one another (outside a
+//   run of units) become a single stacked washer-dryer.
+const UNDER_COUNTER_TYPES = ["dishwasher","washer","dryer","oven"];
+const KITCHEN_APPLIANCE_TYPES = ["fridge","cooker","sink","washerstack", ...UNDER_COUNTER_TYPES];
+const KITCHEN_UNIT_MIN_PIECE_CM = 0.5; // even a tiny offcut is kept for the moment, so closeUpScraps / tidyKitchenRuns can close it up rather than leave a gap
+const KITCHEN_STD_CM = 60;
+const KITCHEN_MIN_UNIT_CM = 30;     // narrower than this isn't a real unit — merged away, see repackKitchenChain
+const KITCHEN_FILLER_MIN_CM = 2;
+
+// How much of `box`'s footprint (cm²) overlaps unit `ku` — exact when they
+// share a rotation, a bounding approximation otherwise.
+function kitchenOverlap(box, ku){
+  const local = boxWorldCorners(box).map(p=>rotate(p.x-ku.x, p.y-ku.y, -ku.rotation));
+  const xs = local.map(p=>p.x), ys = local.map(p=>p.y);
+  const hw = cmToWorld(ku.wCm)/2, hd = cmToWorld(ku.dCm)/2;
+  const ovMinX = Math.max(Math.min(...xs),-hw), ovMaxX = Math.min(Math.max(...xs),hw);
+  const ovMinY = Math.max(Math.min(...ys),-hd), ovMaxY = Math.min(Math.max(...ys),hd);
+  if (ovMinX >= ovMaxX || ovMinY >= ovMaxY) return null;
+  return {ovMinX, ovMaxX, ovMinY, ovMaxY, hw, hd, areaCm2: worldToCm(ovMaxX-ovMinX)*worldToCm(ovMaxY-ovMinY)};
+}
+// Returns the box that ends up standing for `applianceBox` (it may have
+// gone under a unit, or merged into a stack), so the caller can select it.
 function resolveKitchenUnitOverlaps(applianceBox){
-  if (!applianceBox || applianceBox.kind !== "furniture" || !KITCHEN_APPLIANCE_TYPES.includes(applianceBox.type)) return;
+  if (!applianceBox || applianceBox.kind !== "furniture" || !KITCHEN_APPLIANCE_TYPES.includes(applianceBox.type)) return applianceBox;
   const f = activeFloor();
+  const t = applianceBox.type;
+  const appArea = applianceBox.wCm*applianceBox.dCm;
+  const best = (pred)=>{
+    let hit = null;
+    f.boxes.forEach(o=>{
+      if (o.id === applianceBox.id || !pred(o)) return;
+      const ov = kitchenOverlap(applianceBox, o);
+      if (ov && (!hit || ov.areaCm2 > hit.ov.areaCm2)) hit = {box:o, ov};
+    });
+    return hit && hit.ov.areaCm2 >= appArea*0.3 ? hit.box : null;
+  };
+  if (UNDER_COUNTER_TYPES.includes(t)){
+    const unit = best(o => o.type === "kitchen");
+    const slot = unit && fitUnderCounterAppliance(applianceBox, unit);
+    if (slot){
+      f.boxes = f.boxes.filter(b => b.id !== applianceBox.id);
+      return slot;
+    }
+    if (t === "washer" || t === "dryer"){
+      const partner = best(o => o.type === (t === "washer" ? "dryer" : "washer"));
+      if (partner){
+        const spec = furnitureSpec("washerstack");
+        Object.assign(partner, {type:"washerstack", label:spec.label, color:spec.color, wCm:Math.max(partner.wCm, applianceBox.wCm), dCm:Math.max(partner.dCm, applianceBox.dCm)});
+        f.boxes = f.boxes.filter(b => b.id !== applianceBox.id);
+        return partner;
+      }
+    }
+    return applianceBox;
+  }
+  // full-height appliance: cut the units it covers
   const appCorners = boxWorldCorners(applianceBox);
-  const toRemove = [];
-  const toAdd = [];
+  const toRemove = [], toAdd = [];
   f.boxes.forEach(ku=>{
     if (ku.type !== "kitchen" || ku.id === applianceBox.id) return;
-    // Appliance corners in the kitchen unit's own local frame — an exact
-    // rectangle when the two share a rotation (the common case, especially
-    // now furniture rotation default-snaps to 90°); otherwise this is an
-    // axis-aligned bounding approximation of the appliance's footprint,
-    // which can over-cut slightly rather than under-cut. True polygon
-    // subtraction is out of scope.
-    const local = appCorners.map(p=>rotate(p.x-ku.x, p.y-ku.y, -ku.rotation));
-    const lXs = local.map(p=>p.x), lYs = local.map(p=>p.y);
-    const appMinX = Math.min(...lXs), appMaxX = Math.max(...lXs);
-    const appMinY = Math.min(...lYs), appMaxY = Math.max(...lYs);
-    const hw = cmToWorld(ku.wCm)/2, hd = cmToWorld(ku.dCm)/2;
-    const ovMinX = Math.max(appMinX,-hw), ovMaxX = Math.min(appMaxX,hw);
-    const ovMinY = Math.max(appMinY,-hd), ovMaxY = Math.min(appMaxY,hd);
-    if (ovMinX >= ovMaxX || ovMinY >= ovMaxY) return; // no real overlap
-
+    const ov = kitchenOverlap(applianceBox, ku);
+    if (!ov) return;
+    const {ovMinX, ovMaxX, ovMinY, ovMaxY, hw, hd} = ov;
     const eps = cmToWorld(2);
     const spansFullDepth = ovMinY <= -hd+eps && ovMaxY >= hd-eps;
     const spansFullWidth = ovMinX <= -hw+eps && ovMaxX >= hw-eps;
     // Cut along the unit's own width ("run") axis whenever the overlap
     // spans its full depth — the ordinary case of an appliance sitting in
     // the same counter-depth band as a run of units — falling back to a
-    // depth-axis cut only when it's the width that's fully spanned
-    // instead. A true corner overlap (neither fully spanned) still gets a
-    // width-axis cut as the more common real-world shape.
+    // depth-axis cut only when it's the width that's fully spanned instead.
     const cutWidth = spansFullDepth || !spansFullWidth;
-    const pieces = []; // {wCm, dCm, localX, localY}
     const segs = cutWidth ? [[-hw,ovMinX],[ovMaxX,hw]] : [[-hd,ovMinY],[ovMaxY,hd]];
+    toRemove.push(ku.id);
     segs.forEach(([s,e])=>{
       const lenCm = worldToCm(e-s);
       if (lenCm < KITCHEN_UNIT_MIN_PIECE_CM) return;
       const mid = (s+e)/2;
-      pieces.push(cutWidth
-        ? {wCm:lenCm, dCm:ku.dCm, localX:mid, localY:0}
-        : {wCm:ku.wCm, dCm:lenCm, localX:0, localY:mid});
-    });
-
-    toRemove.push(ku.id);
-    pieces.forEach(p=>{
+      const p = cutWidth ? {wCm:lenCm, dCm:ku.dCm, localX:mid, localY:0} : {wCm:ku.wCm, dCm:lenCm, localX:0, localY:mid};
       const off = rotate(p.localX, p.localY, ku.rotation);
-      toAdd.push({
-        id:newId(), kind:"furniture", type:"kitchen", label:ku.label,
-        x:ku.x+off.x, y:ku.y+off.y, wCm:p.wCm, dCm:p.dCm,
-        rotation:ku.rotation, color:ku.color,
-      });
+      toAdd.push({id:newId(), kind:"furniture", type:"kitchen", label:ku.label, x:ku.x+off.x, y:ku.y+off.y, wCm:p.wCm, dCm:p.dCm, rotation:ku.rotation, color:ku.color, ...(ku.under ? {under:ku.under} : {})});
     });
   });
   if (toRemove.length){
+    const cutRotation = f.boxes.find(b => b.id === toRemove[0]).rotation;
     f.boxes = f.boxes.filter(b=>!toRemove.includes(b.id)).concat(toAdd);
     if (selection && selection.kind==="box" && toRemove.includes(selection.id)) selection = null;
+    const touched = new Set(toAdd.map(b=>b.id));
+    // a sink goes exactly where it's dropped along the run (only its back snaps, to the wall); the others may slide to merge scraps
+    if (applianceBox.type !== "sink") closeUpScraps(applianceBox, cutRotation, touched);
+    tidyKitchenRuns(touched, applianceBox);
   }
+  return applianceBox;
+}
+// After a cut: if the units left on one side of the appliance come to less
+// than a usable unit (< KITCHEN_SCRAP_CM), slide the appliance over to close
+// that side up and hand the space to the other side instead — so a fridge
+// that left 32cm one side and 20cm the other ends up with one ~52cm unit
+// beside it, not two scraps. With scraps on both sides, the smaller one is
+// closed up.
+const KITCHEN_SCRAP_CM = 45;
+function closeUpScraps(app, rotation, touched){
+  const u = {x:Math.cos(rotation), y:Math.sin(rotation)}, n = {x:-u.y, y:u.x};
+  const c = app.x*u.x + app.y*u.y, appPerp = app.x*n.x + app.y*n.y;
+  const half = cmToWorld(Math.abs(Math.cos(app.rotation-rotation)) > 0.5 ? app.wCm : app.dCm)/2, tol = cmToWorld(2);
+  const chains = kitchenChains().filter(ch => Math.abs(ch.u.x*u.x + ch.u.y*u.y) > 0.99 && Math.abs(((ch.items[0].b.x*n.x + ch.items[0].b.y*n.y)) - appPerp) < cmToWorld(40));
+  // chains are measured along their own u, which may point either way along the run
+  const span = ch => { const sgn = ch.u.x*u.x + ch.u.y*u.y > 0 ? 1 : -1; const a = ch.start*sgn, b = ch.end*sgn; return {lo:Math.min(a,b), hi:Math.max(a,b)}; };
+  const left = chains.find(ch => Math.abs(span(ch).hi - (c-half)) < tol);
+  const right = chains.find(ch => Math.abs(span(ch).lo - (c+half)) < tol);
+  const len = ch => ch ? worldToCm(ch.end - ch.start) : Infinity;
+  const Ll = len(left), Lr = len(right);
+  if (Math.min(Ll, Lr) >= KITCHEN_SCRAP_CM || (!left && !right)) return;
+  const closeLeft = Ll <= Lr, gone = closeLeft ? left : right, keep = closeLeft ? right : left;
+  const shift = cmToWorld(closeLeft ? Ll : Lr) * (closeLeft ? -1 : 1);
+  const f = activeFloor();
+  f.boxes = f.boxes.filter(b => !gone.items.some(it => it.b === b));
+  app.x += u.x*shift; app.y += u.y*shift;
+  // the freed length becomes a piece on the far side of the appliance, which tidyKitchenRuns then folds into that side's units
+  const tmpl = gone.items[0].b, w = Math.abs(worldToCm(shift));
+  const edge = closeLeft ? (c + shift + half) : (c + shift - half);
+  const mid = closeLeft ? edge + cmToWorld(w)/2 : edge - cmToWorld(w)/2;
+  const piece = {...tmpl, id:newId(), wCm:w, x:u.x*mid + n.x*(tmpl.x*n.x + tmpl.y*n.y), y:u.y*mid + n.y*(tmpl.x*n.x + tmpl.y*n.y)};
+  f.boxes.push(piece);
+  touched.add(piece.id);
+  if (keep) keep.items.forEach(it => touched.add(it.b.id));
+}
+// A sink, hob, fridge freezer or stacked washer-dryer moved out of its
+// place in a run of units leaves a gap; fill it with a unit (then re-divide
+// that run) as a fitter would. Only if it really was in a run: a kitchen
+// unit on the same line butting against one of its sides.
+const FULL_HEIGHT_TYPES = ["fridge","cooker","sink","washerstack"];
+function fillVacatedSlot(app, ox, oy){
+  if (!FULL_HEIGHT_TYPES.includes(app.type)) return;
+  const u = {x:Math.cos(app.rotation), y:Math.sin(app.rotation)}, n = {x:-u.y, y:u.x}; // n = front
+  const c0 = ox*u.x + oy*u.y, half = cmToWorld(app.wCm)/2, appBack = (ox*n.x + oy*n.y) - cmToWorld(app.dCm)/2;
+  const tol = cmToWorld(2);
+  const tmpl = activeFloor().boxes.find(k=>{
+    if (k.type !== "kitchen" || Math.abs(Math.sin(k.rotation - app.rotation)) > 0.02 || Math.cos(k.rotation - app.rotation) < 0) return false;
+    const kb = (k.x*n.x + k.y*n.y) - cmToWorld(k.dCm)/2;
+    if (Math.abs(kb - appBack) > tol) return false; // not on the same wall line
+    const kc = k.x*u.x + k.y*u.y, kh = cmToWorld(k.wCm)/2;
+    return Math.abs((kc+kh) - (c0-half)) < tol || Math.abs((kc-kh) - (c0+half)) < tol;
+  });
+  if (!tmpl) return;
+  const perpC = tmpl.x*n.x + tmpl.y*n.y;
+  const fill = {...tmpl, id:newId(), label:"Kitchen unit", wCm:app.wCm, x:u.x*c0 + n.x*perpC, y:u.y*c0 + n.y*perpC};
+  delete fill.under;
+  activeFloor().boxes.push(fill);
+  tidyKitchenRuns(new Set([fill.id]), app);
+}
+// Plain kitchen units (nothing underneath) lying end to end on one line —
+// same rotation and depth line, each starting where the last ends. Returns
+// chains as arrays of boxes in order along the run, with the run's
+// direction `u`, and each chain's start/end along it (world units).
+function kitchenChains(){
+  const units = activeFloor().boxes.filter(b => b.type === "kitchen" && !b.under);
+  const groups = new Map();
+  units.forEach(b=>{
+    const rot = ((b.rotation % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI);
+    const u = {x:Math.cos(rot), y:Math.sin(rot)}, n = {x:-u.y, y:u.x};
+    const key = rot.toFixed(3)+"|"+Math.round((b.x*n.x + b.y*n.y)*2)+"|"+Math.round(b.dCm);
+    if (!groups.has(key)) groups.set(key, {u, list:[]});
+    groups.get(key).list.push(b);
+  });
+  const chains = [], tol = cmToWorld(1);
+  groups.forEach(({u, list})=>{
+    const items = list.map(b=>{ const c = b.x*u.x + b.y*u.y, h = cmToWorld(b.wCm)/2; return {b, s:c-h, e:c+h}; }).sort((p,q)=>p.s-q.s);
+    let cur = null;
+    items.forEach(it=>{
+      if (cur && it.s - cur.end <= tol){ cur.items.push(it); cur.end = Math.max(cur.end, it.e); }
+      else { cur = {u, items:[it], start:it.s, end:it.e}; chains.push(cur); }
+    });
+  });
+  return chains;
+}
+// Re-divides every run of plain units touched by a cut (`touchedIds`) into
+// standard units — see the comment at the top of this section.
+function tidyKitchenRuns(touchedIds, appliance){
+  const f = activeFloor();
+  kitchenChains().forEach(ch=>{
+    if (!ch.items.some(it => touchedIds.has(it.b.id))) return;
+    f.boxes = f.boxes.filter(b => !ch.items.some(it => it.b === b));
+    // the odd-sized unit goes next to the appliance that caused the cut, where a real fitter would put it
+    const ac = appliance.x*ch.u.x + appliance.y*ch.u.y;
+    laySegment(ch.items[0].b, ch.u, ch.start, ch.end, Math.abs(ac - ch.start) < Math.abs(ac - ch.end));
+  });
+}
+// Fills ch.u-coordinates s0..s1 of a run (on the line of unit `tmpl`) with
+// plain units: standard 60cm ones plus one odd one (30–90cm), the odd one
+// at the start if `oddAtStart`. Too short for even one unit: absorbed into a
+// corner unit it touches, else a filler panel.
+function laySegment(tmpl, u, s0, s1, oddAtStart){
+  const f = activeFloor(), L = worldToCm(s1 - s0);
+  if (L < 0.5) return;
+  const perp = {x:-u.y, y:u.x}, pv = tmpl.x*perp.x + tmpl.y*perp.y;
+  const at = (sv)=>({x:u.x*sv + perp.x*pv, y:u.y*sv + perp.y*pv});
+  const base = {...tmpl}; delete base.under;
+  if (L < KITCHEN_MIN_UNIT_CM){
+    if (absorbIntoCornerUnit(at(s0), at(s1), L)) return;
+    if (L >= KITCHEN_FILLER_MIN_CM){ const c = at((s0+s1)/2); f.boxes.push({...base, id:newId(), label:"Filler", wCm:L, x:c.x, y:c.y}); }
+    return;
+  }
+  const n = Math.max(1, Math.round(L/KITCHEN_STD_CM));
+  const odd = L - KITCHEN_STD_CM*(n-1);
+  let widths = Array(n-1).fill(KITCHEN_STD_CM).concat([odd]);
+  if (odd < KITCHEN_MIN_UNIT_CM && n > 1) widths = Array(n-2).fill(KITCHEN_STD_CM).concat([KITCHEN_STD_CM + odd]);
+  if (oddAtStart) widths.reverse();
+  let sv = s0;
+  widths.forEach(w=>{
+    const ww = cmToWorld(w), c = at(sv + ww/2);
+    f.boxes.push({...base, id:newId(), label:"Kitchen unit", wCm:w, x:c.x, y:c.y});
+    sv += ww;
+  });
+}
+// An under-counter appliance always keeps its own width (60cm), whatever
+// width the unit it was dropped on happens to be: its run is re-cut so a
+// unit exactly the appliance's width sits over it, lined up with a cabinet
+// edge (the start or end of one of the run's existing units — whichever is
+// nearest where it was dropped, avoiding edges that would leave an offcut
+// too narrow to be a unit), with the rest of the run re-divided around it.
+// Returns that unit, or null if the run is too short to take it.
+function fitUnderCounterAppliance(app, unit){
+  const ch = kitchenChains().find(c => c.items.some(it => it.b === unit));
+  const w = cmToWorld(app.wCm);
+  if (!ch || ch.end - ch.start < w - cmToWorld(1)){
+    if (unit.under !== undefined || Math.abs(unit.wCm - app.wCm) < 1){ unit.under = app.type; return unit; } // already an appliance's slot, or exactly the right size
+    return null;
+  }
+  const u = ch.u, drop = app.x*u.x + app.y*u.y;
+  const edges = [];
+  ch.items.forEach(it => { edges.push(it.s); edges.push(it.e - w); });
+  const ok = st => st >= ch.start - 1e-6 && st + w <= ch.end + 1e-6;
+  const scrap = st => { const a = worldToCm(st - ch.start), b = worldToCm(ch.end - st - w); return (a > 0.5 && a < KITCHEN_MIN_UNIT_CM) || (b > 0.5 && b < KITCHEN_MIN_UNIT_CM); };
+  const cands = edges.filter(ok);
+  if (!cands.length) cands.push(Math.min(Math.max(drop - w/2, ch.start), ch.end - w));
+  cands.sort((a, b) => (scrap(a) - scrap(b)) || (Math.abs(a + w/2 - drop) - Math.abs(b + w/2 - drop)));
+  const st = cands[0];
+  const f = activeFloor(), tmpl = ch.items[0].b;
+  f.boxes = f.boxes.filter(b => !ch.items.some(it => it.b === b));
+  laySegment(tmpl, u, ch.start, st, false); // odd unit next to the appliance on each side
+  laySegment(tmpl, u, st + w, ch.end, true);
+  const perp = {x:-u.y, y:u.x}, pv = tmpl.x*perp.x + tmpl.y*perp.y, c = st + w/2;
+  const slot = {...tmpl, id:newId(), label:"Kitchen unit", wCm:app.wCm, x:u.x*c + perp.x*pv, y:u.y*c + perp.y*pv, under:app.type};
+  f.boxes.push(slot);
+  return slot;
+}
+// An offcut (from a to b along the run, centreline points) touching the end
+// of a corner unit's arm becomes part of that arm. Returns whether it did.
+function absorbIntoCornerUnit(a, b, lenCm){
+  const corner = activeFloor().boxes.find(c=>{
+    if (c.type !== "kitchencorner") return false;
+    return [a, b].some(p=>{
+      const lp = rotate(p.x-c.x, p.y-c.y, -c.rotation), hw = cmToWorld(c.wCm)/2, hd = cmToWorld(c.dCm)/2, tol = cmToWorld(2);
+      return Math.abs(lp.x) <= hw+tol && Math.abs(lp.y) <= hd+tol;
+    });
+  });
+  if (!corner) return false;
+  const mid = {x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+  const lp = rotate(mid.x-corner.x, mid.y-corner.y, -corner.rotation);
+  const hw = cmToWorld(corner.wCm)/2, hd = cmToWorld(corner.dCm)/2, add = cmToWorld(lenCm);
+  // its backs are local −y and −x, so the arms' free ends point to +x and +y
+  let shift;
+  if (lp.x > hw - cmToWorld(2) && Math.abs(lp.x) >= Math.abs(lp.y)){ corner.wCm += lenCm; shift = rotate(add/2, 0, corner.rotation); }
+  else if (lp.y > hd - cmToWorld(2)){ corner.dCm += lenCm; shift = rotate(0, add/2, corner.rotation); }
+  else return false;
+  corner.x += shift.x; corner.y += shift.y;
+  return true;
+}
+// A unit with an appliance underneath: tinted toward the appliance's colour.
+function mixHex(a, b, t){
+  const pa = hexRgb(a), pb = hexRgb(b);
+  return "#" + pa.map((v,i)=>Math.round(v+(pb[i]-v)*t).toString(16).padStart(2,"0")).join("");
 }
 
 cv.addEventListener("pointerleave", ()=>{
@@ -5098,6 +5475,7 @@ window.addEventListener("pointermove", (e)=>{
   }
   if (drag.type === "move-box"){
     const b = getBox(drag.id);
+    const prevX = b.x, prevY = b.y;
     b.x = drag.origX + (mw.x-drag.startWorld.x);
     b.y = drag.origY + (mw.y-drag.startWorld.y);
     if (b.kind === "door" && !e.shiftKey){
@@ -5137,6 +5515,7 @@ window.addEventListener("pointermove", (e)=>{
     } else if (b.kind === "furniture" && !e.shiftKey){
       const snap = snapBoxToNearbyBoxes(b, b.x, b.y);
       b.x = snap.x; b.y = snap.y;
+      moveClearOfWalls(b, prevX, prevY, b.x, b.y); // slides along a wall rather than into (or through) it
     }
     render();
     return;
@@ -5284,7 +5663,8 @@ window.addEventListener("pointerup", (e)=>{
   // geometry mid-drag).
   if (drag.type === "move-box"){
     const b = getBox(drag.id);
-    if (b) resolveKitchenUnitOverlaps(b);
+    if (b && Math.hypot(b.x-drag.origX, b.y-drag.origY) > cmToWorld(1)) fillVacatedSlot(b, drag.origX, drag.origY);
+    if (b){ const r = resolveKitchenUnitOverlaps(b); if (r && r !== b) select("box", r.id); }
   }
   // A door/window dragged in from the Structure palette that never snapped
   // onto a wall (dropped in empty space) is cancelled here rather than left
@@ -5588,7 +5968,7 @@ function updateSelPanel(){
     // (they don't generalize to a mixed group of walls/furniture/doors).
     panel.classList.add("show");
     title.textContent = `${multiSelection.length} items selected`;
-    ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap","fldStairDirWrap","fldRugColorWrap","fldWallBendWrap","fldDoorTypeWrap"].forEach(id=>{
+    ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap","fldStairDirWrap","fldRugColorWrap","fldWallBendWrap","fldDoorTypeWrap","fldUnderWrap"].forEach(id=>{
       document.getElementById(id).style.display = "none";
     });
     return;
@@ -5619,6 +5999,11 @@ function updateSelPanel(){
   }
   document.getElementById("fldStairDirWrap").style.display = isStairs ? "flex" : "none";
   document.getElementById("fldRugColorWrap").style.display = selectedRug() ? "flex" : "none";
+  {
+    const ub = isBox ? getBox(selection.id) : null, isUnit = !!(ub && ub.type === "kitchen");
+    document.getElementById("fldUnderWrap").style.display = isUnit ? "flex" : "none";
+    if (isUnit) document.getElementById("fldUnder").value = ub.under || "";
+  }
 
   if (isBox){
     const b = getBox(selection.id);
@@ -5688,6 +6073,13 @@ document.getElementById("fldWallThickness").addEventListener("input", (e)=>{
   getWall(selection.id).thicknessCm = v; scheduleAutosave(); render();
 });
 document.getElementById("btnDelete").addEventListener("click", deleteSelection);
+document.getElementById("fldUnder").addEventListener("change", (e)=>{
+  const b = selection && selection.kind==="box" ? getBox(selection.id) : null;
+  if (!b || b.type !== "kitchen") return;
+  pushUndoSnapshot();
+  if (e.target.value) b.under = e.target.value; else delete b.under;
+  scheduleAutosave(); render();
+});
 document.getElementById("btnStraightenWall").addEventListener("click", ()=>{
   const w = selection && selection.kind==="wall" ? getWall(selection.id) : null;
   if (!w || !w.bowCm) return;
@@ -5851,10 +6243,7 @@ document.getElementById("fldZoom").addEventListener("input", (e)=>{
   resizeCanvas();
 });
 document.getElementById("btnZoomReset").addEventListener("click", ()=>{
-  zoomLevel = 1;
-  document.getElementById("fldZoom").value = 100;
-  document.getElementById("zoomPct").textContent = "100%";
-  resizeCanvas();
+  fitView();
 });
 
 document.getElementById("btnDetect").addEventListener("click", runAIDetect);
@@ -6884,7 +7273,7 @@ function buildRugPalette(){
 // ---------------------------------------------------------------------------
 const ROOM_TYPES = [
   {key:"living",   label:"Living room",   icon:"🛋", items:["sofa","armchair","coffee","tvunit","bookshelf","fireplace","rug","ruground","radiator","drawers"], runs:["bookshelf"]},
-  {key:"kitchen",  label:"Kitchen",       icon:"🍳", items:["kitchen","kitchencorner","sink","cooker","fridge","dishwasher","washer","dining","dininground","diningchair","radiator"], runs:["kitchen","diningchair"]},
+  {key:"kitchen",  label:"Kitchen",       icon:"🍳", items:["kitchen","kitchencorner","sink","cooker","oven","fridge","dishwasher","washer","dryer","dining","dininground","diningchair","radiator"], runs:["kitchen","diningchair"]},
   {key:"kitchendiner", label:"Kitchen / diner", icon:"🍽", items:["kitchen","kitchencorner","sink","cooker","fridge","dishwasher","dining","dininground","diningchair","sofa","rug","radiator"], runs:["kitchen","diningchair"]},
   {key:"dining",   label:"Dining room",   icon:"🍽", items:["dining","dininground","diningchair","drawers","bookshelf","rug","ruground","radiator"], runs:["diningchair","bookshelf"]},
   {key:"bedroom",  label:"Bedroom",       icon:"🛏", items:["beddbl","bedsgl","wardrobe","bedside","drawers","desk","officechair","armchair","rug","radiator"], runs:["wardrobe"]},
@@ -6893,7 +7282,7 @@ const ROOM_TYPES = [
   {key:"wc",       label:"WC",            icon:"🚽", items:["toilet","basin","radiator"], runs:[]},
   {key:"hallway",  label:"Hallway",       icon:"🚪", items:["stairs","rugrunner","drawers","bookshelf","radiator"], runs:["bookshelf"]},
   {key:"landing",  label:"Landing",       icon:"🪜", items:["stairs","rugrunner","drawers","bookshelf","radiator"], runs:["bookshelf"]},
-  {key:"utility",  label:"Utility room",  icon:"🧺", items:["washer","kitchen","sink","fridge","radiator"], runs:["kitchen"]},
+  {key:"utility",  label:"Utility room",  icon:"🧺", items:["washer","dryer","washerstack","kitchen","sink","fridge","radiator"], runs:["kitchen"]},
   {key:"study",    label:"Study",         icon:"🖥", items:["desk","officechair","bookshelf","drawers","armchair","rug","radiator"], runs:["bookshelf"]},
   {key:"garage",   label:"Garage",        icon:"🚗", items:["kitchen","washer","fridge","bookshelf"], runs:["kitchen"]},
   {key:"conservatory", label:"Conservatory", icon:"🌿", items:["sofa","armchair","coffee","dining","dininground","diningchair","rug"], runs:["diningchair"]},
@@ -6901,14 +7290,14 @@ const ROOM_TYPES = [
 const ROOM_TYPE_BY_KEY = Object.fromEntries(ROOM_TYPES.map(t=>[t.key, t]));
 const FURNITURE_ICONS = {
   kitchencorner:"⌐", sofa:"🛋", armchair:"💺", coffee:"☕", tvunit:"📺", bookshelf:"📚", fireplace:"🔥", dining:"🍽", dininground:"⭕", diningchair:"🪑",
-  kitchen:"🗄", sink:"🚰", cooker:"🍳", fridge:"🧊", dishwasher:"🫧", washer:"🧺", beddbl:"🛏", bedsgl:"🛏", wardrobe:"🚪", drawers:"🗃",
+  kitchen:"🗄", sink:"🚰", cooker:"🍳", fridge:"🧊", dishwasher:"🫧", washer:"🧺", dryer:"🌀", washerstack:"🧺", oven:"⏲", beddbl:"🛏", bedsgl:"🛏", wardrobe:"🚪", drawers:"🗃",
   bedside:"🕯", toilet:"🚽", bath:"🛁", shower:"🚿", basin:"🚰", desk:"🖥", officechair:"💺", radiator:"♨", stairs:"🪜",
   rug:"🟫", ruground:"🟤", rugrunner:"▬",
 };
 // Things that stand with their back against a wall (back = local −y, the
 // side every icon draws its backrest/headboard/worktop-back on) — dropped
 // near a wall, these turn and slide to sit flush against it.
-const WALL_BACKED_TYPES = new Set(["kitchencorner","tvunit","bookshelf","fireplace","kitchen","sink","cooker","fridge","dishwasher","washer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","basin","desk","radiator","bath"]);
+const WALL_BACKED_TYPES = new Set(["kitchencorner","dryer","washerstack","oven","tvunit","bookshelf","fireplace","kitchen","sink","cooker","fridge","dishwasher","washer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","basin","desk","radiator","bath"]);
 const WALL_BACK_REACH_CM = 50; // dropped within this much of a wall (beyond the item's own half-depth) = put it against the wall
 // Runs: what a dragged line can be filled with, and how.
 const RUN_TYPES = {
@@ -6990,6 +7379,15 @@ function rotationFacingAway(n){ return Math.atan2(-n.x, n.y); }
 // things within reach of a wall turn and slide flush against it (keeping
 // the along-wall position you clicked); everything else lands as clicked.
 function placementPose(spec, mw){
+  const pose = placementPoseRaw(spec, mw);
+  if (spec.kind === "furniture"){
+    const probe = {x:pose.pos.x, y:pose.pos.y, wCm:spec.wCm, dCm:spec.dCm, rotation:pose.rot, type:spec.type};
+    pushOutOfWalls(probe);
+    pose.pos = {x:probe.x, y:probe.y};
+  }
+  return pose;
+}
+function placementPoseRaw(spec, mw){
   if (spec.kind === "furniture" && spec.type === "sofa"){
     // a sofa takes its direction from a nearby wall but goes exactly where it's dropped — people like a gap behind it
     const f = nearestWallFace(mw, cmToWorld(SOFA_ORIENT_REACH_CM));
@@ -7588,7 +7986,7 @@ renderVersionTabs();
 renderFloorTabs();
 updateScaleStatus();
 try{ const m = localStorage.getItem(MODE_STORAGE); setMode(MODE_BLURBS[m] ? m : "build"); }catch(e){ setMode("build"); }
-resizeCanvas();
+fitView();
 updateUndoRedoButtons(); // undo/redo history starts empty regardless of autosave restore
 // The saved project arrives asynchronously (IndexedDB) and replaces `state`
 // wholesale; only after that may autosave write anything.
@@ -7598,7 +7996,7 @@ restoreAutosave().then(found=>{
     renderVersionTabs();
     renderFloorTabs();
     updateScaleStatus();
-    resizeCanvas();
+    fitView();
   }
   if (autosaveDirty) scheduleAutosave(); // anything changed during the brief load still gets saved
 });
