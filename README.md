@@ -514,6 +514,61 @@ IndexedDB first, then any old localStorage copy (deleted after the first
 successful IndexedDB save). Nothing is written until that read finishes,
 and nothing is rewritten unless something changed.
 
+## Furniture squares up to angled rooms; kitchen unit depth (2026-10-22)
+
+- Free-standing furniture (tables, chairs, rugs...) drops square to the walls
+  of the room it's in, and the rotate handle's 90° snap counts from those
+  walls (`roomWallAngle`: the length-weighted dominant wall angle of the
+  enclosing room). Armchairs face away from a nearby wall like sofas.
+  Dragged runs snap their legs to 45° steps from the room's walls too.
+- Flooring lays along the room's walls; ↻ Turn counts from there.
+- Kitchen units: Depth tabs (60cm / 30cm / custom) under the Kitchen unit
+  button set new units and runs; selecting placed units (one or several)
+  shows the same tabs to change them, backs kept against the wall.
+
+## Costs mode (2026-10-22)
+
+④ Costs tracks a rough cost for structural changes — walls, windows,
+doors/doorways, flooring — made since **Reset costs**:
+
+- Reset snapshots each floor's walls, doors and floorings as
+  `floor.costBaseline` and sets `version.costs.startedAt`. The change list is
+  the live diff of the plan against that snapshot (`costChangesForFloor`), so
+  undoing an edit un-costs it. A door or window inside a removed wall is
+  folded into that wall's line.
+- New version = deep copy, costs included (`cloneFloorWithNewIds` renumbers
+  the baseline in step with the walls/doors). Resetting a version only
+  touches its own copy. (The same renumbering now also keeps doors' and
+  windows' `wallId` pointing at their wall in the copy.)
+- Per-change questions (load-bearing? stud or block?) are stored on the
+  element as `cost` — the baseline copy for removals.
+- Property details (location, type, age, ceiling height, finish, VAT,
+  listed, contingency %) are project-wide: `state.costSettings`.
+- "Estimate costs with Claude" (claude-opus-5-5, structured output,
+  optional web search for local prices, `fallbacks: "default"`) prices each
+  change plus whole-job extras (engineer, Building Control, skip...);
+  contingency is added locally. Prices are stored per change by a signature
+  of its geometry + answers, so an edited change shows "—" until
+  re-estimated, and copies keep their prices. Uses the API key from Build →
+  AI Detect.
+
+## Installable app and updates (2026-10-24)
+
+Served over https (GitHub Pages), the planner installs as an app from Edge
+or Chrome (address-bar Install icon, or ⋯ → Apps → Install this site as an
+app): desktop/Start-menu icon, own window, works offline.
+
+- `manifest.webmanifest` + `icons/` — name and icons for the installed app.
+- `sw.js` — network-first cache: online, it always opens the latest
+  published version; offline, the cached copy.
+- While open, the page re-checks `index.html` (on returning to the window,
+  and every 30 minutes) and if it has changed shows "A new version of the
+  planner is ready — Reload now / Later"; Reload saves first.
+- Publishing an update = commit and push; nothing to bump.
+- Plans stay in each person's browser (IndexedDB for that web address) —
+  Save/Load .json to back up or share. Opening `index.html` directly as a
+  file still works as before (no offline/update parts).
+
 ## Data model (for future edits)
 
 State lives in one JS object (`state` in `index.html`):

@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>Floorplan Tool</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#111317">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root{
@@ -92,7 +96,7 @@
   .rugChips button{padding:0; height:20px; border-radius:4px;}
   .rugChips button.active{box-shadow:0 0 0 2px var(--accent); border-color:#fff;}
   #flooringBody{display:flex; flex-direction:column; gap:8px;}
-  #modeBar{display:grid; grid-template-columns:repeat(3,1fr); gap:4px; background:var(--field-bg); border:1px solid var(--panel-border); border-radius:8px; padding:3px;}
+  #modeBar{display:grid; grid-template-columns:repeat(4,1fr); gap:4px; background:var(--field-bg); border:1px solid var(--panel-border); border-radius:8px; padding:3px;}
   #modeBar button{text-align:center; font-weight:600; font-size:12px; padding:7px 4px; border:none; background:transparent;}
   #modeBar button.active{background:var(--accent2); color:var(--accent2-text);}
   .furnHead{font-size:13px; font-weight:600; margin:0;}
@@ -100,6 +104,33 @@
   .furnItems{display:grid; grid-template-columns:1fr 1fr; gap:5px;}
   .furnItem{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:6px 7px; line-height:1.2;}
   .furnItem .ic{font-size:17px; flex:0 0 auto;}
+  #updateNotice{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:1000; display:flex; align-items:center; gap:10px;
+    background:var(--panel, #1b1e24); color:var(--text); border:1px solid var(--accent); border-radius:8px; padding:9px 12px; font-size:12.5px; box-shadow:0 6px 24px rgba(0,0,0,.45);}
+  #costTotalBox{background:var(--field-bg); border:1px solid var(--panel-border); border-radius:8px; padding:10px 12px;}
+  #costTotalLabel{font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.04em;}
+  #costTotal{font-size:22px; font-weight:700; color:var(--text); margin:2px 0; font-variant-numeric:tabular-nums;}
+  #costTotalSub{font-size:11px; color:var(--text-dim); line-height:1.4;}
+  .costNote{font-size:10.5px; color:var(--text-dim); line-height:1.4; margin:0;}
+  #costsSection select, #costsSection input[type=text], #costsSection input[type=number]{width:100%; box-sizing:border-box; font:inherit; font-size:12.5px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border); border-radius:5px; padding:5px 6px; min-width:0;}
+  .costRow{border-left:3px solid var(--panel-border); background:var(--field-bg); border-radius:5px; padding:6px 8px; margin:4px 0; font-size:11.5px; color:var(--text);}
+  .costRow-add{border-left-color:#30c478;} .costRow-remove{border-left-color:#e5484d;} .costRow-alter{border-left-color:#e0a23c;}
+  .costRowTop{display:flex; gap:8px; justify-content:space-between; align-items:baseline; line-height:1.35;}
+  .costPrice{flex:0 0 auto; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  .costDetail{font-size:10.5px; color:var(--text-dim); margin-top:2px; line-height:1.35;}
+  .costBasis{font-size:10.5px; color:var(--text-dim); margin-top:3px; line-height:1.35; font-style:italic;}
+  .costQ{display:flex; align-items:center; gap:4px; margin-top:5px; flex-wrap:wrap; font-size:10.5px; color:var(--text-dim);}
+  .costQ span{margin-right:2px;}
+  .costQ button{font-size:10.5px; padding:2px 7px;}
+  .costAssume{margin:2px 0 0; padding-left:16px; font-size:10.5px; color:var(--text-dim); line-height:1.45;}
+  .furnCell{grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; gap:5px; align-items:stretch;}
+  .furnCell .depthTabs{flex-wrap:wrap; align-content:center; padding:2px 0;}
+  .furnCell .depthCustom{flex:0 0 100%;}
+  .furnCell .depthTabs::before{content:"Depth"; flex:0 0 100%; font-size:10px; color:var(--text-dim);}
+  .depthTabs{display:flex; gap:3px; align-items:center;}
+  .depthTabs button{flex:0 0 auto; font-size:10.5px; padding:3px 6px; text-align:center;}
+  .depthCustom{flex:1 1 0; min-width:0; display:flex; align-items:center; gap:2px; font-size:10px; color:var(--text-dim);}
+  .depthCustom input{width:100%; min-width:0; font:inherit; font-size:10.5px; padding:3px 4px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border); border-radius:5px;}
+  .depthCustom input.active{border-color:var(--accent, #4f8cff);}
   .furnItem small{display:block; color:var(--text-dim); font-size:10px;}
   .furnItem.active small{color:#dfe8ff;}
   .roomRow{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:4px; border-radius:5px;}
@@ -178,6 +209,7 @@
       <button data-mode="build">① Build</button>
       <button data-mode="flooring">② Flooring</button>
       <button data-mode="furnish">③ Furnish</button>
+      <button data-mode="costs">④ Costs</button>
     </div>
     <p id="modeBlurb" style="font-size:11px;color:var(--text-dim);line-height:1.4;margin:-6px 0 0;"></p>
 
@@ -257,6 +289,46 @@
       <div id="detectStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;"></div>
     </section>
 
+    <section data-modes="costs" id="costsSection">
+      <div id="costTotalBox">
+        <div id="costTotalLabel">Estimated cost of changes</div>
+        <div id="costTotal">£0</div>
+        <div id="costTotalSub"></div>
+      </div>
+      <button class="wide" id="btnResetCosts" title="Treat the plan as it is right now as the starting point: costs go back to zero, and only changes made from here on are costed. Only affects this version.">↺ Reset costs</button>
+      <p id="costStartedNote" class="costNote"></p>
+
+      <h2>The property</h2>
+      <div class="field"><label>Location (postcode or town)</label><input type="text" id="fldCostLocation" placeholder="e.g. BS6 or Leeds"></div>
+      <div class="grid2">
+        <div class="field"><label>Property type</label>
+          <select id="fldCostPropType"><option value="">—</option><option>Detached house</option><option>Semi-detached house</option><option>Terraced house</option><option>End-of-terrace house</option><option>Flat / maisonette</option><option>Bungalow</option></select></div>
+        <div class="field"><label>Built</label>
+          <select id="fldCostEra"><option value="">—</option><option>Before 1919</option><option>1919–1944</option><option>1945–1979</option><option>1980–1999</option><option>2000 or later</option></select></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Ceiling height (m)</label><input type="number" id="fldCostCeiling" min="1.8" max="5" step="0.05"></div>
+        <div class="field"><label>Finish level</label>
+          <select id="fldCostFinish"><option value="budget">Budget</option><option value="mid">Mid-range</option><option value="high">High-end</option></select></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Contingency (%)</label><input type="number" id="fldCostContingency" min="0" max="50" step="1"></div>
+        <div class="field" style="justify-content:flex-end;">
+          <label class="chk"><input type="checkbox" id="fldCostVat"> Include VAT</label>
+          <label class="chk"><input type="checkbox" id="fldCostListed"> Listed / conservation area</label>
+        </div>
+      </div>
+
+      <h2>Changes</h2>
+      <div id="costChanges"></div>
+      <div id="costExtras"></div>
+
+      <label class="chk" style="font-size:11.5px;color:var(--text-dim);"><input type="checkbox" id="fldCostWeb"> Check current local prices on the web (slower, more accurate)</label>
+      <button class="wide" id="btnEstimateCosts">🤖 Estimate costs with Claude</button>
+      <div id="costStatus" class="costNote"></div>
+      <div id="costAssumptions"></div>
+      <p class="costNote">A rough guide to budget with, not a quote — get at least three quotes from trades, and a structural engineer for anything load-bearing. Uses the Anthropic API key set in Build → AI Detect.</p>
+    </section>
     <section data-modes="furnish">
       <div id="furnishPanel"></div>
       <div class="paletteCategory" style="margin-top:6px;">Rugs</div>
@@ -337,6 +409,10 @@
       <div class="row" id="fldDoorSwingWrap" style="display:none;">
         <button id="btnFlipHinge">⇄ Flip hinge side</button>
         <button id="btnFlipSwing">⇅ Flip swing direction</button>
+      </div>
+      <div class="field" id="fldUnitDepthWrap" style="display:none;">
+        <label id="lblUnitDepth">Unit depth</label>
+        <div id="fldUnitDepthTabs"></div>
       </div>
       <div class="field" id="fldUnderWrap" style="display:none;">
         <label>Under the worktop</label>
@@ -754,7 +830,7 @@ function makeFloor(name){
     boxes: [],            // {id, kind:'furniture'|'door', type, label, x, y, wCm, dCm, rotation, color, hinge, swing, wallId?} — a door's wallId is the wall it's cut into; the cut itself is computed at render/hit-test time from every door's position (see wallVisibleSegments), not stored as split wall pieces, so it stays correct even for doors placed before wallId existed (pixel/AI-detected doors included). Known limitation: a door/window doesn't follow if its host wall is later moved/resized — re-drag it back onto the wall afterward.
     labels: [],           // {id, x, y, text} — optional AI-read room names/dimension text, toggleable layer
     roomNames: [],        // {x, y, name} — one per named room, same point-inside-the-room scheme as floorings
-    floorings: [],        // {x, y, material, rotation} — one per floored room; x,y is a world point inside that room (rooms themselves are derived, never stored — see computeRoomAreas), material is a FLOORING_MATERIALS id, rotation is extra lay-direction degrees on top of the material's own default
+    floorings: [],        // {x, y, material, rotation} — one per floored room; x,y is a world point inside that room (rooms themselves are derived, never stored — see computeRoomAreas), material is a FLOORING_MATERIALS id, rotation is extra lay-direction degrees on top of the material's own default, measured from the room's walls (see roomWallAngle)
   };
 }
 // A "version" is a complete, independent copy of every floor — the tool's
@@ -1044,10 +1120,10 @@ let autosaveWriteFailed = false; // warn once per session, not on every failed a
 function flushAutosave(){
   clearTimeout(autosaveTimer);
   autosaveTimer = null;
-  if (!autosaveReady || !autosaveDirty) return;
+  if (!autosaveReady || !autosaveDirty) return Promise.resolve();
   autosaveDirty = false;
   const json = JSON.stringify(state);
-  autosaveDbRequest("readwrite", store => store.put(json, AUTOSAVE_KEY))
+  return autosaveDbRequest("readwrite", store => store.put(json, AUTOSAVE_KEY))
     .then(()=>{ try{ localStorage.removeItem(AUTOSAVE_KEY); }catch(e){} })
     .catch(err=>{
       // IndexedDB unavailable or refused: try the old localStorage route, which at least works for a small project
@@ -1102,6 +1178,7 @@ function normalizeFloor(f){
     labels: f.labels || [],
     floorings: f.floorings || [],
     roomNames: f.roomNames || [],
+    ...(f.costBaseline ? {costBaseline: f.costBaseline} : {}), // see resetCosts
   };
 }
 // data.versions is the current save shape; the other two branches migrate
@@ -1112,7 +1189,7 @@ function normalizeFloor(f){
 function normalizeVersion(v){
   const floors = (Array.isArray(v.floors) && v.floors.length) ? v.floors.map(normalizeFloor) : [makeFloor("Floor 1")];
   const activeFloorId = floors.some(f=>f.id===v.activeFloorId) ? v.activeFloorId : floors[0].id;
-  return { id: (typeof v.id === "number") ? v.id : newId(), name: v.name || "Version", floors, activeFloorId };
+  return { id: (typeof v.id === "number") ? v.id : newId(), name: v.name || "Version", floors, activeFloorId, ...(v.costs ? {costs: v.costs} : {}) };
 }
 function applyLoadedState(data){
   let versions, activeVersionId;
@@ -1134,7 +1211,7 @@ function applyLoadedState(data){
     const init = makeInitialState();
     versions = init.versions; activeVersionId = init.activeVersionId;
   }
-  state = {versions, activeVersionId};
+  state = {versions, activeVersionId, ...(data && data.costSettings ? {costSettings: data.costSettings} : {})};
 
   let maxId = 0;
   versions.forEach(v=>{
@@ -1296,16 +1373,25 @@ function uniqueVersionName(base){
 // anywhere in this data model, image included — it's just a dataURL string).
 function cloneFloorWithNewIds(floor){
   const f = JSON.parse(JSON.stringify(floor));
+  const idMap = new Map(), renumber = old => { if (!idMap.has(old)) idMap.set(old, newId()); return idMap.get(old); };
   f.id = newId();
-  f.walls.forEach(w=>{ w.id = newId(); });
-  f.boxes.forEach(b=>{ b.id = newId(); });
+  f.walls.forEach(w=>{ w.id = renumber(w.id); });
+  f.boxes.forEach(b=>{ b.id = renumber(b.id); });
   (f.labels||[]).forEach(l=>{ l.id = newId(); });
+  // the cost baseline names the same walls/doors, so it's renumbered in step —
+  // what was unchanged since Reset costs stays unchanged in the copy (see resetCosts)
+  const base = f.costBaseline ? [...f.costBaseline.walls, ...f.costBaseline.doors] : [];
+  base.forEach(o=>{ o.id = renumber(o.id); });
+  // ...and so are the links from doors/windows to the wall they sit in
+  [...f.walls, ...f.boxes, ...base].forEach(o=>{ if (o.wallId != null){ if (idMap.has(o.wallId)) o.wallId = idMap.get(o.wallId); else delete o.wallId; } });
   return f;
 }
 function cloneVersion(version, name){
   const activeIdx = Math.max(0, version.floors.findIndex(f=>f.id===version.activeFloorId));
   const floors = version.floors.map(cloneFloorWithNewIds);
-  return { id: newId(), name, floors, activeFloorId: floors[activeIdx].id };
+  const v = { id: newId(), name, floors, activeFloorId: floors[activeIdx].id };
+  if (version.costs) v.costs = JSON.parse(JSON.stringify(version.costs)); // costs carry over; the copy's own Reset costs never touches the original
+  return v;
 }
 function switchVersion(id){
   if (id === state.activeVersionId) return;
@@ -1574,6 +1660,7 @@ function render(){
     drawFloorHover();
     drawWalls();
     drawBoxes();
+    drawCostOverlay();
     if (showClearance) drawClearanceGuides();
     if (showRoomAreas) drawRoomAreaLabels();
   }
@@ -1592,7 +1679,7 @@ function render(){
   drawSofaResizeLabel();
 
   if (selection && showOverlay) drawSelectionHandles();
-  if (!drag){ updateRoomAreaStats(); updateFlooringPanel(); updateRoomsPanel(); updateFurnishPanel(); }
+  if (!drag){ updateRoomAreaStats(); updateFlooringPanel(); updateRoomsPanel(); updateFurnishPanel(); updateCostsPanel(); }
 }
 
 // Rubber-band selection box — drawn in screen space over whatever's
@@ -2426,8 +2513,9 @@ const FURNITURE_DETAIL_DRAWERS = {
 const ROUND_FURNITURE_TYPES = new Set(["dininground", "ruground"]);
 function furnitureFootprintPath(type, hw, hd, box){
   if (type === "kitchencorner"){
-    // arms are always 60cm deep; an arm can be longer than 90cm once it has absorbed an offcut (see absorbIntoCornerUnit)
-    const aw = hw*2*(60/((box && box.wCm) || 90)), ah = hd*2*(60/((box && box.dCm) || 90));
+    // arms are 60cm deep unless set otherwise (armDepthCm — see setKitchenUnitDepth); an arm can be longer than 90cm once it has absorbed an offcut (see absorbIntoCornerUnit)
+    const ad = (box && box.armDepthCm) || 60;
+    const aw = hw*2*(ad/((box && box.wCm) || 90)), ah = hd*2*(ad/((box && box.dCm) || 90));
     ctx.beginPath();
     ctx.moveTo(-hw,-hd); ctx.lineTo(hw,-hd); ctx.lineTo(hw,-hd+ah); ctx.lineTo(-hw+aw,-hd+ah); ctx.lineTo(-hw+aw,hd); ctx.lineTo(-hw,hd);
     ctx.closePath();
@@ -3077,7 +3165,7 @@ function setTool(tool){
 
 function updateHint(){
   const hints = {
-    select: "Click an item to select it. A selected sofa has a handle at each end: drag it to lengthen the sofa, or pull it out into the room for an L-shaped corner sofa. Drag to move; drag a corner to resize (the round dining table stays a true circle by default — hold Shift while resizing to stretch it into an oval); drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90°). Drag from empty space to rubber-band select everything the box touches, or Shift-click items one at a time to build up a selection — drag any of them to move the whole group, or Delete/Backspace to remove it all at once. Ctrl/Cmd+C then Ctrl/Cmd+V copies and pastes whatever is selected — walls, windows, doors and furniture, one item or a whole group — including onto another floor, where it lands in the same place (Ctrl/Cmd+A selects everything on the floor). Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
+    select: "Click an item to select it. A selected sofa has a handle at each end: drag it to lengthen the sofa, or pull it out into the room for an L-shaped corner sofa. Drag to move; drag a corner to resize (the round dining table stays a true circle by default — hold Shift while resizing to stretch it into an oval); drag the small handle above a piece of furniture to rotate — hold Shift while rotating for free angles (default snaps to the nearest 90° of the room's walls, so it stays square in an angled room). A selected kitchen unit — or several — shows depth tabs (60cm, 30cm or a custom depth) that change it with its back kept against the wall. Drag from empty space to rubber-band select everything the box touches, or Shift-click items one at a time to build up a selection — drag any of them to move the whole group, or Delete/Backspace to remove it all at once. Ctrl/Cmd+C then Ctrl/Cmd+V copies and pastes whatever is selected — walls, windows, doors and furniture, one item or a whole group — including onto another floor, where it lands in the same place (Ctrl/Cmd+A selects everything on the floor). Press-drag the Door/Window buttons in Structure onto a wall to place them. Dragging a placed door snaps it onto the nearest wall (hold Shift to bypass); drag it across the wall to flip which side it swings into, or along the wall past its own width to flip which end it's hinged from. Dragging a wall/window endpoint keeps its angle locked (length only) by default — hold Shift, or untick \"Lock wall angles\" in Structure, for full freedom (a window's endpoint drag is how you extend it along its wall).",
     wall: "The square shown instead of the cursor is exactly as wide as the wall will render — click and drag across a wall in the image to trace it. New walls snap to the nearest 45° (0°/45°/90°/135°/...) by default; hold Shift to open up the angle and draw freely (endpoints still snap to nearby wall/window ends, edges, and the infinite line through any existing wall — so leaving a gap and continuing later still lands perfectly in line).",
     calibrate: "Click and drag along something on the image with a known real-world length (e.g. a printed dimension line), then enter that length.",
     "pick-thickness": "Click and drag ACROSS (perpendicular to) the thinnest wall you want the automatic detector to catch — usually an interior partition. The pixel length of that drag becomes the reference thickness.",
@@ -3116,6 +3204,7 @@ function addBoxAt(spec, world, rotation){
   };
   if (spec.kind === "door"){ box.hinge = spec.hinge || -1; box.swing = spec.swing || -1; }
   if (box.type === "stairs"){ box.direction = spec.direction || "up"; }
+  if (box.type === "kitchencorner" && spec.armDepthCm && spec.armDepthCm !== 60) box.armDepthCm = spec.armDepthCm;
   if (box.type === "sofa"){
     if (spec.cornerSide){ box.cornerSide = spec.cornerSide; box.sofaDepthCm = spec.sofaDepthCm; }
     if (spec.autoLabel) box.autoLabel = true;
@@ -5634,9 +5723,9 @@ window.addEventListener("pointermove", (e)=>{
     const b = getBox(drag.id);
     const c = toScreen(b.x,b.y);
     const ang = Math.atan2(ms.y-c.y, ms.x-c.x) + Math.PI/2;
-    // Snaps to the nearest 90° by default (most furniture sits square to a
-    // wall) — hold Shift to open the angle lock and rotate freely.
-    b.rotation = e.shiftKey ? ang : snapAngle90Value(ang);
+    // Snaps to the nearest 90° of the room's walls by default (most furniture
+    // sits square to a wall) — hold Shift to open the angle lock and rotate freely.
+    b.rotation = e.shiftKey ? ang : snapAngleToRoom(ang, b);
     updateSelPanel();
     render();
     return;
@@ -5960,6 +6049,19 @@ function updateRoomAreaStats(){
   }
 }
 
+// The depth tabs for whichever kitchen units / corner units are among the
+// selected boxes (hidden if there are none).
+function updateUnitDepthField(boxes){
+  const units = boxes.filter(b => b && (b.type === "kitchen" || b.type === "kitchencorner"));
+  const wrap = document.getElementById("fldUnitDepthWrap"), host = document.getElementById("fldUnitDepthTabs");
+  wrap.style.display = units.length ? "flex" : "none";
+  if (!units.length) return;
+  const depths = new Set(units.map(kitchenUnitDepth)), current = depths.size === 1 ? [...depths][0] : null;
+  document.getElementById("lblUnitDepth").textContent = units.length > 1 ? `Unit depth · ${units.length} units${current == null ? " (mixed)" : ""}` : "Unit depth";
+  const ids = units.map(b => b.id);
+  host.textContent = "";
+  host.appendChild(depthTabs("sel", current, cm => setKitchenUnitDepth(ids.map(getBox), cm)));
+}
 function updateSelPanel(){
   const panel = document.getElementById("selPanel");
   const title = document.getElementById("selPanelTitle");
@@ -5971,6 +6073,7 @@ function updateSelPanel(){
     ["fldLabelWrap","fldSizeWrap","fldRotWrap","fldLenWrap","fldWallThicknessWrap","fldDoorSwingWrap","fldStairDirWrap","fldRugColorWrap","fldWallBendWrap","fldDoorTypeWrap","fldUnderWrap"].forEach(id=>{
       document.getElementById(id).style.display = "none";
     });
+    updateUnitDepthField(multiSelection.filter(s => s.kind === "box").map(s => getBox(s.id)));
     return;
   }
   title.textContent = "Selected";
@@ -5999,6 +6102,7 @@ function updateSelPanel(){
   }
   document.getElementById("fldStairDirWrap").style.display = isStairs ? "flex" : "none";
   document.getElementById("fldRugColorWrap").style.display = selectedRug() ? "flex" : "none";
+  updateUnitDepthField(isBox ? [getBox(selection.id)] : []);
   {
     const ub = isBox ? getBox(selection.id) : null, isUnit = !!(ub && ub.type === "kitchen");
     document.getElementById("fldUnderWrap").style.display = isUnit ? "flex" : "none";
@@ -6928,7 +7032,9 @@ function buildFlooringLayer(floor, areas, assign, scale){
     const t = document.createElement("canvas");
     t.width = Math.max(1, Math.ceil(mk.w*scale)); t.height = Math.max(1, Math.ceil(mk.h*scale));
     const tg = t.getContext("2d");
-    tg.fillStyle = flooringPattern(tg, FLOORING_BY_ID[seed.material], pxPerCm, seed.rotation||0);
+    // seed.rotation is the turn relative to the room's walls, so boards run with a skewed room, not the page
+    const wallDeg = (roomWallAngle(seed, floor) || 0)*180/Math.PI;
+    tg.fillStyle = flooringPattern(tg, FLOORING_BY_ID[seed.material], pxPerCm, wallDeg + (seed.rotation||0));
     tg.fillRect(0, 0, t.width, t.height);
     tg.globalCompositeOperation = "destination-in";
     tg.drawImage(mk.canvas, 0, 0, mk.w*scale, mk.h*scale);
@@ -7299,6 +7405,63 @@ const FURNITURE_ICONS = {
 // near a wall, these turn and slide to sit flush against it.
 const WALL_BACKED_TYPES = new Set(["kitchencorner","dryer","washerstack","oven","tvunit","bookshelf","fireplace","kitchen","sink","cooker","fridge","dishwasher","washer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","basin","desk","radiator","bath"]);
 const WALL_BACK_REACH_CM = 50; // dropped within this much of a wall (beyond the item's own half-depth) = put it against the wall
+const FACES_AWAY_TYPES = new Set(["sofa","armchair"]); // turn to face away from a nearby wall, but stay exactly where dropped
+const ROOM_ANGLE_REACH_CM = 400; // outside any enclosed room, walls this close set which way free-standing furniture squares up
+// Kitchen unit depth: base units are 60cm, wall units 30cm. New units (and
+// runs) take kitchenDepthCm, picked on the tabs under the Kitchen unit
+// button; placed ones are changed from the selection panel.
+const KITCHEN_DEPTH_PRESETS_CM = [60, 30];
+const KITCHEN_DEPTH_STORAGE = "floorplan.kitchenDepthCm";
+let kitchenDepthCm = 60;
+try{ const v = parseFloat(localStorage.getItem(KITCHEN_DEPTH_STORAGE)); if (v > 0) kitchenDepthCm = v; }catch(e){}
+function setNewKitchenDepth(cm){
+  kitchenDepthCm = cm;
+  try{ localStorage.setItem(KITCHEN_DEPTH_STORAGE, String(cm)); }catch(e){}
+  if (stampSpec && stampSpec.type === "kitchen"){ stampSpec.dCm = cm; render(); } // the armed preview follows straight away
+  document.querySelectorAll(".depthTabs[data-for=new]").forEach(t => syncDepthTabs(t, cm));
+}
+// Sets the depth of kitchen units / corner units, keeping each one's back
+// (local −y, against the wall) where it is so they only grow into the room.
+function setKitchenUnitDepth(boxes, cm){
+  const units = boxes.filter(b => b && (b.type === "kitchen" || b.type === "kitchencorner"));
+  if (!units.length) return;
+  pushUndoSnapshot();
+  units.forEach(b=>{
+    if (b.type === "kitchencorner"){ if (cm === 60) delete b.armDepthCm; else b.armDepthCm = cm; return; }
+    const shift = rotate(0, cmToWorld(cm - b.dCm)/2, b.rotation);
+    b.x += shift.x; b.y += shift.y; b.dCm = cm;
+  });
+  scheduleAutosave(); updateSelPanel(); render();
+}
+function kitchenUnitDepth(b){ return b.type === "kitchencorner" ? (b.armDepthCm || 60) : b.dCm; }
+// "60cm | 30cm | Custom [  ] cm" — `current` is null when a selection mixes depths.
+function depthTabs(forWhat, current, onPick){
+  const wrap = document.createElement("div");
+  wrap.className = "depthTabs"; wrap.dataset.for = forWhat;
+  KITCHEN_DEPTH_PRESETS_CM.forEach(cm=>{
+    const b = document.createElement("button");
+    b.textContent = cm+"cm"; b.dataset.cm = cm;
+    b.addEventListener("click", (e)=>{ e.stopPropagation(); onPick(cm); });
+    wrap.appendChild(b);
+  });
+  const custom = document.createElement("label");
+  custom.className = "depthCustom";
+  const inp = document.createElement("input");
+  inp.type = "number"; inp.min = "5"; inp.max = "150"; inp.step = "1"; inp.placeholder = "Custom";
+  inp.addEventListener("click", e => e.stopPropagation());
+  inp.addEventListener("change", ()=>{ const v = parseFloat(inp.value); if (v >= 5 && v <= 150) onPick(Math.round(v)); });
+  custom.appendChild(inp); custom.appendChild(document.createTextNode("cm"));
+  wrap.appendChild(custom);
+  syncDepthTabs(wrap, current);
+  return wrap;
+}
+function syncDepthTabs(wrap, current){
+  let preset = false;
+  wrap.querySelectorAll("button").forEach(b=>{ const on = +b.dataset.cm === current; b.classList.toggle("active", on); preset = preset || on; });
+  const inp = wrap.querySelector("input");
+  inp.classList.toggle("active", current != null && !preset);
+  if (document.activeElement !== inp) inp.value = current != null && !preset ? current : "";
+}
 // Runs: what a dragged line can be filled with, and how.
 const RUN_TYPES = {
   kitchen:     {label:"Kitchen units", icon:"🗄", widths:[60], wallBacked:true, stretchToFit:true, cornerUnits:true},
@@ -7319,7 +7482,11 @@ function furnitureSpec(key){
     return {kind:"furniture", type:r.type, label:r.label, wCm:r.wCm, dCm:r.dCm, color:rugColor};
   }
   const f = FURNITURE_TYPES.find(x => x.key === key);
-  return f ? {kind:"furniture", type:f.key, label:f.label, wCm:f.wCm, dCm:f.dCm, color:f.color, direction:f.direction} : null;
+  if (!f) return null;
+  const spec = {kind:"furniture", type:f.key, label:f.label, wCm:f.wCm, dCm:f.dCm, color:f.color, direction:f.direction};
+  if (key === "kitchen") spec.dCm = kitchenDepthCm;
+  if (key === "kitchencorner") spec.armDepthCm = kitchenDepthCm;
+  return spec;
 }
 function furnitureLabel(key){ const s = furnitureSpec(key); return s ? s.label : key; }
 
@@ -7388,16 +7555,54 @@ function placementPose(spec, mw){
   return pose;
 }
 function placementPoseRaw(spec, mw){
-  if (spec.kind === "furniture" && spec.type === "sofa"){
+  if (spec.kind === "furniture" && FACES_AWAY_TYPES.has(spec.type)){
     // a sofa takes its direction from a nearby wall but goes exactly where it's dropped — people like a gap behind it
     const f = nearestWallFace(mw, cmToWorld(SOFA_ORIENT_REACH_CM));
-    return {pos:mw, rot: f ? rotationFacingAway(f.n) : 0};
+    return {pos:mw, rot: f ? rotationFacingAway(f.n) : (roomWallAngle(mw) || 0)};
   }
   if (spec.kind === "furniture" && WALL_BACKED_TYPES.has(spec.type)){
     const f = nearestWallFace(mw, cmToWorld(spec.dCm/2 + WALL_BACK_REACH_CM));
     if (f) return {pos:{x:f.face.x + f.n.x*cmToWorld(spec.dCm/2), y:f.face.y + f.n.y*cmToWorld(spec.dCm/2)}, rot:rotationFacingAway(f.n)};
   }
-  return {pos:mw, rot:0};
+  // free-standing things (tables, chairs, rugs...) sit square to the room's walls, even when the room isn't square to the page
+  return {pos:mw, rot: spec.kind === "furniture" ? (roomWallAngle(mw) || 0) : 0};
+}
+// The angle a room's walls run at, folded into (−45°, 45°] — what "square to
+// the walls" means at world point `p`. Walls bounding the room `p` is in vote
+// with their length (so one short angled bay wall doesn't win over the four
+// main walls); with no enclosed room there, walls within reach vote instead.
+// Null when there are no walls to go by.
+function roomWallAngle(p, floor = activeFloor()){
+  const Q = Math.PI/2, fold = a => ((a % Q) + Q) % Q;
+  const areas = getRoomAreasForFloor(floor), room = roomAtWorld(areas, p.x, p.y);
+  const votes = [];
+  floor.walls.forEach(w=>{
+    if ((w.type||"wall") !== "wall") return;
+    const pr = projectOntoWallPath(w, p);
+    const half = cmToWorld(w.thicknessCm||WALL_THICKNESS_CM)/2;
+    if (room){
+      // does this wall face into p's room? look just off its face on p's side
+      const n = pr.dist > 1e-6 ? {x:(p.x-pr.point.x)/pr.dist, y:(p.y-pr.point.y)/pr.dist} : {x:0, y:0}, off = half + cmToWorld(5);
+      if (roomAtWorld(areas, pr.point.x+n.x*off, pr.point.y+n.y*off) !== room) return;
+    } else if (pr.dist - half > cmToWorld(ROOM_ANGLE_REACH_CM)) return;
+    const pts = wallCenterlinePoints(w), len = polylineCumLengths(pts).at(-1);
+    votes.push({a:fold(pr.angle), wt: len * (pts.length > 2 ? 0.1 : 1)}); // a curved wall's local angle says little about the room
+  });
+  if (!votes.length) return null;
+  const near = (a, b)=>{ const d = Math.abs(a-b) % Q; return Math.min(d, Q-d) < 2*Math.PI/180; };
+  let best = null, bestWt = -1;
+  votes.forEach(v=>{
+    const wt = votes.reduce((s, u) => s + (near(u.a, v.a) ? u.wt : 0), 0);
+    if (wt > bestWt){ bestWt = wt; best = v.a; }
+  });
+  return best > Q/2 ? best - Q : best;
+}
+// Rotation snap for the rotate handle: the nearest 90° step measured from
+// the walls of the room the item is in, so a table in a skewed room clicks
+// square to that room's walls rather than to the page.
+function snapAngleToRoom(ang, p){
+  const base = roomWallAngle(p) || 0;
+  return base + snapAngle90Value(ang - base);
 }
 // Rotation that turns an item's back (local −y) toward −n, i.e. its front out along n.
 
@@ -7434,6 +7639,7 @@ function runPolyline(path){
     return rdp(pts.slice(0, idx+1)).slice(0, -1).concat(rdp(pts.slice(idx)));
   };
   const raw = rdp(path);
+  const base = roomWallAngle(path[0]) || 0; // legs square up to the room's walls, not the page
   // Each smoothed leg becomes an infinite line at a 45°-snapped angle through
   // its own middle. Short legs are dropped — a hand-drawn corner tends to
   // leave a little diagonal nick that's never meant to be a run of its own —
@@ -7443,7 +7649,7 @@ function runPolyline(path){
   for (let i=1;i<raw.length;i++){
     const a = raw[i-1], b = raw[i], len = Math.hypot(b.x-a.x, b.y-a.y);
     if (len < 1e-6) continue;
-    const ang = Math.round(Math.atan2(b.y-a.y, b.x-a.x)/(Math.PI/4))*(Math.PI/4);
+    const ang = base + Math.round((Math.atan2(b.y-a.y, b.x-a.x)-base)/(Math.PI/4))*(Math.PI/4);
     legs.push({ang, len, mid:{x:(a.x+b.x)/2, y:(a.y+b.y)/2}});
   }
   const minLeg = cmToWorld(60);
@@ -7810,6 +8016,7 @@ const MODE_BLURBS = {
   build: "Trace walls, add doors, windows and stairs, then say what each room is (Rooms, below).",
   flooring: "Drag a floor onto a room, or click one and then click rooms.",
   furnish: "Click a room — what belongs in it comes first. Pick an item, then click to place it; for kitchen units, press and drag along the walls.",
+  costs: "Rough costs of structural changes — walls, doorways, windows and flooring — since costs were last reset. Edit the plan as normal; changes show here and on the plan (red = removed, green = new).",
 };
 const MODE_STORAGE = "floorplanTool.uiMode";
 let roomsPanelSig = "", furnishPanelSig = "";
@@ -7822,7 +8029,7 @@ function setMode(m){
   deselect();
   if (m === "flooring") focusRoom = null;
   try{ localStorage.setItem(MODE_STORAGE, m); }catch(e){}
-  roomsPanelSig = ""; furnishPanelSig = "";
+  roomsPanelSig = ""; furnishPanelSig = ""; costPanelSig = "";
   updateHint();
   render();
 }
@@ -7922,7 +8129,13 @@ function furnishButton(key){
     ? `${spec.label} — pick it, then click on the plan to place one, or press and drag along the walls to lay a run`
     : `${spec.label} (${spec.wCm}×${spec.dCm}cm) — pick it, then click on the plan to place it`;
   b.addEventListener("click", ()=>armStamp({...furnitureSpec(key), key}));
-  return b;
+  if (key !== "kitchen") return b;
+  // depth tabs under the button, for the units it's about to lay
+  const cell = document.createElement("div");
+  cell.className = "furnCell";
+  cell.appendChild(b);
+  cell.appendChild(depthTabs("new", kitchenDepthCm, setNewKitchenDepth));
+  return cell;
 }
 function updateFurnishPanel(){
   const el = document.getElementById("furnishPanel");
@@ -7974,6 +8187,562 @@ function updateFurnishPanel(){
   updateFurniturePaletteActive();
 }
 document.getElementById("btnStairsPlace").addEventListener("click", ()=>armStamp({...furnitureSpec("stairs"), key:"stairs"}));
+
+// ---------------------------------------------------------------------------
+// Costs — a rough running estimate of structural changes (walls, doorways,
+// windows, flooring) since the version's cost baseline.
+// ---------------------------------------------------------------------------
+// "Reset costs" stores a snapshot of each floor's walls, windows, doors and
+// floorings as floor.costBaseline and stamps version.costs.startedAt; the
+// changes are then simply the difference between that snapshot and the plan
+// as it is now (costChangesForFloor), worked out afresh on every render, so
+// undoing an edit un-costs it too. A new version is a deep copy, baseline and
+// estimate included (renumbered with the walls/doors in cloneFloorWithNewIds),
+// so it carries on from the same costs — and resetting it touches only its
+// own copy.
+// Per-change answers (load-bearing? stud or block?) live on the element as
+// `cost` — on the baseline copy for something removed, else on the plan's own.
+// Prices come from Claude on request (estimateCosts) and are stored per
+// change by its signature (geometry + answers, no ids), so a copied version
+// still matches them, and an edited change shows as not yet estimated.
+const COST_SETTINGS_DEFAULT = {location:"", propertyType:"", era:"", ceilingM:2.4, finish:"mid", contingencyPct:10, vat:true, listed:false, webSearch:true};
+const COST_MODEL = "claude-opus-5-5";
+const COST_TOL_CM = 3; // geometry closer than this to the baseline counts as unchanged (snapping/rounding noise)
+const COST_LOAD_BEARING = [["unknown","Don't know"], ["no","No"], ["yes","Yes"]];
+const COST_BUILD = [["stud","Stud partition"], ["block","Block / brick"]];
+let costPanelSig = "", costEstimating = false, costResetArmed = null;
+
+function costSettings(){
+  if (!state.costSettings) state.costSettings = {...COST_SETTINGS_DEFAULT};
+  return state.costSettings;
+}
+function costSnapshotOfFloor(f){
+  return JSON.parse(JSON.stringify({walls: f.walls, doors: f.boxes.filter(b => b.kind === "door"), floorings: f.floorings || []}));
+}
+function resetCosts(){
+  pushUndoSnapshot();
+  const v = activeVersion();
+  v.costs = {startedAt: new Date().toISOString()};
+  v.floors.forEach(f => { f.costBaseline = costSnapshotOfFloor(f); });
+  costPanelSig = "";
+  scheduleAutosave();
+  setCostStatus("Costs reset — changes from here on are costed.");
+  render();
+}
+
+// Every change on one floor since its baseline. A floor with no baseline (added
+// after Reset costs) counts as empty then, so everything on it is new.
+function costChangesForFloor(floor, floorIndex){
+  const base = floor.costBaseline || {walls:[], doors:[], floorings:[]};
+  const mpwu = metersPerWorldUnitForFloor(floor), toCm = w => w*mpwu*100, toW = cm => cm/100/mpwu;
+  const areas = getRoomAreasForFloor(floor);
+  const roomAt = p => { const r = roomAtWorld(areas, p.x, p.y); return r ? (roomName(floor, areas, r) || "an unnamed room") : null; };
+  // which rooms a line (wall, window or door) sits between, read off the plan as it is now
+  const where = (mid, ang, thickCm)=>{
+    const n = {x:-Math.sin(ang), y:Math.cos(ang)}, off = toW(thickCm/2 + 20);
+    const a = roomAt({x:mid.x+n.x*off, y:mid.y+n.y*off}), b = roomAt({x:mid.x-n.x*off, y:mid.y-n.y*off});
+    if (!a && !b) return "";
+    if (a === b) return `in ${a}`;
+    return `between ${a || "outside"} and ${b || "outside"}`;
+  };
+  const isWin = w => (w.type||"wall") === "window";
+  const thick = w => Math.round(w.thicknessCm || (isWin(w) ? WINDOW_THICKNESS_CM : WALL_THICKNESS_CM));
+  const lenCm = w => toCm(polylineCumLengths(wallCenterlinePoints(w)).at(-1));
+  const mid = w => ({x:(w.x1+w.x2)/2, y:(w.y1+w.y2)/2}), ang = w => Math.atan2(w.y2-w.y1, w.x2-w.x1);
+  const hostThick = (p, walls)=>{ // thickness of the wall a window/door sits in
+    let best = null;
+    walls.forEach(w=>{ if (isWin(w)) return; const q = projectPointToSegment(p, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2}), d = Math.hypot(p.x-q.x, p.y-q.y); if (!best || d < best.d) best = {d, t:thick(w)}; });
+    return best && toCm(best.d) < 40 ? best.t : null;
+  };
+  const wallKind = t => t == null ? "" : t >= 20 ? `${t}cm external wall` : `${t}cm internal wall`;
+  const out = [];
+  const add = (it)=>{
+    it.floorId = floor.id; it.floorName = floor.name;
+    const noteOf = it.noteOn ? (it.noteOn.cost || {}) : {};
+    it.note = noteOf;
+    it.sig = JSON.stringify([floorIndex, it.kind, it.action, it.geo, (it.questions||[]).map(q => noteOf[q] || null)]);
+    out.push(it);
+  };
+  const r1 = v => Math.round(v);
+  const an = n => /^(8|11|18)/.test(String(n)) ? "an" : "a"; // "an 80cm", "a 90cm"
+  const geoLine = w => [r1(toCm(w.x1)), r1(toCm(w.y1)), r1(toCm(w.x2)), r1(toCm(w.y2)), thick(w), r1(w.bowCm||0)];
+  const geoDoor = b => [r1(toCm(b.x)), r1(toCm(b.y)), r1(b.wCm), b.doorType||"single"];
+  const m = v => (v/100).toFixed(2)+"m";
+
+  // walls and windows
+  const curById = new Map(floor.walls.map(w => [w.id, w])), baseById = new Map(base.walls.map(w => [w.id, w]));
+  // a door or window that sat in a wall which has gone went with it — not a separate job
+  const goneWalls = base.walls.filter(o => !isWin(o) && !curById.has(o.id));
+  const inGoneWall = p => goneWalls.find(o => { const q = projectPointToSegment(p, {x:o.x1,y:o.y1}, {x:o.x2,y:o.y2}); return toCm(Math.hypot(p.x-q.x, p.y-q.y)) < Math.max(15, thick(o)); });
+  const carried = new Map(); // gone wall -> what it took with it
+  const carry = (wall, what) => { if (!carried.has(wall)) carried.set(wall, []); carried.get(wall).push(what); };
+  base.walls.forEach(o=>{
+    if (!isWin(o) || curById.has(o.id)) return;
+    const host = inGoneWall(mid(o));
+    if (host){ carry(host, `a ${m(lenCm(o))} window`); return; }
+    add({kind:"window", action:"remove", old:o, noteOn:o, questions:[], geo:geoLine(o),
+      text:`Remove a ${m(lenCm(o))} window and block up the opening`, detail:[wallKind(hostThick(mid(o), base.walls)), where(mid(o), ang(o), thick(o))]});
+  });
+  const baseDoorsGone = base.doors.filter(o => !floor.boxes.some(b => b.id === o.id));
+  const carriedDoors = new Set();
+  baseDoorsGone.forEach(o=>{ const host = inGoneWall(o); if (host){ carriedDoors.add(o); carry(host, `${an(r1(o.wCm))} ${r1(o.wCm)}cm doorway`); } });
+  goneWalls.forEach(o=>{
+    const took = carried.get(o);
+    add({kind:"wall", action:"remove", old:o, noteOn:o, questions:["loadBearing"], geo:geoLine(o),
+      text:`Remove a ${m(lenCm(o))} wall`, detail:[`${thick(o)}cm thick`, where(mid(o), ang(o), thick(o)), took ? `including ${took.join(" and ")} in it` : ""]});
+  });
+  floor.walls.forEach(w=>{
+    const o = baseById.get(w.id);
+    if (!o){
+      if (isWin(w)) add({kind:"window", action:"add", cur:w, noteOn:w, questions:["loadBearing"], geo:geoLine(w),
+        text:`New ${m(lenCm(w))} window`, detail:[wallKind(hostThick(mid(w), floor.walls)), where(mid(w), ang(w), thick(w))]});
+      else add({kind:"wall", action:"add", cur:w, noteOn:w, questions:["build"], geo:geoLine(w),
+        text:`Build a new ${m(lenCm(w))} wall`, detail:[`${thick(w)}cm thick`, where(mid(w), ang(w), thick(w))]});
+      return;
+    }
+    const tol = toW(COST_TOL_CM), d = (p, q) => Math.hypot(p.x-q.x, p.y-q.y);
+    const A = {x:w.x1,y:w.y1}, B = {x:w.x2,y:w.y2}, oA = {x:o.x1,y:o.y1}, oB = {x:o.x2,y:o.y2};
+    const same = Math.max(d(A,oA), d(B,oB)) < tol || Math.max(d(A,oB), d(B,oA)) < tol;
+    if (same && thick(w) === thick(o) && Math.abs((w.bowCm||0)-(o.bowCm||0)) < COST_TOL_CM) return;
+    // still on the same line, only longer/shorter?
+    const u = {x:Math.cos(ang(o)), y:Math.sin(ang(o))}, off = p => Math.abs((p.x-oA.x)*u.y - (p.y-oA.y)*u.x);
+    const inLine = off(A) < tol && off(B) < tol && thick(w) === thick(o) && !w.bowCm && !o.bowCm;
+    const dLen = lenCm(w) - lenCm(o), win = isWin(w), at = where(mid(w), ang(w), thick(w));
+    if (inLine && Math.abs(dLen) >= COST_TOL_CM){
+      if (win) add({kind:"window", action: dLen > 0 ? "widen" : "narrow", old:o, cur:w, noteOn:w, questions: dLen > 0 ? ["loadBearing"] : [], geo:[geoLine(o), geoLine(w)],
+        text: dLen > 0 ? `Widen a window from ${m(lenCm(o))} to ${m(lenCm(w))}` : `Narrow a window from ${m(lenCm(o))} to ${m(lenCm(w))}`, detail:[wallKind(hostThick(mid(w), floor.walls)), at]});
+      else add({kind:"wall", action: dLen > 0 ? "extend" : "shorten", old:o, cur:w, noteOn:w, questions: dLen > 0 ? ["build"] : ["loadBearing"], geo:[geoLine(o), geoLine(w)],
+        text: dLen > 0 ? `Extend a wall by ${m(dLen)} (to ${m(lenCm(w))})` : `Take ${m(-dLen)} off a wall (to ${m(lenCm(w))})`, detail:[`${thick(w)}cm thick`, at]});
+      return;
+    }
+    if (win) add({kind:"window", action:"move", old:o, cur:w, noteOn:w, questions:["loadBearing"], geo:[geoLine(o), geoLine(w)],
+      text:`Move a ${m(lenCm(o))} window${Math.abs(dLen) >= COST_TOL_CM ? ` (now ${m(lenCm(w))})` : ""}`, detail:["old opening blocked up, new one formed", wallKind(hostThick(mid(w), floor.walls)), at]});
+    else add({kind:"wall", action:"move", old:o, cur:w, noteOn:w, questions:["loadBearing","build"], geo:[geoLine(o), geoLine(w)],
+      text:`Move a wall (take down ${m(lenCm(o))}, rebuild ${m(lenCm(w))})`, detail:[`${thick(w)}cm thick`, at]});
+  });
+
+  // doors and doorways
+  const DOOR_WORDS = {single:"door", double:"double doors", french:"French doors", sliding:"sliding doors", bifold:"bifold doors", pocket:"pocket door", opening:"opening"};
+  const doorLabel = b => DOOR_WORDS[b.doorType||"single"] || "door";
+  const withSize = b => { const w = r1(b.wCm), l = doorLabel(b); return /doors$/.test(l) ? `${w}cm ${l}` : `${an(w)} ${w}cm ${l}`; };
+  const isOpening = b => (b.doorType||"single") === "opening";
+  const curDoors = floor.boxes.filter(b => b.kind === "door"), curDoorById = new Map(curDoors.map(b => [b.id, b])), baseDoorById = new Map(base.doors.map(b => [b.id, b]));
+  const dWhere = b => where(b, b.rotation||0, 20);
+  base.doors.forEach(o=>{
+    if (curDoorById.has(o.id) || carriedDoors.has(o)) return;
+    add({kind:"door", action:"remove", old:o, noteOn:o, questions:[], geo:geoDoor(o),
+      text: isOpening(o) ? `Block up ${withSize(o)}` : `Remove ${withSize(o)} and block up the doorway`, detail:[wallKind(hostThick(o, base.walls)), dWhere(o)]});
+  });
+  curDoors.forEach(b=>{
+    const o = baseDoorById.get(b.id);
+    if (!o){
+      add({kind:"door", action:"add", cur:b, noteOn:b, questions:["loadBearing"], geo:geoDoor(b),
+        text: isOpening(b) ? `Form a new ${r1(b.wCm)}cm opening (no door)` : `New doorway with ${withSize(b)}`, detail:[wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+      return;
+    }
+    const moved = toCm(Math.hypot(b.x-o.x, b.y-o.y)) >= 5, dW = b.wCm - o.wCm, typeChanged = (b.doorType||"single") !== (o.doorType||"single");
+    if (!moved && Math.abs(dW) < 2 && !typeChanged) return;
+    if (moved && Math.abs(dW) < Math.max(5, toCm(Math.hypot(b.x-o.x, b.y-o.y)))){ // shifted along/away, not just grown from one side
+      add({kind:"door", action:"move", old:o, cur:b, noteOn:b, questions:["loadBearing"], geo:[geoDoor(o), geoDoor(b)],
+        text:`Move ${withSize(o)}${typeChanged || Math.abs(dW) >= 2 ? ` (becoming ${withSize(b)})` : ""}`, detail:["old doorway blocked up, new one formed", wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+      return;
+    }
+    const parts = [];
+    if (Math.abs(dW) >= 2) parts.push(dW > 0 ? `widen the doorway from ${r1(o.wCm)}cm to ${r1(b.wCm)}cm` : `narrow the doorway from ${r1(o.wCm)}cm to ${r1(b.wCm)}cm`);
+    if (typeChanged) parts.push(isOpening(b) ? `take out the ${doorLabel(o)}, leaving an opening` : `replace the ${doorLabel(o)} with ${/doors$/.test(doorLabel(b)) ? "" : "a "}${doorLabel(b)}`);
+    const txt = parts.join(" and ");
+    add({kind:"door", action: dW >= 2 ? "widen" : "alter", old:o, cur:b, noteOn:b, questions: dW >= 2 ? ["loadBearing"] : [], geo:[geoDoor(o), geoDoor(b)],
+      text: txt.charAt(0).toUpperCase() + txt.slice(1), detail:[wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+  });
+
+  // flooring — each room as it is now, against whatever the baseline had laid there
+  const curAssign = flooringAssignments(floor, areas);
+  areas.rooms.forEach(room=>{
+    const cur = curAssign.get(room), was = base.floorings.filter(s => FLOORING_BY_ID[s.material] && roomAtWorld(areas, s.x, s.y) === room).map(s => s.material);
+    const nm = roomName(floor, areas, room) || "an unnamed room", area = room.areaM2;
+    if (cur && FLOORING_BY_ID[cur.material]){
+      if (was.length && was.every(x => x === cur.material)) return;
+      add({kind:"flooring", action:"lay", room, geo:[r1(room.areaM2*10), cur.material, nm], questions:[],
+        text:`Lay ${FLOORING_BY_ID[cur.material].name} in ${nm} (${area.toFixed(1)} m²)`, detail:[was.length ? `replacing ${[...new Set(was)].map(x => FLOORING_BY_ID[x].name).join(" / ")}` : "no flooring there before"]});
+    } else if (was.length){
+      add({kind:"flooring", action:"lift", room, geo:[r1(room.areaM2*10), nm], questions:[],
+        text:`Lift the flooring in ${nm} (${area.toFixed(1)} m²)`, detail:[`was ${[...new Set(was)].map(x => FLOORING_BY_ID[x].name).join(" / ")}`]});
+    }
+  });
+  out.forEach(it => { it.detail = it.detail.filter(Boolean); });
+  return out;
+}
+function costChanges(version){
+  if (!version.costs) return [];
+  return version.floors.flatMap((f, i) => costChangesForFloor(f, i));
+}
+function costQuestionText(it){
+  const n = it.note || {}, parts = [];
+  if (it.questions.includes("loadBearing")) parts.push(`load-bearing: ${({yes:"yes", no:"no"})[n.loadBearing] || "not known"}`);
+  if (it.questions.includes("build")) parts.push(`new wall built as: ${n.build === "block" ? "block/brick" : "stud partition"}`);
+  return parts;
+}
+function setCostNote(it, q, value){
+  pushUndoSnapshot();
+  const el = it.noteOn;
+  el.cost = {...(el.cost || {}), [q]: value};
+  scheduleAutosave();
+  costPanelSig = "";
+  render();
+}
+
+// --- totals -------------------------------------------------------------------
+function costFormat(n, currency){
+  try{ return new Intl.NumberFormat("en-GB", {style:"currency", currency: currency || "GBP", maximumFractionDigits:0}).format(n); }
+  catch(e){ return (currency || "") + " " + Math.round(n).toLocaleString(); }
+}
+function costRange(lo, hi, cur){ return Math.round(lo) === Math.round(hi) ? costFormat(lo, cur) : `${costFormat(lo, cur)} – ${costFormat(hi, cur)}`; }
+function costTotals(version, items){
+  const est = version.costs && version.costs.estimate, cur = (est && est.currency) || "GBP";
+  const bySig = new Map(((est && est.lines) || []).map(l => [l.sig, l]));
+  let lo = 0, hi = 0, missing = 0;
+  items.forEach(it=>{ const l = bySig.get(it.sig); if (l){ it.price = l; lo += l.low; hi += l.high; } else { it.price = null; missing++; } });
+  const extras = items.length && est ? (est.extras || []) : [];
+  extras.forEach(x => { lo += x.low; hi += x.high; });
+  const pct = Math.max(0, +costSettings().contingencyPct || 0)/100;
+  const contingency = {low: lo*pct, high: hi*pct};
+  return {currency: cur, low: lo + contingency.low, high: hi + contingency.high, missing, extras, contingency, pct, stale: !!(est && items.length && est.sig !== costEstimateSig(items))};
+}
+function costEstimateSig(items){
+  const s = costSettings();
+  return JSON.stringify([items.map(it => it.sig), s.location, s.propertyType, s.era, s.ceilingM, s.finish, s.vat, s.listed]);
+}
+
+// --- panel --------------------------------------------------------------------
+function setCostStatus(msg){ const el = document.getElementById("costStatus"); if (el) el.textContent = msg || ""; }
+function updateCostsPanel(){
+  if (uiMode !== "costs") return;
+  const v = activeVersion(), items = costChanges(v), t = costTotals(v, items);
+  const sig = JSON.stringify([v.id, v.costs || null, items.map(it => it.sig + it.text), JSON.stringify(costSettings()), costEstimating]);
+  if (sig === costPanelSig) return;
+  costPanelSig = sig;
+  const s = costSettings();
+  document.getElementById("costTotal").textContent = !v.costs ? "—" : !items.length ? costFormat(0, t.currency) : (t.missing === items.length ? "Not estimated yet" : costRange(t.low, t.high, t.currency));
+  document.getElementById("costTotalSub").textContent = !v.costs ? "Costs haven't started for this version"
+    : !items.length ? "No changes since costs were reset"
+    : [`${items.length} change${items.length === 1 ? "" : "s"}`,
+       t.missing && t.missing < items.length ? `${t.missing} not yet estimated` : "",
+       t.stale && !t.missing ? "plan or details changed since the estimate — re-estimate to update" : "",
+       t.missing < items.length && t.pct ? `incl. ${Math.round(t.pct*100)}% contingency` : ""].filter(Boolean).join(" · ");
+  document.getElementById("costStartedNote").textContent = v.costs
+    ? `Costing changes made since ${new Date(v.costs.startedAt).toLocaleString("en-GB", {day:"numeric", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"})}. Reset only affects this version (“${v.name}”).`
+    : "Trace the home as it is now, then press Reset costs — from then on every change to walls, doorways, windows and flooring is costed. A new version carries its costs over; resetting it leaves the version it came from alone.";
+  document.getElementById("btnEstimateCosts").disabled = costEstimating || !items.length;
+  document.getElementById("btnEstimateCosts").textContent = costEstimating ? "⏳ Estimating…" : (t.missing < items.length ? "🤖 Re-estimate costs with Claude" : "🤖 Estimate costs with Claude");
+  // settings (left alone while being typed in)
+  const set = (id, val, prop="value")=>{ const el = document.getElementById(id); if (document.activeElement !== el) el[prop] = val; };
+  set("fldCostLocation", s.location); set("fldCostPropType", s.propertyType); set("fldCostEra", s.era);
+  set("fldCostCeiling", s.ceilingM); set("fldCostFinish", s.finish); set("fldCostContingency", s.contingencyPct);
+  set("fldCostVat", s.vat, "checked"); set("fldCostListed", s.listed, "checked"); set("fldCostWeb", s.webSearch, "checked");
+
+  const list = document.getElementById("costChanges");
+  list.textContent = "";
+  if (v.costs && !items.length){
+    const p = document.createElement("p"); p.className = "costNote";
+    p.textContent = "Nothing yet — move, add or remove walls, doors and windows, or lay flooring, and each change appears here.";
+    list.appendChild(p);
+  }
+  let lastFloor = null;
+  items.forEach(it=>{
+    if (v.floors.length > 1 && it.floorId !== lastFloor){
+      lastFloor = it.floorId;
+      const h = document.createElement("div"); h.className = "paletteCategory"; h.textContent = it.floorName;
+      list.appendChild(h);
+    }
+    const row = document.createElement("div"); row.className = "costRow costRow-" + (it.action === "remove" || it.action === "lift" ? "remove" : it.action === "add" || it.action === "lay" ? "add" : "alter");
+    const top = document.createElement("div"); top.className = "costRowTop";
+    const tx = document.createElement("span"); tx.textContent = it.text;
+    const pr = document.createElement("span"); pr.className = "costPrice";
+    pr.textContent = it.price ? costRange(it.price.low, it.price.high, t.currency) : "—";
+    if (it.price && it.price.basis) pr.title = it.price.basis;
+    top.appendChild(tx); top.appendChild(pr); row.appendChild(top);
+    if (it.detail.length){ const d = document.createElement("div"); d.className = "costDetail"; d.textContent = it.detail.join(" · "); row.appendChild(d); }
+    if (it.price && it.price.basis){ const b = document.createElement("div"); b.className = "costBasis"; b.textContent = it.price.basis; row.appendChild(b); }
+    it.questions.forEach(q=>{
+      const opts = q === "loadBearing" ? COST_LOAD_BEARING : COST_BUILD;
+      const cur = (it.note || {})[q] || opts[0][0];
+      const qr = document.createElement("div"); qr.className = "costQ";
+      const lab = document.createElement("span");
+      lab.textContent = q === "loadBearing" ? (it.kind === "wall" ? "Load-bearing?" : "Wall load-bearing?") : "Built as";
+      qr.appendChild(lab);
+      opts.forEach(([val, label])=>{
+        const b = document.createElement("button"); b.textContent = label;
+        b.classList.toggle("active", cur === val);
+        b.addEventListener("click", ()=>{ if (cur !== val) setCostNote(it, q, val); });
+        qr.appendChild(b);
+      });
+      row.appendChild(qr);
+    });
+    list.appendChild(row);
+  });
+  // fees, waste, contingency — the whole-job lines
+  const ex = document.getElementById("costExtras");
+  ex.textContent = "";
+  if (items.length && (t.extras.length || (t.missing < items.length && t.pct))){
+    const h = document.createElement("div"); h.className = "paletteCategory"; h.textContent = "Whole job";
+    ex.appendChild(h);
+    const line = (label, lo, hi, basis)=>{
+      const row = document.createElement("div"); row.className = "costRow costRow-extra";
+      const top = document.createElement("div"); top.className = "costRowTop";
+      const a = document.createElement("span"); a.textContent = label;
+      const b = document.createElement("span"); b.className = "costPrice"; b.textContent = costRange(lo, hi, t.currency);
+      top.appendChild(a); top.appendChild(b); row.appendChild(top);
+      if (basis){ const d = document.createElement("div"); d.className = "costBasis"; d.textContent = basis; row.appendChild(d); }
+      ex.appendChild(row);
+    };
+    t.extras.forEach(x => line(x.label, x.low, x.high, x.basis));
+    if (t.pct && t.missing < items.length) line(`Contingency (${Math.round(t.pct*100)}%)`, t.contingency.low, t.contingency.high, "For surprises once walls and floors are opened up.");
+  }
+  const as = document.getElementById("costAssumptions");
+  as.textContent = "";
+  const est = v.costs && v.costs.estimate;
+  if (est && items.length && est.assumptions && est.assumptions.length){
+    const h = document.createElement("div"); h.className = "paletteCategory";
+    h.textContent = `Assumptions · estimated ${new Date(est.at).toLocaleDateString("en-GB", {day:"numeric", month:"short", year:"numeric"})}`;
+    as.appendChild(h);
+    const ul = document.createElement("ul"); ul.className = "costAssume";
+    est.assumptions.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
+    as.appendChild(ul);
+  }
+}
+
+// --- canvas: what's changed, on the active floor --------------------------------
+// Removed = red dashed ghost where it used to be; new = green; for a moved or
+// resized item both are drawn.
+function drawCostOverlay(){
+  if (uiMode !== "costs") return;
+  const v = activeVersion(), f = activeFloor();
+  if (!v.costs) return;
+  const items = costChangesForFloor(f, v.floors.indexOf(f));
+  const RED = "rgba(229,72,77,0.9)", GREEN = "rgba(48,196,120,0.9)";
+  const line = (w, color, dashed)=>{
+    const pts = wallCenterlinePoints(w).map(p => toScreen(p.x, p.y));
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineCap = "butt";
+    ctx.lineWidth = Math.max(4, cmToWorld(w.thicknessCm || WALL_THICKNESS_CM)*fitScale + 4);
+    if (dashed) ctx.setLineDash([7, 5]);
+    ctx.globalAlpha = dashed ? 0.85 : 0.55;
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+    ctx.restore();
+  };
+  const door = (b, color, dashed)=>{
+    const c = toScreen(b.x, b.y), r = Math.max(8, cmToWorld(b.wCm)/2*fitScale);
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    if (dashed) ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  };
+  items.forEach(it=>{
+    if (it.kind === "flooring") return;
+    const draw = it.kind === "door" ? door : line;
+    if (it.old) draw(it.old, RED, true);
+    if (it.cur) draw(it.cur, GREEN, false);
+  });
+}
+
+// --- asking Claude ---------------------------------------------------------------
+const COST_SCHEMA = {
+  type:"object", additionalProperties:false, required:["currency","lines","extras","assumptions"],
+  properties:{
+    currency:{type:"string", description:"ISO 4217 code for the property's location, e.g. GBP"},
+    lines:{type:"array", items:{type:"object", additionalProperties:false, required:["key","low","high","basis"], properties:{
+      key:{type:"string"}, low:{type:"number"}, high:{type:"number"}, basis:{type:"string", description:"one short sentence: what the price covers"}}}},
+    extras:{type:"array", items:{type:"object", additionalProperties:false, required:["label","low","high","basis"], properties:{
+      label:{type:"string"}, low:{type:"number"}, high:{type:"number"}, basis:{type:"string"}}}},
+    assumptions:{type:"array", items:{type:"string"}},
+  },
+};
+function costPrompt(items){
+  const s = costSettings();
+  const prop = [
+    `Location: ${s.location || "not given (assume a typical UK location)"}`,
+    `Property: ${s.propertyType || "type not given"}${s.era ? `, built ${s.era.toLowerCase()}` : ""}`,
+    `Ceiling height: ${s.ceilingM || 2.4}m`,
+    `Listed building or conservation area: ${s.listed ? "yes" : "no"}`,
+    `Finish level: ${({budget:"budget", mid:"mid-range", high:"high-end"})[s.finish] || "mid-range"}`,
+    `Prices should ${s.vat ? "include" : "exclude"} VAT`,
+  ].join("\n");
+  const changes = items.map((it, i) => `c${i+1}: ${it.text}${it.detail.length || it.questions.length ? " — " + [...it.detail, ...costQuestionText(it)].join("; ") : ""}${it.floorName ? ` [${it.floorName}]` : ""}`).join("\n");
+  return `I'm planning changes to my home and want a rough budget. Estimate what each change below would cost, done by local tradespeople.
+
+${prop}
+
+Changes (from a traced floor plan; measurements are approximate):
+${changes}
+
+For each change, give a low and high figure in the local currency covering labour and materials, including making good the affected area (plastering, skirting, re-decorating the patch, floor patching where a wall comes out). Where load-bearing is "not known", widen the range to cover both cases and say so in the basis. A load-bearing removal or new opening includes the steel or lintel, padstones and temporary propping.
+
+Then list whole-job extras that these changes actually need, each with its own low and high: e.g. structural engineer's calculations, Building Control fees, party wall surveyor (only if plausible for the property type), skip hire and waste. Don't include a contingency; that's added separately.
+
+Use the keys c1, c2... exactly as given. Keep each basis to one short sentence, and list the main assumptions you made (at most 6).`;
+}
+async function estimateCosts(){
+  const v = activeVersion(), items = costChanges(v);
+  if (!items.length || costEstimating) return;
+  const apiKey = (document.getElementById("fldApiKey").value || "").trim() || (()=>{ try{ return localStorage.getItem(AI_API_KEY_STORAGE) || ""; }catch(e){ return ""; } })();
+  if (!apiKey){ setCostStatus("Add your Anthropic API key in Build → AI Detect first."); return; }
+  const s = costSettings(), sig = costEstimateSig(items), vid = v.id;
+  costEstimating = true; costPanelSig = ""; render();
+  setCostStatus(s.webSearch ? "Asking Claude, with a check of current local prices… this can take a minute or two." : "Asking Claude… this can take up to a minute.");
+  try{
+    let result, usedWeb = s.webSearch;
+    try{ result = await callClaudeCostEstimate(apiKey, costPrompt(items), usedWeb); }
+    catch(err){
+      if (!usedWeb || !err.badRequest) throw err;
+      usedWeb = false; // the web tool can be unavailable to an account or org — the estimate still works without it
+      result = await callClaudeCostEstimate(apiKey, costPrompt(items), false);
+    }
+    const target = state.versions.find(x => x.id === vid);
+    if (!target || !target.costs) return;
+    const num = x => Math.max(0, +x || 0);
+    const lines = [];
+    (result.lines || []).forEach(l=>{
+      const idx = parseInt(String(l.key).replace(/\D/g, ""), 10) - 1, it = items[idx];
+      if (!it) return;
+      const lo = num(l.low), hi = Math.max(lo, num(l.high));
+      lines.push({sig: it.sig, low: lo, high: hi, basis: String(l.basis || "")});
+    });
+    // anything still in the plan that this answer skipped keeps its earlier price
+    const prev = (target.costs.estimate && target.costs.estimate.lines) || [], got = new Set(lines.map(l => l.sig)), live = new Set(items.map(it => it.sig));
+    prev.forEach(l => { if (!got.has(l.sig) && live.has(l.sig)) lines.push(l); });
+    pushUndoSnapshot();
+    target.costs.estimate = {
+      at: new Date().toISOString(), model: COST_MODEL, sig, currency: /^[A-Z]{3}$/.test(result.currency) ? result.currency : "GBP", lines,
+      extras: (result.extras || []).map(x => ({label: String(x.label || "Extra"), low: num(x.low), high: Math.max(num(x.low), num(x.high)), basis: String(x.basis || "")})),
+      assumptions: (result.assumptions || []).map(String).slice(0, 8),
+    };
+    scheduleAutosave();
+    setCostStatus(`Estimated ${got.size} of ${items.length} change${items.length === 1 ? "" : "s"}${s.webSearch && !usedWeb ? " (web price check wasn't available, so without it)" : ""}.`);
+  }catch(err){
+    console.error(err);
+    setCostStatus("Couldn't get an estimate: " + err.message);
+  }finally{
+    costEstimating = false; costPanelSig = ""; render();
+  }
+}
+// Text-only request with structured output; with `web`, Claude may run a few
+// web searches for current local prices first (a server-side tool, so a long
+// search can come back as pause_turn — sent straight back to carry on).
+async function callClaudeCostEstimate(apiKey, prompt, web){
+  const messages = [{role:"user", content: prompt}];
+  for (let attempt = 0; attempt < 5; attempt++){
+    let resp;
+    try{
+      resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{
+          "content-type":"application/json",
+          "x-api-key": apiKey,
+          "anthropic-version":"2023-06-01",
+          "anthropic-beta":"server-side-fallback-2026-07-01",
+          "anthropic-dangerous-direct-browser-access":"true",
+        },
+        body: JSON.stringify({
+          model: COST_MODEL,
+          max_tokens: 16000,
+          fallbacks: "default", // a declined request is re-run on Anthropic's recommended fallback model rather than failing
+          system: "You are an experienced residential building cost estimator. You give realistic, current price ranges for home alterations in the property's own area, and you're candid about uncertainty.",
+          output_config: {effort:"medium", format:{type:"json_schema", schema: COST_SCHEMA}},
+          ...(web ? {tools:[{type:"web_search_20260209", name:"web_search", max_uses:5}]} : {}),
+          messages,
+        }),
+      });
+    }catch(networkErr){
+      throw new Error("Could not reach the Anthropic API (network or CORS error). Check your connection and try again.");
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok){
+      const e = new Error((data && data.error && data.error.message) || `HTTP ${resp.status}`);
+      e.badRequest = resp.status === 400;
+      throw e;
+    }
+    if (data.stop_reason === "pause_turn"){ messages.push({role:"assistant", content: data.content}); continue; }
+    if (data.stop_reason === "refusal") throw new Error("Claude declined this request.");
+    if (data.stop_reason === "max_tokens") throw new Error("The answer ran too long and was cut off — try again.");
+    const texts = (data.content || []).filter(b => b.type === "text").map(b => b.text);
+    for (const t of [texts.at(-1), texts.join("")]){
+      if (!t) continue;
+      try{ return JSON.parse(t); }catch(e){}
+      const a = t.indexOf("{"), b = t.lastIndexOf("}");
+      if (a >= 0 && b > a){ try{ return JSON.parse(t.slice(a, b+1)); }catch(e){} }
+    }
+    throw new Error("Claude's answer couldn't be read — try again.");
+  }
+  throw new Error("Claude took too many steps — try again, or untick the web price check.");
+}
+
+// --- wiring ---------------------------------------------------------------------
+document.getElementById("btnResetCosts").addEventListener("click", (e)=>{
+  const btn = e.currentTarget, v = activeVersion();
+  // a first press on a version already being costed only arms it — the second press within a few seconds resets
+  if (v.costs && costResetArmed !== v.id){
+    costResetArmed = v.id;
+    btn.textContent = "Click again to reset this version's costs to zero";
+    btn.classList.add("danger");
+    setTimeout(()=>{ if (costResetArmed === v.id){ costResetArmed = null; btn.textContent = "↺ Reset costs"; btn.classList.remove("danger"); } }, 4000);
+    return;
+  }
+  costResetArmed = null; btn.textContent = "↺ Reset costs"; btn.classList.remove("danger");
+  resetCosts();
+});
+document.getElementById("btnEstimateCosts").addEventListener("click", estimateCosts);
+[["fldCostLocation","location","text"], ["fldCostPropType","propertyType","text"], ["fldCostEra","era","text"], ["fldCostCeiling","ceilingM","num"],
+ ["fldCostFinish","finish","text"], ["fldCostContingency","contingencyPct","num"], ["fldCostVat","vat","bool"], ["fldCostListed","listed","bool"], ["fldCostWeb","webSearch","bool"]].forEach(([id, key, kind])=>{
+  const el = document.getElementById(id);
+  el.addEventListener(kind === "bool" || el.tagName === "SELECT" ? "change" : "input", ()=>{
+    pushUndoSnapshotDebounced();
+    costSettings()[key] = kind === "bool" ? el.checked : kind === "num" ? (parseFloat(el.value) || 0) : el.value;
+    scheduleAutosave();
+    costPanelSig = "";
+    updateCostsPanel();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Installed app (served over https — see sw.js): works offline, asks the
+// browser to keep the saved plans, and offers a reload when a new version
+// has been published while it's open (never swaps it mid-drawing).
+// ---------------------------------------------------------------------------
+if (/^https?:$/.test(location.protocol) && "serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(e => console.warn("Offline support unavailable", e));
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+  const pageHash = async ()=>{
+    const r = await fetch("index.html", {cache:"no-store"});
+    if (!r.ok) return null;
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", await r.arrayBuffer()));
+    return Array.from(d, x => x.toString(16).padStart(2, "0")).join("");
+  };
+  let runningHash = null, updateShown = false;
+  const checkForUpdate = async ()=>{
+    if (updateShown || !navigator.onLine) return;
+    try{
+      const h = await pageHash();
+      if (!h) return;
+      if (!runningHash){ runningHash = h; return; }
+      if (h !== runningHash){ updateShown = true; showUpdateNotice(); }
+    }catch(e){} // offline or host unreachable — try again later
+  };
+  const showUpdateNotice = ()=>{
+    const bar = document.createElement("div");
+    bar.id = "updateNotice";
+    bar.innerHTML = `<span>A new version of the planner is ready.</span>`;
+    const go = document.createElement("button"); go.textContent = "Reload now";
+    const later = document.createElement("button"); later.textContent = "Later";
+    go.addEventListener("click", ()=>{ go.disabled = true; go.textContent = "Saving…"; Promise.resolve(flushAutosave()).finally(() => location.reload()); });
+    later.addEventListener("click", () => bar.remove());
+    bar.appendChild(go); bar.appendChild(later);
+    document.body.appendChild(bar);
+  };
+  checkForUpdate();
+  setInterval(checkForUpdate, 30*60*1000);
+  document.addEventListener("visibilitychange", ()=>{ if (document.visibilityState === "visible") checkForUpdate(); });
+}
 
 // ---------------------------------------------------------------------------
 // Init
