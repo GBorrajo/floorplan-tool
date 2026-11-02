@@ -121,6 +121,7 @@
   .costQ{display:flex; align-items:center; gap:4px; margin-top:5px; flex-wrap:wrap; font-size:10.5px; color:var(--text-dim);}
   .costQ span{margin-right:2px;}
   .costQ button{font-size:10.5px; padding:2px 7px;}
+  .costAssumed{font-size:10px; color:var(--text-dim); opacity:.85;}
   .costAssume{margin:2px 0 0; padding-left:16px; font-size:10.5px; color:var(--text-dim); line-height:1.45;}
   .furnCell{grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; gap:5px; align-items:stretch;}
   .furnCell .depthTabs{flex-wrap:wrap; align-content:center; padding:2px 0;}
@@ -8238,9 +8239,12 @@ function costChangesForFloor(floor, floorIndex){
   const areas = getRoomAreasForFloor(floor);
   const roomAt = p => { const r = roomAtWorld(areas, p.x, p.y); return r ? (roomName(floor, areas, r) || "an unnamed room") : null; };
   // which rooms a line (wall, window or door) sits between, read off the plan as it is now
-  const where = (mid, ang, thickCm)=>{
+  const sides = (mid, ang, thickCm)=>{
     const n = {x:-Math.sin(ang), y:Math.cos(ang)}, off = toW(thickCm/2 + 20);
-    const a = roomAt({x:mid.x+n.x*off, y:mid.y+n.y*off}), b = roomAt({x:mid.x-n.x*off, y:mid.y-n.y*off});
+    return [roomAt({x:mid.x+n.x*off, y:mid.y+n.y*off}), roomAt({x:mid.x-n.x*off, y:mid.y-n.y*off})];
+  };
+  const where = (mid, ang, thickCm)=>{
+    const [a, b] = sides(mid, ang, thickCm);
     if (!a && !b) return "";
     if (a === b) return `in ${a}`;
     return `between ${a || "outside"} and ${b || "outside"}`;
@@ -8249,18 +8253,33 @@ function costChangesForFloor(floor, floorIndex){
   const thick = w => Math.round(w.thicknessCm || (isWin(w) ? WINDOW_THICKNESS_CM : WALL_THICKNESS_CM));
   const lenCm = w => toCm(polylineCumLengths(wallCenterlinePoints(w)).at(-1));
   const mid = w => ({x:(w.x1+w.x2)/2, y:(w.y1+w.y2)/2}), ang = w => Math.atan2(w.y2-w.y1, w.x2-w.x1);
-  const hostThick = (p, walls)=>{ // thickness of the wall a window/door sits in
+  const hostWall = (p, walls)=>{ // the wall a window/door sits in
     let best = null;
-    walls.forEach(w=>{ if (isWin(w)) return; const q = projectPointToSegment(p, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2}), d = Math.hypot(p.x-q.x, p.y-q.y); if (!best || d < best.d) best = {d, t:thick(w)}; });
-    return best && toCm(best.d) < 40 ? best.t : null;
+    walls.forEach(w=>{ if (isWin(w)) return; const q = projectPointToSegment(p, {x:w.x1,y:w.y1}, {x:w.x2,y:w.y2}), d = Math.hypot(p.x-q.x, p.y-q.y); if (!best || d < best.d) best = {d, w}; });
+    return best && toCm(best.d) < 40 ? best.w : null;
   };
-  const wallKind = t => t == null ? "" : t >= 20 ? `${t}cm external wall` : `${t}cm internal wall`;
+  // Exterior = a room on one side and outside on the other; rooms both sides = interior (however thick).
+  // Only when the plan can't say (no enclosed room either side — e.g. an exterior wall that's been taken
+  // out, opening its room up) does thickness decide: 20cm+ as drawn by the Exterior wall tool (25cm).
+  // Rule of thumb for the load-bearing default: exterior walls are, interior aren't.
+  const isExterior = w=>{
+    const [a, b] = sides(mid(w), ang(w), thick(w));
+    return a || b ? !!a !== !!b : thick(w) >= 20;
+  };
+  const wallKind = w => !w ? "" : `${thick(w)}cm ${isExterior(w) ? "external" : "internal"} wall`;
   const out = [];
   const add = (it)=>{
     it.floorId = floor.id; it.floorName = floor.name;
     const noteOf = it.noteOn ? (it.noteOn.cost || {}) : {};
     it.note = noteOf;
-    it.sig = JSON.stringify([floorIndex, it.kind, it.action, it.geo, (it.questions||[]).map(q => noteOf[q] || null)]);
+    // unanswered load-bearing questions default by the wall's kind (the wall itself, or the one the door/window is in)
+    it.defaults = {};
+    if ((it.questions||[]).includes("loadBearing")){
+      const w = it.kind === "wall" ? (it.old || it.cur) : hostWall(it.kind === "door" ? it.cur : mid(it.cur), floor.walls);
+      if (w) it.defaults.loadBearing = isExterior(w) ? "yes" : "no";
+    }
+    it.answer = q => noteOf[q] || it.defaults[q] || null;
+    it.sig = JSON.stringify([floorIndex, it.kind, it.action, it.geo, (it.questions||[]).map(q => it.answer(q))]);
     out.push(it);
   };
   const r1 = v => Math.round(v);
@@ -8281,7 +8300,7 @@ function costChangesForFloor(floor, floorIndex){
     const host = inGoneWall(mid(o));
     if (host){ carry(host, `a ${m(lenCm(o))} window`); return; }
     add({kind:"window", action:"remove", old:o, noteOn:o, questions:[], geo:geoLine(o),
-      text:`Remove a ${m(lenCm(o))} window and block up the opening`, detail:[wallKind(hostThick(mid(o), base.walls)), where(mid(o), ang(o), thick(o))]});
+      text:`Remove a ${m(lenCm(o))} window and block up the opening`, detail:[wallKind(hostWall(mid(o), base.walls)), where(mid(o), ang(o), thick(o))]});
   });
   const baseDoorsGone = base.doors.filter(o => !floor.boxes.some(b => b.id === o.id));
   const carriedDoors = new Set();
@@ -8289,15 +8308,15 @@ function costChangesForFloor(floor, floorIndex){
   goneWalls.forEach(o=>{
     const took = carried.get(o);
     add({kind:"wall", action:"remove", old:o, noteOn:o, questions:["loadBearing"], geo:geoLine(o),
-      text:`Remove a ${m(lenCm(o))} wall`, detail:[`${thick(o)}cm thick`, where(mid(o), ang(o), thick(o)), took ? `including ${took.join(" and ")} in it` : ""]});
+      text:`Remove a ${m(lenCm(o))} wall`, detail:[wallKind(o), where(mid(o), ang(o), thick(o)), took ? `including ${took.join(" and ")} in it` : ""]});
   });
   floor.walls.forEach(w=>{
     const o = baseById.get(w.id);
     if (!o){
       if (isWin(w)) add({kind:"window", action:"add", cur:w, noteOn:w, questions:["loadBearing"], geo:geoLine(w),
-        text:`New ${m(lenCm(w))} window`, detail:[wallKind(hostThick(mid(w), floor.walls)), where(mid(w), ang(w), thick(w))]});
+        text:`New ${m(lenCm(w))} window`, detail:[wallKind(hostWall(mid(w), floor.walls)), where(mid(w), ang(w), thick(w))]});
       else add({kind:"wall", action:"add", cur:w, noteOn:w, questions:["build"], geo:geoLine(w),
-        text:`Build a new ${m(lenCm(w))} wall`, detail:[`${thick(w)}cm thick`, where(mid(w), ang(w), thick(w))]});
+        text:`Build a new ${m(lenCm(w))} wall`, detail:[wallKind(w), where(mid(w), ang(w), thick(w))]});
       return;
     }
     const tol = toW(COST_TOL_CM), d = (p, q) => Math.hypot(p.x-q.x, p.y-q.y);
@@ -8310,15 +8329,15 @@ function costChangesForFloor(floor, floorIndex){
     const dLen = lenCm(w) - lenCm(o), win = isWin(w), at = where(mid(w), ang(w), thick(w));
     if (inLine && Math.abs(dLen) >= COST_TOL_CM){
       if (win) add({kind:"window", action: dLen > 0 ? "widen" : "narrow", old:o, cur:w, noteOn:w, questions: dLen > 0 ? ["loadBearing"] : [], geo:[geoLine(o), geoLine(w)],
-        text: dLen > 0 ? `Widen a window from ${m(lenCm(o))} to ${m(lenCm(w))}` : `Narrow a window from ${m(lenCm(o))} to ${m(lenCm(w))}`, detail:[wallKind(hostThick(mid(w), floor.walls)), at]});
+        text: dLen > 0 ? `Widen a window from ${m(lenCm(o))} to ${m(lenCm(w))}` : `Narrow a window from ${m(lenCm(o))} to ${m(lenCm(w))}`, detail:[wallKind(hostWall(mid(w), floor.walls)), at]});
       else add({kind:"wall", action: dLen > 0 ? "extend" : "shorten", old:o, cur:w, noteOn:w, questions: dLen > 0 ? ["build"] : ["loadBearing"], geo:[geoLine(o), geoLine(w)],
-        text: dLen > 0 ? `Extend a wall by ${m(dLen)} (to ${m(lenCm(w))})` : `Take ${m(-dLen)} off a wall (to ${m(lenCm(w))})`, detail:[`${thick(w)}cm thick`, at]});
+        text: dLen > 0 ? `Extend a wall by ${m(dLen)} (to ${m(lenCm(w))})` : `Take ${m(-dLen)} off a wall (to ${m(lenCm(w))})`, detail:[wallKind(w), at]});
       return;
     }
     if (win) add({kind:"window", action:"move", old:o, cur:w, noteOn:w, questions:["loadBearing"], geo:[geoLine(o), geoLine(w)],
-      text:`Move a ${m(lenCm(o))} window${Math.abs(dLen) >= COST_TOL_CM ? ` (now ${m(lenCm(w))})` : ""}`, detail:["old opening blocked up, new one formed", wallKind(hostThick(mid(w), floor.walls)), at]});
+      text:`Move a ${m(lenCm(o))} window${Math.abs(dLen) >= COST_TOL_CM ? ` (now ${m(lenCm(w))})` : ""}`, detail:["old opening blocked up, new one formed", wallKind(hostWall(mid(w), floor.walls)), at]});
     else add({kind:"wall", action:"move", old:o, cur:w, noteOn:w, questions:["loadBearing","build"], geo:[geoLine(o), geoLine(w)],
-      text:`Move a wall (take down ${m(lenCm(o))}, rebuild ${m(lenCm(w))})`, detail:[`${thick(w)}cm thick`, at]});
+      text:`Move a wall (take down ${m(lenCm(o))}, rebuild ${m(lenCm(w))})`, detail:[wallKind(w), at]});
   });
 
   // doors and doorways
@@ -8331,20 +8350,20 @@ function costChangesForFloor(floor, floorIndex){
   base.doors.forEach(o=>{
     if (curDoorById.has(o.id) || carriedDoors.has(o)) return;
     add({kind:"door", action:"remove", old:o, noteOn:o, questions:[], geo:geoDoor(o),
-      text: isOpening(o) ? `Block up ${withSize(o)}` : `Remove ${withSize(o)} and block up the doorway`, detail:[wallKind(hostThick(o, base.walls)), dWhere(o)]});
+      text: isOpening(o) ? `Block up ${withSize(o)}` : `Remove ${withSize(o)} and block up the doorway`, detail:[wallKind(hostWall(o, base.walls)), dWhere(o)]});
   });
   curDoors.forEach(b=>{
     const o = baseDoorById.get(b.id);
     if (!o){
       add({kind:"door", action:"add", cur:b, noteOn:b, questions:["loadBearing"], geo:geoDoor(b),
-        text: isOpening(b) ? `Form a new ${r1(b.wCm)}cm opening (no door)` : `New doorway with ${withSize(b)}`, detail:[wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+        text: isOpening(b) ? `Form a new ${r1(b.wCm)}cm opening (no door)` : `New doorway with ${withSize(b)}`, detail:[wallKind(hostWall(b, floor.walls)), dWhere(b)]});
       return;
     }
     const moved = toCm(Math.hypot(b.x-o.x, b.y-o.y)) >= 5, dW = b.wCm - o.wCm, typeChanged = (b.doorType||"single") !== (o.doorType||"single");
     if (!moved && Math.abs(dW) < 2 && !typeChanged) return;
     if (moved && Math.abs(dW) < Math.max(5, toCm(Math.hypot(b.x-o.x, b.y-o.y)))){ // shifted along/away, not just grown from one side
       add({kind:"door", action:"move", old:o, cur:b, noteOn:b, questions:["loadBearing"], geo:[geoDoor(o), geoDoor(b)],
-        text:`Move ${withSize(o)}${typeChanged || Math.abs(dW) >= 2 ? ` (becoming ${withSize(b)})` : ""}`, detail:["old doorway blocked up, new one formed", wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+        text:`Move ${withSize(o)}${typeChanged || Math.abs(dW) >= 2 ? ` (becoming ${withSize(b)})` : ""}`, detail:["old doorway blocked up, new one formed", wallKind(hostWall(b, floor.walls)), dWhere(b)]});
       return;
     }
     const parts = [];
@@ -8352,7 +8371,7 @@ function costChangesForFloor(floor, floorIndex){
     if (typeChanged) parts.push(isOpening(b) ? `take out the ${doorLabel(o)}, leaving an opening` : `replace the ${doorLabel(o)} with ${/doors$/.test(doorLabel(b)) ? "" : "a "}${doorLabel(b)}`);
     const txt = parts.join(" and ");
     add({kind:"door", action: dW >= 2 ? "widen" : "alter", old:o, cur:b, noteOn:b, questions: dW >= 2 ? ["loadBearing"] : [], geo:[geoDoor(o), geoDoor(b)],
-      text: txt.charAt(0).toUpperCase() + txt.slice(1), detail:[wallKind(hostThick(b, floor.walls)), dWhere(b)]});
+      text: txt.charAt(0).toUpperCase() + txt.slice(1), detail:[wallKind(hostWall(b, floor.walls)), dWhere(b)]});
   });
 
   // flooring — each room as it is now, against whatever the baseline had laid there
@@ -8378,7 +8397,10 @@ function costChanges(version){
 }
 function costQuestionText(it){
   const n = it.note || {}, parts = [];
-  if (it.questions.includes("loadBearing")) parts.push(`load-bearing: ${({yes:"yes", no:"no"})[n.loadBearing] || "not known"}`);
+  if (it.questions.includes("loadBearing")){
+    const a = it.answer("loadBearing"), assumed = !n.loadBearing && it.defaults.loadBearing;
+    parts.push(`load-bearing: ${({yes:"yes", no:"no"})[a] || "not known"}${assumed ? ` (assumed, as ${a === "yes" ? "an exterior" : "an interior"} wall)` : ""}`);
+  }
   if (it.questions.includes("build")) parts.push(`new wall built as: ${n.build === "block" ? "block/brick" : "stud partition"}`);
   return parts;
 }
@@ -8465,7 +8487,7 @@ function updateCostsPanel(){
     if (it.price && it.price.basis){ const b = document.createElement("div"); b.className = "costBasis"; b.textContent = it.price.basis; row.appendChild(b); }
     it.questions.forEach(q=>{
       const opts = q === "loadBearing" ? COST_LOAD_BEARING : COST_BUILD;
-      const cur = (it.note || {})[q] || opts[0][0];
+      const cur = it.answer(q) || opts[0][0], assumed = !(it.note || {})[q] && it.defaults[q];
       const qr = document.createElement("div"); qr.className = "costQ";
       const lab = document.createElement("span");
       lab.textContent = q === "loadBearing" ? (it.kind === "wall" ? "Load-bearing?" : "Wall load-bearing?") : "Built as";
@@ -8476,6 +8498,12 @@ function updateCostsPanel(){
         b.addEventListener("click", ()=>{ if (cur !== val) setCostNote(it, q, val); });
         qr.appendChild(b);
       });
+      if (assumed){
+        const hint = document.createElement("em"); hint.className = "costAssumed";
+        hint.textContent = cur === "yes" ? "assumed — exterior wall" : "assumed — interior wall";
+        hint.title = "Rule of thumb: exterior walls are load-bearing, interior walls aren't. Pick an answer to override it if you know otherwise.";
+        qr.appendChild(hint);
+      }
       row.appendChild(qr);
     });
     list.appendChild(row);
@@ -8576,7 +8604,7 @@ ${prop}
 Changes (from a traced floor plan; measurements are approximate):
 ${changes}
 
-For each change, give a low and high figure in the local currency covering labour and materials, including making good the affected area (plastering, skirting, re-decorating the patch, floor patching where a wall comes out). Where load-bearing is "not known", widen the range to cover both cases and say so in the basis. A load-bearing removal or new opening includes the steel or lintel, padstones and temporary propping.
+For each change, give a low and high figure in the local currency covering labour and materials, including making good the affected area (plastering, skirting, re-decorating the patch, floor patching where a wall comes out). Where a load-bearing answer is marked "assumed", it comes from a rule of thumb (exterior walls are load-bearing, interior ones aren't), so mention in the basis if the price depends on it. Where load-bearing is "not known", widen the range to cover both cases and say so in the basis. A load-bearing removal or new opening includes the steel or lintel, padstones and temporary propping.
 
 Then list whole-job extras that these changes actually need, each with its own low and high: e.g. structural engineer's calculations, Building Control fees, party wall surveyor (only if plausible for the property type), skip hire and waste. Don't include a contingency; that's added separately.
 

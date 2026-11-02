@@ -542,6 +542,12 @@ doors/doorways, flooring — made since **Reset costs**:
   windows' `wallId` pointing at their wall in the copy.)
 - Per-change questions (load-bearing? stud or block?) are stored on the
   element as `cost` — the baseline copy for removals.
+- Unanswered load-bearing questions default by rule of thumb: exterior
+  walls are load-bearing, interior aren't (shown "assumed — exterior/interior
+  wall"; any answer overrides). Exterior = room on one side, outside on the
+  other; rooms both sides = interior however thick; thickness (20cm+) only
+  decides when there's no enclosed room either side. Doors/windows take the
+  default from the wall they sit in.
 - Property details (location, type, age, ceiling height, finish, VAT,
   listed, contingency %) are project-wide: `state.costSettings`.
 - "Estimate costs with Claude" (claude-opus-5-5, structured output,
