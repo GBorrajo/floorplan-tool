@@ -558,6 +558,15 @@ doors/doorways, flooring — made since **Reset costs**:
   re-estimated, and copies keep their prices. Uses the API key from Build →
   AI Detect.
 
+## 3D view (2026-11-13)
+
+**🎥 3D view** (top bar) opens a live 3D model of the floor you're on, in a panel over the plan. It updates as you edit (drag furniture and watch it move). **⤢** makes it fill the canvas; **Esc** or **✕** closes it.
+
+- **🚶 Walk** looks through a camera at eye height (1.6m). The camera shows on the plan as a small amber camera with its view cone: drag the camera to move it, drag the amber dot to aim it. In the 3D panel: drag to look around, **W A S D** / arrow keys to walk and turn, scroll to step. Saved per floor (`floor.camera`); first placed in the middle of the biggest room, square to its walls.
+- **🏠 Dollhouse** looks down on the whole floor: drag to spin, right-drag or Shift-drag to slide, scroll to zoom. **Walls down** cuts every wall to a stub (dark top caps) so you can see in; doors and wall cupboards hide with it.
+- Built from the plan: walls at the Costs ceiling height (default 2.4m) with door openings (2.05m) and windows (sill 0.9m, head 2.1m, bays follow their curve); door leaves shown open by type (French glazed, sliding/bifold as glass panels, pocket/opening clear); each room's flooring as its real pattern; every furniture type as a simple model in real-world colours (the plan's colours are category colours). A 30cm kitchen unit is taken as a wall cupboard, hung at 1.45m. Appliances set under a unit sit under its worktop.
+- three.js 0.187 is vendored in `vendor/` (loaded only when the 3D view first opens, cached for offline by `sw.js`), falling back to jsDelivr if the local file can't load (e.g. opened from a file).
+
 ## Installable app and updates (2026-10-24)
 
 Served over https (GitHub Pages), the planner installs as an app from Edge

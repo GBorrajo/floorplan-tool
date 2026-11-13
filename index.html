@@ -104,6 +104,15 @@
   .furnItems{display:grid; grid-template-columns:1fr 1fr; gap:5px;}
   .furnItem{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:6px 7px; line-height:1.2;}
   .furnItem .ic{font-size:17px; flex:0 0 auto;}
+  #view3d{position:absolute; right:12px; bottom:12px; width:min(46%, 760px); height:min(48%, 520px); min-width:300px; min-height:220px; z-index:20;
+    display:flex; flex-direction:column; background:#0d0f13; border:1px solid var(--panel-border); border-radius:10px; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.5);}
+  #view3d.large{left:12px; top:12px; width:auto; height:auto;}
+  #view3dBar{flex:0 0 auto; display:flex; gap:4px; align-items:center; padding:5px; background:var(--panel); border-bottom:1px solid var(--panel-border);}
+  #view3dBar button{font-size:11.5px; padding:4px 8px;}
+  #view3dBar .grow{flex:1;}
+  #view3dCanvas{flex:1; min-height:0; width:100%; height:100%; outline:none; cursor:grab; touch-action:none;}
+  #view3dCanvas:active{cursor:grabbing;}
+  #view3dHint{position:absolute; left:8px; bottom:6px; right:8px; font-size:10.5px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.8); pointer-events:none;}
   #updateNotice{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:1000; display:flex; align-items:center; gap:10px;
     background:var(--panel, #1b1e24); color:var(--text); border:1px solid var(--accent); border-radius:8px; padding:9px 12px; font-size:12.5px; box-shadow:0 6px 24px rgba(0,0,0,.45);}
   #costTotalBox{background:var(--field-bg); border:1px solid var(--panel-border); border-radius:8px; padding:10px 12px;}
@@ -188,6 +197,7 @@
   <button id="btnAddFloor">+ Add floor</button>
   <button id="btnUndo" title="Undo (Ctrl/Cmd+Z)" disabled>↶ Undo</button>
   <button id="btnRedo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>↷ Redo</button>
+  <button id="btnView3d" title="Open a live 3D view of this floor">🎥 3D view</button>
   <div id="viewControls">
     <label for="fldOpacity">Image opacity</label>
     <input type="range" id="fldOpacity" min="0" max="100" value="100">
@@ -447,6 +457,18 @@
 
   <div id="canvasWrap">
     <canvas id="cv"></canvas>
+    <div id="view3d" hidden>
+      <div id="view3dBar">
+        <button data-v3mode="walk" title="Look through the camera on the plan">🚶 Walk</button>
+        <button data-v3mode="doll" title="Look down on the whole floor">🏠 Dollhouse</button>
+        <button id="btnV3Walls" hidden></button>
+        <span class="grow"></span>
+        <button id="btnV3Size" title="Bigger / smaller">⤢</button>
+        <button id="btnV3Close" title="Close the 3D view (Esc)">✕</button>
+      </div>
+      <canvas id="view3dCanvas" tabindex="0"></canvas>
+      <div id="view3dHint"></div>
+    </div>
   </div>
 </div>
 
@@ -1180,6 +1202,7 @@ function normalizeFloor(f){
     floorings: f.floorings || [],
     roomNames: f.roomNames || [],
     ...(f.costBaseline ? {costBaseline: f.costBaseline} : {}), // see resetCosts
+    ...(f.camera ? {camera: f.camera} : {}), // the 3D view's walk camera — see ensurePlanCamera
   };
 }
 // data.versions is the current save shape; the other two branches migrate
@@ -1680,7 +1703,9 @@ function render(){
   drawSofaResizeLabel();
 
   if (selection && showOverlay) drawSelectionHandles();
+  if (view3dOpen && showOverlay) drawPlanCamera();
   if (!drag){ updateRoomAreaStats(); updateFlooringPanel(); updateRoomsPanel(); updateFurnishPanel(); updateCostsPanel(); }
+  view3dSync();
 }
 
 // Rubber-band selection box — drawn in screen space over whatever's
@@ -3053,6 +3078,8 @@ function updateHoverCursor(e){
   if (activeTool !== "select"){ return; } // other tools keep the fixed cursor setTool() already applies (crosshair etc.)
   const ms = getMouseScreen(e);
   let cursor = "default";
+  const camCursor = planCameraHover(ms);
+  if (camCursor){ cv.style.cursor = camCursor; return; }
 
   if (selection && selection.kind === "wall"){
     const wall = getWall(selection.id);
@@ -5290,6 +5317,7 @@ cv.addEventListener("pointerdown", (e)=>{
   // plain click that only selects/deselects never touches state, so the
   // pointerup comparison below just finds nothing changed and skips it.
   dragUndoSnapshot = snapshotState();
+  if (view3dOpen && showOverlay && planCameraPointerDown(ms)) return;
 
   if (activeTool === "stamp"){
     if (stampSpec) focusRoomAt(mw);
@@ -5484,6 +5512,7 @@ window.addEventListener("pointermove", (e)=>{
   }
   const ms = getMouseScreen(e);
   const mw = toWorld(ms.x, ms.y);
+  if (drag.type === "cam-move" || drag.type === "cam-aim"){ planCameraPointerMove(mw); return; }
 
   const isDrawSeg = drag.type === "draw-wall";
   if (isDrawSeg || drag.type === "calibrate" || drag.type === "pick-thickness"){
@@ -5735,6 +5764,7 @@ window.addEventListener("pointermove", (e)=>{
 
 window.addEventListener("pointerup", (e)=>{
   if (!drag) return;
+  if (drag.type === "cam-move" || drag.type === "cam-aim"){ drag = null; dragUndoSnapshot = null; v3CameraMoved(); return; } // moving the camera isn't an edit to undo
   if (drag.type === "draw-wall"){
     const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
     if (len > 4){
@@ -8771,6 +8801,694 @@ if (/^https?:$/.test(location.protocol) && "serviceWorker" in navigator){
   setInterval(checkForUpdate, 30*60*1000);
   document.addEventListener("visibilitychange", ()=>{ if (document.visibilityState === "visible") checkForUpdate(); });
 }
+
+// ---------------------------------------------------------------------------
+// 3D view — a live 3D model of the active floor, in a panel over the plan.
+// "Walk" looks through a camera you place and drag on the plan (saved per
+// floor as floor.camera = {x, y, angle, fovDeg} in world units/radians);
+// "Dollhouse" orbits the whole floor, with walls up or cut down Sims-style.
+// three.js is vendored (vendor/) and only loaded the first time it opens.
+// Scene units are metres: plan (x, y) -> 3D (x*m, height, y*m), so a plan
+// rotation θ is a 3D rotation.y of −θ, and an item's local +y (its front,
+// see CLEARANCE_ZONES) is local +z.
+// ---------------------------------------------------------------------------
+const V3_EYE_M = 1.6, V3_DOOR_M = 2.05, V3_SILL_M = 0.9, V3_HEAD_M = 2.1, V3_CUTAWAY_M = 0.35;
+const V3_WALK_SPEED_MPS = 1.6;
+let THREE = null;
+let v3 = null; // {renderer, scene, camera, root, mode, wallsDown, ...} once loaded
+let view3dOpen = false;
+
+function v3Floor(){ return activeFloor(); }
+function v3Ceiling(){ return Math.max(2, Math.min(6, +costSettings().ceilingM || 2.4)); }
+async function loadThree(){
+  if (THREE) return THREE;
+  try{ THREE = await import("./vendor/three.module.min.js"); }
+  catch(e){ THREE = await import("https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.min.js"); } // e.g. opened straight from a file
+  return THREE;
+}
+
+// The plan camera: auto-placed in the middle of the biggest room, square to its walls.
+function ensurePlanCamera(floor){
+  if (floor.camera) return floor.camera;
+  const areas = getRoomAreasForFloor(floor);
+  let p = {x: floor.worldWidth/2, y: floor.worldHeight/2};
+  const big = areas.rooms.slice().sort((a, b) => b.areaM2 - a.areaM2)[0];
+  if (big) p = roomInteriorPoint(areas, big);
+  floor.camera = {x:p.x, y:p.y, angle: roomWallAngle(p, floor) || 0, fovDeg: 70};
+  scheduleAutosave();
+  return floor.camera;
+}
+
+// --- plan overlay: the camera and its view cone, dragged to move / aimed by its amber handle
+const PLAN_CAM_AIM_PX = 46;
+function planCameraHandles(){
+  const c = v3Floor().camera;
+  if (!c) return null;
+  const p = toScreen(c.x, c.y);
+  return {body: p, aim: {x: p.x + Math.cos(c.angle)*PLAN_CAM_AIM_PX, y: p.y + Math.sin(c.angle)*PLAN_CAM_AIM_PX}};
+}
+function drawPlanCamera(){
+  const c = v3Floor().camera, h = planCameraHandles();
+  if (!c || !h) return;
+  const half = (c.fovDeg||70)*Math.PI/360, reach = Math.max(70, cmToWorld(350)*fitScale);
+  ctx.save();
+  ctx.translate(h.body.x, h.body.y);
+  ctx.rotate(c.angle);
+  const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, reach);
+  grad.addColorStop(0, "rgba(224,162,60,0.38)"); grad.addColorStop(1, "rgba(224,162,60,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, reach, -half, half); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "rgba(224,162,60,0.8)"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(-half)*reach, Math.sin(-half)*reach); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(half)*reach, Math.sin(half)*reach); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "#e0a23c"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(PLAN_CAM_AIM_PX, 0); ctx.stroke();
+  ctx.fillStyle = "#e0a23c"; ctx.beginPath(); ctx.arc(PLAN_CAM_AIM_PX, 0, 6, 0, Math.PI*2); ctx.fill();
+  // the camera body: a little rounded box with a lens, pointing along +x
+  ctx.fillStyle = "#1b1e24"; ctx.strokeStyle = "#e0a23c"; ctx.lineWidth = 2;
+  roundRectPath(-12, -9, 20, 18, 4); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(8, -5); ctx.lineTo(15, -9); ctx.lineTo(15, 9); ctx.lineTo(8, 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+// Called first thing on a plan pointerdown while the 3D view is open; true = it took the press.
+function planCameraPointerDown(ms){
+  const h = planCameraHandles();
+  if (!h) return false;
+  if (Math.hypot(ms.x-h.aim.x, ms.y-h.aim.y) <= 10){ drag = {type:"cam-aim"}; return true; }
+  if (Math.hypot(ms.x-h.body.x, ms.y-h.body.y) <= 15){ const c = v3Floor().camera, w = toWorld(ms.x, ms.y); drag = {type:"cam-move", dx:c.x-w.x, dy:c.y-w.y}; return true; }
+  return false;
+}
+function planCameraPointerMove(mw){
+  const c = v3Floor().camera;
+  if (drag.type === "cam-move"){ c.x = mw.x + drag.dx; c.y = mw.y + drag.dy; }
+  else { c.angle = Math.atan2(mw.y - c.y, mw.x - c.x); }
+  render();
+}
+function planCameraHover(ms){
+  const h = view3dOpen && planCameraHandles();
+  if (!h) return null;
+  if (Math.hypot(ms.x-h.aim.x, ms.y-h.aim.y) <= 10) return "crosshair";
+  if (Math.hypot(ms.x-h.body.x, ms.y-h.body.y) <= 15) return "move";
+  return null;
+}
+
+// --- materials (cached by key, never disposed — there are only a few dozen)
+const v3Mats = new Map();
+function v3Mat(color, opts = {}){
+  const key = color + JSON.stringify(opts);
+  if (!v3Mats.has(key)) v3Mats.set(key, new THREE.MeshStandardMaterial({color, roughness: 0.85, metalness: 0, ...opts}));
+  return v3Mats.get(key);
+}
+const V3 = {
+  wall: () => v3Mat("#f1eee8", {roughness: 0.95}),
+  cap:  () => v3Mat("#3a3e46", {roughness: 0.9}),
+  glass:() => v3Mat("#a9cde0", {transparent: true, opacity: 0.28, roughness: 0.05, metalness: 0.1, depthWrite: false}),
+  frame:() => v3Mat("#f7f7f4", {roughness: 0.6}),
+  door: () => v3Mat("#f4f1ea", {roughness: 0.7}),
+  oak:  () => v3Mat("#b08457", {roughness: 0.75}),
+  walnut:()=> v3Mat("#6e4a32", {roughness: 0.7}),
+  dark: () => v3Mat("#2b2d31", {roughness: 0.6}),
+  black:() => v3Mat("#141518", {roughness: 0.35, metalness: 0.2}),
+  steel:() => v3Mat("#c3c7cc", {roughness: 0.3, metalness: 0.7}),
+  white:() => v3Mat("#f5f5f2", {roughness: 0.35}),
+  ceramic:()=>v3Mat("#fbfbf9", {roughness: 0.18}),
+  linen:() => v3Mat("#ece6da", {roughness: 1}),
+  fabric:(c)=> v3Mat(c, {roughness: 1}),
+};
+// Default 3D finish for each type — real-world colours, not the plan's category colours.
+const V3_FABRIC = {sofa:"#7d8fa3", armchair:"#b9875f", beddbl:"#8fa3a0", bedsgl:"#c9a27a", officechair:"#3a3d44", diningchair:"#b08457"};
+
+// --- geometry helpers, all in an item's local metres (y up, bottom at y0)
+function v3Box(g, w, h, d, x, y0, z, mat){
+  if (w <= 0.001 || h <= 0.001 || d <= 0.001) return null;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y0 + h/2, z); m.castShadow = m.receiveShadow = true;
+  g.add(m); return m;
+}
+function v3Cyl(g, rTop, rBot, h, x, y0, z, mat, seg = 24){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, h, seg), mat);
+  m.position.set(x, y0 + h/2, z); m.castShadow = m.receiveShadow = true;
+  g.add(m); return m;
+}
+function v3Legs(g, w, d, h, inset, r, mat){
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Cyl(g, r, r*0.8, h, sx*(w/2-inset), 0, sz*(d/2-inset), mat, 10));
+}
+// A sofa body along local x, back at z0 (the −z side), facing +z.
+function v3SofaRun(g, x0, x1, z0, depth, mat, cushion, arms){
+  const w = x1 - x0, cx = (x0 + x1)/2;
+  v3Box(g, w, 0.12, depth, cx, 0.06, z0 + depth/2, V3.walnut()); // plinth
+  v3Box(g, w, 0.24, depth, cx, 0.16, z0 + depth/2, mat);           // seat base
+  v3Box(g, w - (arms ? 0.36 : 0.02), 0.12, depth - 0.24, cx, 0.40, z0 + 0.22 + (depth-0.24)/2, cushion); // seat cushions
+  v3Box(g, w, 0.48, 0.2, cx, 0.40, z0 + 0.1, mat);                 // back
+  if (arms) [x0 + 0.09, x1 - 0.09].forEach(ax => v3Box(g, 0.18, 0.62, depth, ax, 0, z0 + depth/2, mat));
+}
+function v3KitchenBase(g, w, d, x, z, front, top = 0.9, withTop = true){
+  v3Box(g, w, 0.1, d - 0.06, x, 0, z - 0.03, V3.dark());                 // recessed plinth
+  v3Box(g, w, top - 0.14, d - 0.02, x, 0.1, z - 0.01, front);             // carcass + doors
+  if (withTop) v3Box(g, w, 0.04, d + 0.02, x, top - 0.04, z + 0.01, v3Mat("#d9d4cb", {roughness: 0.4})); // worktop
+  v3Box(g, Math.min(0.3, w*0.6), 0.015, 0.02, x, top - 0.22, z + d/2 + 0.01, V3.steel()); // handle
+}
+function v3Appliance(g, type, w, d, x, z){
+  const front = d/2 + z;
+  if (type === "fridge"){
+    v3Box(g, w, 1.8, d, x, 0, z, V3.steel());
+    v3Box(g, w*0.98, 0.01, 0.01, x, 1.15, front + 0.005, V3.dark());
+    v3Box(g, 0.02, 0.4, 0.03, x + w/2 - 0.06, 1.25, front + 0.015, V3.dark());
+    v3Box(g, 0.02, 0.4, 0.03, x + w/2 - 0.06, 0.6, front + 0.015, V3.dark());
+    return;
+  }
+  if (type === "washerstack"){ v3Appliance(g, "washer", w, d, x, z); const top = new THREE.Group(); top.position.y = 0.86; g.add(top); v3Appliance(top, "dryer", w, d, x, z); return; }
+  if (type === "washer" || type === "dryer"){
+    v3Box(g, w, 0.85, d, x, 0, z, V3.white());
+    const door = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.04, 28), type === "washer" ? V3.black() : V3.dark());
+    door.rotation.x = Math.PI/2; door.position.set(x, 0.42, front + 0.01); g.add(door);
+    v3Box(g, w*0.9, 0.1, 0.01, x, 0.72, front + 0.002, v3Mat("#dfe1e4", {roughness: 0.4}));
+    return;
+  }
+  if (type === "dishwasher"){ v3KitchenBase(g, w, d, x, z, V3.white()); v3Box(g, w*0.92, 0.06, 0.01, x, 0.74, front + 0.003, V3.dark()); return; }
+  if (type === "oven"){ v3KitchenBase(g, w, d, x, z, V3.dark()); v3Box(g, w*0.86, 0.45, 0.01, x, 0.2, front + 0.003, V3.black()); return; }
+  if (type === "cooker"){
+    v3KitchenBase(g, w, d, x, z, V3.dark());
+    v3Box(g, w*0.86, 0.45, 0.01, x, 0.2, front + 0.003, V3.black());
+    v3Box(g, w*0.9, 0.012, d*0.85, x, 0.9, z, V3.black());
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Cyl(g, 0.07, 0.07, 0.006, x + sx*w*0.22, 0.912, z + sz*d*0.2, V3.dark(), 20));
+    return;
+  }
+  if (type === "sink"){
+    v3KitchenBase(g, w, d, x, z, v3Mat("#e7e3dc", {roughness: 0.5}));
+    v3Box(g, Math.min(w*0.8, 0.6), 0.012, d*0.6, x, 0.9, z + 0.03, V3.steel());
+    v3Cyl(g, 0.018, 0.022, 0.3, x, 0.9, z - d/2 + 0.08, V3.steel(), 12);
+    return;
+  }
+  v3KitchenBase(g, w, d, x, z, v3Mat("#e7e3dc", {roughness: 0.5}));
+}
+function v3Bed(g, W, D, duvet){
+  v3Box(g, W, 0.3, D, 0, 0.05, 0, V3.oak());                       // frame
+  v3Legs(g, W, D, 0.05, 0.06, 0.03, V3.oak());
+  v3Box(g, W - 0.04, 0.2, D - 0.04, 0, 0.35, 0, V3.linen());       // mattress
+  v3Box(g, W, 0.08, D*0.68, 0, 0.5, D*0.16 + 0.01, duvet);          // duvet over the foot end
+  const n = W > 1.2 ? 2 : 1, pw = (W - 0.14)/n;
+  for (let i = 0; i < n; i++) v3Box(g, pw - 0.06, 0.12, 0.38, -W/2 + 0.07 + pw*(i + 0.5), 0.55, -D/2 + 0.3, V3.white());
+  v3Box(g, W + 0.04, 1.05, 0.08, 0, 0, -D/2 - 0.02, duvet);         // headboard
+}
+function v3Chair(g, W, D, seatMat, frameMat){
+  v3Legs(g, W, D, 0.43, 0.04, 0.018, frameMat);
+  v3Box(g, W, 0.04, D, 0, 0.43, 0, seatMat);
+  v3Box(g, W, 0.45, 0.04, 0, 0.47, -D/2 + 0.02, frameMat);
+}
+function v3Stairs(g, b, H){
+  const geo = stairGeometry(b), W = stairWidth(b)/100;
+  const pts = geo.pts.map(p => ({x: p.x/100, y: p.y/100})), total = geo.total/100;
+  const n = Math.max(2, Math.round(geo.total/STAIR_GOING_CM)), up = b.direction !== "down";
+  const mat = V3.oak(), going = total/n;
+  for (let i = 0; i < n; i++){
+    const q = stairPointAt(pts, total*(i + 0.5)/n), h = up ? H*(i + 1)/n : 0.02;
+    const m = v3Box(g, W, h, going + 0.01, 0, 0, 0, i % 2 ? mat : v3Mat("#a37a50", {roughness: 0.75}));
+    m.position.set(q.x, h/2, q.y);
+    m.rotation.y = -Math.atan2(q.ty, q.tx) + Math.PI/2;
+  }
+}
+// One furniture box as a THREE.Group in its own local frame (origin at its centre, on the floor).
+function v3Furniture(b, H, cut = H){
+  const g = new THREE.Group(), W = b.wCm/100, D = b.dCm/100, t = b.type;
+  const fab = V3.fabric(V3_FABRIC[t] || "#9aa0a8");
+  const cushion = v3Mat(new THREE.Color(V3_FABRIC[t] || "#9aa0a8").offsetHSL(0, 0, 0.06).getStyle(), {roughness: 1});
+  switch (t){
+    case "sofa":
+      if (b.cornerSide){
+        const s = b.cornerSide, Dp = (b.sofaDepthCm || SOFA_DEPTH_CM)/100;
+        const sub = new THREE.Group(); sub.scale.x = s; g.add(sub); // build with the return on +x, mirror for −x
+        v3SofaRun(sub, -W/2, W/2 - Dp, -D/2, Dp, fab, cushion, false);
+        v3Box(sub, 0.18, 0.62, Dp, -W/2 + 0.09, 0, -D/2 + Dp/2, fab); // free-end arm
+        v3Box(sub, Dp, 0.48, 0.2, W/2 - Dp/2, 0.4, -D/2 + 0.1, fab); // back across the corner seat
+        const ret = new THREE.Group(); ret.rotation.y = -Math.PI/2; ret.position.set(W/2, 0, 0); sub.add(ret);
+        v3SofaRun(ret, -D/2, D/2, 0, Dp, fab, cushion, false); // the return, its back along the +x side
+      } else v3SofaRun(g, -W/2, W/2, -D/2, D, fab, cushion, true);
+      break;
+    case "armchair": v3SofaRun(g, -W/2, W/2, -D/2, D, fab, cushion, true); break;
+    case "coffee": v3Box(g, W, 0.04, D, 0, 0.38, 0, V3.oak()); v3Box(g, W - 0.1, 0.02, D - 0.1, 0, 0.12, 0, V3.oak()); v3Legs(g, W, D, 0.38, 0.05, 0.02, V3.walnut()); break;
+    case "tvunit":
+      v3Box(g, W, 0.45, D, 0, 0.05, 0, V3.walnut()); v3Legs(g, W, D, 0.05, 0.05, 0.015, V3.dark());
+      { const tw = Math.min(W*0.85, 1.45); v3Box(g, 0.25, 0.02, 0.18, 0, 0.5, -D/2 + 0.14, V3.dark()); v3Box(g, tw, tw*0.57, 0.04, 0, 0.55, -D/2 + 0.14, V3.black()); }
+      break;
+    case "bookshelf": {
+      v3Box(g, W, 1.9, 0.02, 0, 0, -D/2 + 0.01, V3.oak());
+      [-W/2 + 0.01, W/2 - 0.01].forEach(x => v3Box(g, 0.02, 1.9, D, x, 0, 0, V3.oak()));
+      const book = ["#7a3b3b", "#2f4f6b", "#c9a23f", "#3d6b4f", "#d9d2c3", "#5a3350", "#b5603f"];
+      for (let i = 0; i < 6; i++){
+        const y = 0.02 + i*0.37; v3Box(g, W - 0.04, 0.02, D, 0, y, 0, V3.oak());
+        if (i === 5) break;
+        let x = -W/2 + 0.04, k = i*3;
+        while (x < W/2 - 0.08){ const bw = 0.025 + ((k*37) % 5)*0.008, bh = 0.22 + ((k*13) % 4)*0.03; v3Box(g, bw, bh, D*0.75, x + bw/2, y + 0.02, 0, v3Mat(book[k % book.length])); x += bw + 0.004; k++; if (k % 9 === 0) x += 0.12; }
+      }
+      break;
+    }
+    case "fireplace":
+      v3Box(g, W, H, D, 0, 0, 0, V3.wall());
+      v3Box(g, W*0.55, 0.6, 0.02, 0, 0.12, D/2 + 0.002, V3.black());
+      v3Box(g, W + 0.1, 0.06, D + 0.1, 0, 1.1, 0.05, V3.white());
+      v3Box(g, W*0.75, 0.12, 0.25, 0, 0, D/2 + 0.12, v3Mat("#4a4c50"));
+      break;
+    case "dining": v3Box(g, W, 0.04, D, 0, 0.72, 0, V3.oak()); v3Legs(g, W, D, 0.72, 0.07, 0.03, V3.oak()); break;
+    case "dininground": {
+      const top = v3Cyl(g, W/2, W/2, 0.04, 0, 0.72, 0, V3.oak(), 40); top.scale.z = D/W;
+      v3Cyl(g, 0.06, 0.06, 0.68, 0, 0.04, 0, V3.oak(), 16); v3Cyl(g, 0.28, 0.3, 0.04, 0, 0, 0, V3.oak(), 24);
+      break;
+    }
+    case "diningchair": v3Chair(g, W, D, V3.oak(), V3.oak()); break;
+    case "officechair":
+      v3Cyl(g, 0.3, 0.3, 0.03, 0, 0.04, 0, V3.dark(), 5); v3Cyl(g, 0.025, 0.025, 0.4, 0, 0.07, 0, V3.steel(), 10);
+      v3Box(g, W*0.9, 0.08, D*0.9, 0, 0.45, 0, fab); v3Box(g, W*0.85, 0.55, 0.06, 0, 0.55, -D/2 + 0.05, fab);
+      break;
+    case "kitchen": {
+      if (D <= 0.4){ // a 30cm unit is a wall cupboard, hung above the worktop (and gone with the walls cut down)
+        if (cut < H) break;
+        const y0 = 1.45, h = Math.min(0.72, H - 0.05 - y0);
+        v3Box(g, W, h, D, 0, y0, 0, v3Mat("#e7e3dc", {roughness: 0.5}));
+        v3Box(g, 0.02, 0.15, 0.02, W/2 - 0.05, y0 + 0.05, D/2 + 0.01, V3.steel());
+      } else if (b.under === "washer" || b.under === "dryer"){ // slid in under the worktop
+        v3Appliance(g, b.under, W, D - 0.02, 0, -0.02);
+        v3Box(g, W, 0.04, D + 0.02, 0, 0.86, 0.01, v3Mat("#d9d4cb", {roughness: 0.4}));
+      } else if (b.under === "fridge" || b.under === "washerstack") v3KitchenBase(g, W, D, 0, 0, V3.white()); // an under-counter model
+      else if (b.under) v3Appliance(g, b.under, W, D, 0, 0);
+      else v3KitchenBase(g, W, D, 0, 0, v3Mat("#e7e3dc", {roughness: 0.5}));
+      break;
+    }
+    case "kitchencorner": {
+      const ad = (b.armDepthCm || 60)/100, front = v3Mat("#e7e3dc", {roughness: 0.5});
+      v3KitchenBase(g, W, ad, 0, -D/2 + ad/2, front);
+      const arm = new THREE.Group(); arm.rotation.y = Math.PI/2; arm.position.set(-W/2 + ad/2, 0, (ad)/2); g.add(arm);
+      v3KitchenBase(arm, D - ad, ad, 0, 0, front);
+      break;
+    }
+    case "sink": case "cooker": case "fridge": case "dishwasher": case "washer": case "dryer": case "washerstack": case "oven":
+      v3Appliance(g, t, W, D, 0, 0); break;
+    case "beddbl": case "bedsgl": v3Bed(g, W, D, fab); break;
+    case "wardrobe":
+      v3Box(g, W, 2.0, D, 0, 0.05, 0, V3.white()); v3Box(g, W, 0.05, D - 0.04, 0, 0, -0.02, V3.dark());
+      v3Box(g, 0.006, 1.9, 0.01, 0, 0.1, D/2 + 0.002, V3.dark());
+      [-0.04, 0.04].forEach(x => v3Box(g, 0.015, 0.35, 0.025, x, 0.95, D/2 + 0.015, V3.steel()));
+      break;
+    case "drawers": case "bedside": {
+      const h = t === "drawers" ? 0.85 : 0.5, n = t === "drawers" ? 4 : 2;
+      v3Box(g, W, h - 0.08, D, 0, 0.08, 0, V3.oak()); v3Legs(g, W, D, 0.08, 0.04, 0.015, V3.walnut());
+      for (let i = 1; i < n; i++) v3Box(g, W*0.96, 0.006, 0.01, 0, 0.08 + (h - 0.08)*i/n, D/2 + 0.002, V3.walnut());
+      for (let i = 0; i < n; i++) v3Box(g, 0.12, 0.015, 0.02, 0, 0.08 + (h - 0.08)*(i + 0.5)/n, D/2 + 0.01, V3.steel());
+      break;
+    }
+    case "toilet":
+      v3Box(g, W*0.95, 0.4, 0.18, 0, 0.4, -D/2 + 0.09, V3.ceramic());
+      { const bowl = v3Cyl(g, 0.19, 0.15, 0.4, 0, 0, 0.06, V3.ceramic(), 24); bowl.scale.z = 1.3; }
+      v3Box(g, 0.36, 0.02, 0.44, 0, 0.4, 0.06, V3.white());
+      break;
+    case "bath":
+      v3Box(g, W, 0.12, D, 0, 0, 0, V3.ceramic());
+      [[W, 0.06, 0, -D/2 + 0.03], [W, 0.06, 0, D/2 - 0.03]].forEach(([w, d, x, z]) => v3Box(g, w, 0.44, d, x, 0.12, z, V3.ceramic()));
+      [[-W/2 + 0.03], [W/2 - 0.03]].forEach(([x]) => v3Box(g, 0.06, 0.44, D, x, 0.12, 0, V3.ceramic()));
+      v3Box(g, W - 0.12, 0.02, D - 0.12, 0, 0.12, 0, v3Mat("#dfeef3", {roughness: 0.1}));
+      v3Cyl(g, 0.02, 0.02, 0.18, -W/2 + 0.15, 0.56, 0, V3.steel(), 10);
+      break;
+    case "shower":
+      v3Box(g, W, 0.05, D, 0, 0, 0, V3.ceramic());
+      v3Box(g, W, 1.95, 0.01, 0, 0.05, D/2 - 0.005, V3.glass());
+      v3Box(g, 0.01, 1.95, D, W/2 - 0.005, 0.05, 0, V3.glass());
+      v3Cyl(g, 0.012, 0.012, 1.95, -W/2 + 0.06, 0.05, -D/2 + 0.06, V3.steel(), 8);
+      v3Cyl(g, 0.11, 0.11, 0.015, -W/2 + 0.2, 2.0, -D/2 + 0.2, V3.steel(), 20);
+      break;
+    case "basin":
+      v3Box(g, W*0.9, 0.7, D*0.9, 0, 0.1, -D*0.05, V3.oak());
+      v3Box(g, W, 0.12, D, 0, 0.8, 0, V3.ceramic());
+      v3Cyl(g, 0.015, 0.018, 0.18, 0, 0.92, -D/2 + 0.06, V3.steel(), 10);
+      break;
+    case "desk": v3Box(g, W, 0.03, D, 0, 0.72, 0, V3.oak()); v3Legs(g, W, D, 0.72, 0.04, 0.02, V3.dark()); break;
+    case "radiator": v3Box(g, W, 0.6, Math.max(0.06, D), 0, 0.15, 0, V3.white()); break;
+    case "stairs": v3Stairs(g, b, H); break;
+    case "rug": { const m = v3Box(g, W, 0.012, D, 0, 0, 0, v3Mat(b.color || "#a3b096", {roughness: 1})); if (m) m.castShadow = false; break; }
+    case "ruground": { const m = v3Cyl(g, W/2, W/2, 0.012, 0, 0, 0, v3Mat(b.color || "#a3b096", {roughness: 1}), 40); m.scale.z = D/W; m.castShadow = false; break; }
+    default: v3Box(g, W, 0.75, D, 0, 0, 0, v3Mat(b.color || "#9aa0a8"));
+  }
+  return g;
+}
+
+// --- walls, windows and doors
+function v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, thick, mat, cap){
+  const L = s1 - s0;
+  if (L <= 0.002 || y1 - y0 <= 0.002) return;
+  const len = Math.hypot(bx-ax, bz-az), ux = (bx-ax)/len, uz = (bz-az)/len, sm = (s0 + s1)/2;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(L, y1 - y0, thick), cap ? [mat, mat, cap, mat, mat, mat] : mat);
+  m.position.set(ax + ux*sm, (y0 + y1)/2, az + uz*sm);
+  m.rotation.y = -Math.atan2(uz, ux);
+  m.castShadow = m.receiveShadow = true;
+  group.add(m);
+}
+function v3Door(group, b, k, H){
+  const type = b.doorType || "single", hinge = b.hinge || -1, swing = b.swing || -1;
+  const W = b.wCm/100, Dh = Math.min(V3_DOOR_M, H - 0.05), g = new THREE.Group();
+  g.position.set(b.x*k, 0, b.y*k); g.rotation.y = -b.rotation; group.add(g);
+  const leaf = (hx, len, dirSign, glazed)=>{
+    // a leaf hinged at local x=hx, swung 70° open toward the swing side
+    const p = new THREE.Group(); p.position.set(hx, 0, 0); g.add(p);
+    p.rotation.y = dirSign*swing*(70*Math.PI/180);
+    const cx = -Math.sign(hx || 1)*len/2;
+    if (glazed){
+      v3Box(p, len, 0.06, 0.04, cx, 0, 0, V3.frame()); v3Box(p, len, 0.06, 0.04, cx, Dh - 0.06, 0, V3.frame());
+      v3Box(p, 0.06, Dh, 0.04, cx - len/2 + 0.03, 0, 0, V3.frame()); v3Box(p, 0.06, Dh, 0.04, cx + len/2 - 0.03, 0, 0, V3.frame());
+      v3Box(p, len - 0.1, Dh - 0.12, 0.01, cx, 0.06, 0, V3.glass());
+    } else v3Box(p, len, Dh, 0.04, cx, 0, 0, V3.door());
+  };
+  if (type === "single") leaf(hinge*W/2, W, hinge, false);
+  else if (type === "double" || type === "french"){ leaf(-W/2, W/2, -1, type === "french"); leaf(W/2, W/2, 1, type === "french"); }
+  else if (type === "sliding" || type === "bifold"){
+    const n = type === "bifold" ? Math.max(2, Math.round(W/0.8)) : Math.max(2, Math.round(W/1.5)), pw = W/n;
+    for (let i = 0; i < n; i++){
+      const x = -W/2 + pw*(i + 0.5), z = type === "sliding" ? (i % 2 ? 0.03 : -0.03) : 0;
+      v3Box(g, pw, 0.05, 0.04, x, 0, z, V3.dark()); v3Box(g, pw, 0.05, 0.04, x, Dh - 0.05, z, V3.dark());
+      v3Box(g, 0.04, Dh, 0.04, x - pw/2 + 0.02, 0, z, V3.dark()); v3Box(g, 0.04, Dh, 0.04, x + pw/2 - 0.02, 0, z, V3.dark());
+      v3Box(g, pw - 0.06, Dh - 0.1, 0.01, x, 0.05, z, V3.glass());
+    }
+  }
+}
+// Every wall/window span crossing one straight piece (a→b, plan units) of a wall, in metres along it.
+function v3OpeningsOn(a, b, wallThickCm, floor, k){
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+  if (!len) return [];
+  const ux = dx/len, uy = dy/len, tol = cmToWorld(wallThickCm/2 + 15);
+  const proj = p => ({s: (p.x-a.x)*ux + (p.y-a.y)*uy, n: Math.abs(-(p.x-a.x)*uy + (p.y-a.y)*ux)});
+  const out = [];
+  floor.boxes.forEach(d=>{
+    if (d.kind !== "door") return;
+    const q = proj(d), hw = cmToWorld(d.wCm || DOOR_DEFAULT.wCm)/2;
+    if (q.n > tol || q.s < -hw || q.s > len + hw) return;
+    out.push({s0: (q.s - hw)*k, s1: (q.s + hw)*k, kind: "door"});
+  });
+  floor.walls.forEach(w=>{
+    if ((w.type||"wall") !== "window") return;
+    const p1 = proj({x:w.x1, y:w.y1}), p2 = proj({x:w.x2, y:w.y2});
+    if (p1.n > tol || p2.n > tol) return;
+    const s0 = Math.min(p1.s, p2.s), s1 = Math.max(p1.s, p2.s);
+    if (s1 < 0 || s0 > len) return;
+    out.push({s0: s0*k, s1: s1*k, kind: "window"});
+  });
+  return out.sort((p, q) => p.s0 - q.s0);
+}
+function v3BuildStructure(group, floor, k, H, cut){
+  const top = Math.min(H, cut), capMat = cut < H ? V3.cap() : null;
+  floor.walls.forEach(w=>{
+    const isWin = (w.type||"wall") === "window", pts = wallCenterlinePoints(w), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
+    for (let i = 1; i < pts.length; i++){
+      const a = pts[i-1], b = pts[i], ax = a.x*k, az = a.y*k, bx = b.x*k, bz = b.y*k, L = Math.hypot(bx-ax, bz-az);
+      if (L < 0.01) continue;
+      if (isWin){
+        v3Slab(group, ax, az, bx, bz, 0, L, 0, Math.min(V3_SILL_M, top), T, V3.wall(), capMat);
+        v3Slab(group, ax, az, bx, bz, 0, L, V3_SILL_M - 0.03, Math.min(V3_SILL_M, top + 0.02), T + 0.04, V3.frame(), null); // sill board
+        v3Slab(group, ax, az, bx, bz, 0, L, Math.min(V3_HEAD_M, H), top, T, V3.wall(), capMat);
+        if (top > V3_SILL_M){
+          const gTop = Math.min(V3_HEAD_M, top);
+          v3Slab(group, ax, az, bx, bz, 0, L, V3_SILL_M, gTop, 0.02, V3.glass(), null);
+          v3Slab(group, ax, az, bx, bz, 0, 0.05, V3_SILL_M, gTop, T*0.6, V3.frame(), null);
+          v3Slab(group, ax, az, bx, bz, L - 0.05, L, V3_SILL_M, gTop, T*0.6, V3.frame(), null);
+          if (L > 1.2) v3Slab(group, ax, az, bx, bz, L/2 - 0.025, L/2 + 0.025, V3_SILL_M, gTop, T*0.6, V3.frame(), null);
+        }
+        continue;
+      }
+      // a straight piece runs past its ends by half its thickness so corners close, like the plan's square cap
+      const ext = T/2, ops = v3OpeningsOn(a, b, w.thicknessCm || WALL_THICKNESS_CM, floor, k);
+      let cursor = -ext;
+      ops.forEach(o=>{
+        const s0 = Math.max(o.s0, -ext), s1 = Math.min(o.s1, L + ext);
+        if (s1 <= s0) return;
+        if (s0 > cursor) v3Slab(group, ax, az, bx, bz, cursor, s0, 0, top, T, V3.wall(), capMat);
+        if (o.kind === "door") v3Slab(group, ax, az, bx, bz, s0, s1, Math.min(V3_DOOR_M, H - 0.05), top, T, V3.wall(), capMat);
+        cursor = Math.max(cursor, s1);
+      });
+      if (cursor < L + ext) v3Slab(group, ax, az, bx, bz, cursor, L + ext, 0, top, T, V3.wall(), capMat);
+    }
+  });
+  if (cut >= H) floor.boxes.forEach(b => { if (b.kind === "door") v3Door(group, b, k, H); }); // with the walls cut down, the doors go too
+}
+// Floor texture: every room in a neutral screed, its flooring (if any) on top; outside is transparent.
+let v3FloorTex = null; // {key, tex}
+function v3FloorPlane(group, floor, k){
+  const areas = getRoomAreasForFloor(floor), ra = areas.raster;
+  if (!ra) return;
+  const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.floorings || []);
+  if (!v3FloorTex || v3FloorTex.key !== key){
+    const scale = Math.min(4096/Math.max(ra.w, ra.h), 1.6*100*k); // ~1.6px per cm, capped at a 4K texture
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.ceil(ra.w*scale)); c.height = Math.max(1, Math.ceil(ra.h*scale));
+    const g = c.getContext("2d");
+    areas.rooms.forEach(room=>{
+      const mk = roomMask(areas, room, 2), t = document.createElement("canvas");
+      t.width = Math.max(1, Math.ceil(mk.w*scale)); t.height = Math.max(1, Math.ceil(mk.h*scale));
+      const tg = t.getContext("2d");
+      tg.fillStyle = "#cfc9be"; tg.fillRect(0, 0, t.width, t.height);
+      tg.globalCompositeOperation = "destination-in"; tg.drawImage(mk.canvas, 0, 0, t.width, t.height);
+      g.drawImage(t, mk.x*scale, mk.y*scale);
+    });
+    const assign = flooringAssignments(floor, areas);
+    if (assign.size) g.drawImage(buildFlooringLayer(floor, areas, assign, scale), 0, 0);
+    if (v3FloorTex) v3FloorTex.tex.dispose();
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+    v3FloorTex = {key, tex};
+  }
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(ra.w*k, ra.h*k), new THREE.MeshStandardMaterial({map: v3FloorTex.tex, transparent: true, alphaTest: 0.5, roughness: 0.8}));
+  m.rotation.x = -Math.PI/2; m.position.set((ra.ox + ra.w/2)*k, 0.002, (ra.oy + ra.h/2)*k);
+  m.receiveShadow = true; m.userData.ownMaterial = true;
+  group.add(m);
+  return {x0: ra.ox*k, z0: ra.oy*k, x1: (ra.ox + ra.w)*k, z1: (ra.oy + ra.h)*k};
+}
+function v3Bounds(floor, k){
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  floor.walls.forEach(w => wallCenterlinePoints(w).forEach(p => { x0 = Math.min(x0, p.x*k); x1 = Math.max(x1, p.x*k); z0 = Math.min(z0, p.y*k); z1 = Math.max(z1, p.y*k); }));
+  if (!isFinite(x0)){ x0 = 0; z0 = 0; x1 = floor.worldWidth*k; z1 = floor.worldHeight*k; }
+  return {x0, z0, x1, z1, cx: (x0 + x1)/2, cz: (z0 + z1)/2, r: Math.max(3, Math.hypot(x1 - x0, z1 - z0)/2)};
+}
+function v3Rebuild(){
+  const floor = v3Floor(), k = metersPerWorldUnitForFloor(floor), H = v3Ceiling();
+  const cut = v3.mode === "doll" && v3.wallsDown ? V3_CUTAWAY_M : H;
+  if (v3.root){
+    v3.scene.remove(v3.root);
+    v3.root.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.userData.ownMaterial) o.material.dispose(); });
+  }
+  const root = v3.root = new THREE.Group();
+  v3.scene.add(root);
+  v3FloorPlane(root, floor, k);
+  v3BuildStructure(root, floor, k, H, cut);
+  floor.boxes.forEach(b=>{
+    if (b.kind !== "furniture") return;
+    const g = v3Furniture(b, H, cut);
+    g.position.set(b.x*k, 0, b.y*k); g.rotation.y = -b.rotation;
+    root.add(g);
+  });
+  const bd = v3.bounds = v3Bounds(floor, k);
+  // ceiling only when you're inside looking around
+  if (v3.mode === "walk"){
+    const c = new THREE.Mesh(new THREE.PlaneGeometry(bd.x1 - bd.x0 + 1, bd.z1 - bd.z0 + 1), v3Mat("#fbfaf7", {roughness: 1, side: THREE.DoubleSide}));
+    c.rotation.x = Math.PI/2; c.position.set(bd.cx, H, bd.cz); root.add(c);
+  }
+  v3.ground.position.set(bd.cx, -0.005, bd.cz);
+  const sun = v3.sun, sc = sun.shadow.camera, r = bd.r + 2;
+  sun.position.set(bd.cx - r*0.6, r*1.6, bd.cz - r*0.9); sun.target.position.set(bd.cx, 0, bd.cz);
+  sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r; sc.near = 0.5; sc.far = r*5; sc.updateProjectionMatrix();
+  if (!v3.orbit || v3.orbit.floorId !== floor.id) v3.orbit = {floorId: floor.id, yaw: -Math.PI*0.65, pitch: 0.85, dist: bd.r*2.3, tx: bd.cx, tz: bd.cz};
+}
+function v3SceneSig(){
+  const f = v3Floor();
+  return JSON.stringify([f.id, f.walls, f.boxes, f.floorings, f.calibration, v3Ceiling(), v3.mode, v3.wallsDown, getRoomAreasForFloor(f).uid]);
+}
+function v3PlaceCamera(){
+  const cam = v3.camera, el = v3.renderer.domElement, aspect = Math.max(0.2, el.clientWidth/Math.max(1, el.clientHeight));
+  cam.aspect = aspect;
+  if (v3.mode === "walk"){
+    const f = v3Floor(), c = ensurePlanCamera(f), k = metersPerWorldUnitForFloor(f);
+    const hf = (c.fovDeg || 70)*Math.PI/180;
+    cam.fov = Math.min(100, 2*Math.atan(Math.tan(hf/2)/aspect)*180/Math.PI);
+    cam.position.set(c.x*k, V3_EYE_M, c.y*k);
+    const p = v3.pitch || 0;
+    cam.lookAt(cam.position.x + Math.cos(c.angle)*Math.cos(p), V3_EYE_M + Math.sin(p), cam.position.z + Math.sin(c.angle)*Math.cos(p));
+    v3.lamp.position.set(cam.position.x, v3Ceiling() - 0.2, cam.position.z);
+    v3.lamp.visible = true;
+  } else {
+    const o = v3.orbit;
+    cam.fov = 45;
+    cam.position.set(o.tx + o.dist*Math.cos(o.pitch)*Math.cos(o.yaw), o.dist*Math.sin(o.pitch), o.tz + o.dist*Math.cos(o.pitch)*Math.sin(o.yaw));
+    cam.lookAt(o.tx, 0.5, o.tz);
+    v3.lamp.visible = false;
+  }
+  cam.near = 0.05; cam.far = 500;
+  cam.updateProjectionMatrix();
+}
+let v3RebuildTimer = null, v3Frame = 0;
+function v3Draw(){
+  if (!v3 || !view3dOpen) return;
+  cancelAnimationFrame(v3Frame);
+  v3Frame = requestAnimationFrame(()=>{
+    const el = v3.renderer.domElement, w = el.clientWidth, h = el.clientHeight;
+    if (w && h && (el.width !== Math.round(w*v3.renderer.getPixelRatio()) || el.height !== Math.round(h*v3.renderer.getPixelRatio()))) v3.renderer.setSize(w, h, false);
+    v3PlaceCamera();
+    v3.renderer.render(v3.scene, v3.camera);
+  });
+}
+// Called at the end of every plan render(): rebuild if the plan changed (throttled while dragging), always re-aim.
+function view3dSync(){
+  if (!v3 || !view3dOpen) return;
+  const sig = v3SceneSig();
+  if (sig !== v3.sig && !v3RebuildTimer){
+    v3RebuildTimer = setTimeout(()=>{ v3RebuildTimer = null; v3.sig = v3SceneSig(); v3Rebuild(); v3Draw(); }, drag ? 120 : 0);
+  }
+  v3Draw();
+}
+function v3UpdateBar(){
+  document.querySelectorAll("[data-v3mode]").forEach(b => b.classList.toggle("active", b.dataset.v3mode === v3.mode));
+  const walls = document.getElementById("btnV3Walls");
+  walls.hidden = v3.mode !== "doll";
+  walls.textContent = v3.wallsDown ? "▮ Walls up" : "▁ Walls down";
+  document.getElementById("view3dHint").textContent = v3.mode === "walk"
+    ? "Drag to look around · W A S D or arrow keys to walk · scroll to step · move the camera on the plan"
+    : "Drag to spin · right-drag or Shift-drag to slide · scroll to zoom";
+}
+async function openView3d(){
+  view3dOpen = true;
+  const panel = document.getElementById("view3d");
+  panel.hidden = false;
+  document.getElementById("btnView3d").classList.add("active");
+  ensurePlanCamera(v3Floor());
+  if (!v3){
+    document.getElementById("view3dHint").textContent = "Loading 3D…";
+    try{ await loadThree(); }
+    catch(e){ document.getElementById("view3dHint").textContent = "Couldn't load the 3D engine — check the internet connection and try again."; console.warn(e); return; }
+    if (!view3dOpen) return;
+    const canvas = document.getElementById("view3dCanvas");
+    const renderer = new THREE.WebGLRenderer({canvas, antialias: true});
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#cdd7e1");
+    scene.add(new THREE.HemisphereLight("#eef4ff", "#b6a48a", 1.4));
+    scene.add(new THREE.AmbientLight("#ffffff", 0.35));
+    const sun = new THREE.DirectionalLight("#fff3e0", 2.4);
+    sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
+    scene.add(sun); scene.add(sun.target);
+    const lamp = new THREE.PointLight("#fff1dc", 6, 9, 1.6);
+    scene.add(lamp);
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(120, 48), new THREE.MeshStandardMaterial({color: "#9fb38a", roughness: 1}));
+    ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+    v3 = {renderer, scene, sun, lamp, ground, camera: new THREE.PerspectiveCamera(60, 1, 0.05, 500), mode: "walk", wallsDown: false, pitch: 0, keys: new Set()};
+    try{ const s = JSON.parse(localStorage.getItem("floorplan.view3d") || "{}"); if (s.mode === "doll") v3.mode = "doll"; if (s.wallsDown) v3.wallsDown = true; if (s.size === "large") panel.classList.add("large"); }catch(e){}
+    v3Wire(canvas);
+    new ResizeObserver(() => v3Draw()).observe(canvas);
+  }
+  v3UpdateBar();
+  v3.sig = null;
+  view3dSync();
+  render();
+}
+function closeView3d(){
+  view3dOpen = false;
+  document.getElementById("view3d").hidden = true;
+  document.getElementById("btnView3d").classList.remove("active");
+  if (v3) v3.keys.clear();
+  render();
+}
+function v3SavePrefs(){
+  try{ localStorage.setItem("floorplan.view3d", JSON.stringify({mode: v3.mode, wallsDown: v3.wallsDown, size: document.getElementById("view3d").classList.contains("large") ? "large" : "small"})); }catch(e){}
+}
+function v3SetMode(m){
+  v3.mode = m; v3.pitch = 0;
+  v3UpdateBar(); v3SavePrefs(); view3dSync();
+}
+// Moves the plan camera by (forward, right) metres, keeping it on this floor's plan.
+function v3Walk(fwd, right){
+  const f = v3Floor(), c = ensurePlanCamera(f), k = metersPerWorldUnitForFloor(f);
+  c.x += (Math.cos(c.angle)*fwd - Math.sin(c.angle)*right)/k;
+  c.y += (Math.sin(c.angle)*fwd + Math.cos(c.angle)*right)/k;
+  v3CameraMoved();
+}
+let v3SaveTimer = null;
+function v3CameraMoved(){
+  render(); // re-draws the plan's camera marker and re-aims the 3D view
+  clearTimeout(v3SaveTimer); v3SaveTimer = setTimeout(scheduleAutosave, 400);
+}
+function v3Wire(canvas){
+  let pd = null;
+  canvas.addEventListener("pointerdown", e=>{
+    canvas.focus(); canvas.setPointerCapture(e.pointerId);
+    pd = {x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey};
+  });
+  canvas.addEventListener("pointermove", e=>{
+    if (!pd) return;
+    const dx = e.clientX - pd.x, dy = e.clientY - pd.y;
+    pd.x = e.clientX; pd.y = e.clientY;
+    if (v3.mode === "walk"){
+      const c = ensurePlanCamera(v3Floor());
+      c.angle -= dx*0.004;
+      v3.pitch = Math.max(-1.1, Math.min(1.1, (v3.pitch || 0) + dy*0.004));
+      v3CameraMoved();
+    } else {
+      const o = v3.orbit;
+      if (pd.pan){
+        const s = o.dist*0.0016, fx = Math.cos(o.yaw), fz = Math.sin(o.yaw);
+        o.tx += (fz*dx + fx*dy)*s; o.tz += (-fx*dx + fz*dy)*s;
+      } else { o.yaw += dx*0.006; o.pitch = Math.max(0.12, Math.min(1.5, o.pitch + dy*0.006)); }
+      v3Draw();
+    }
+  });
+  const up = ()=>{ pd = null; };
+  canvas.addEventListener("pointerup", up); canvas.addEventListener("pointercancel", up);
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  canvas.addEventListener("wheel", e=>{
+    e.preventDefault();
+    if (v3.mode === "walk") v3Walk(-Math.sign(e.deltaY)*0.25, 0);
+    else { v3.orbit.dist = Math.max(1.5, Math.min(v3.bounds.r*8, v3.orbit.dist*Math.exp(e.deltaY*0.001))); v3Draw(); }
+  }, {passive: false});
+  // keys only while the 3D view has focus, and never reach the plan's own shortcuts
+  const KEYS = {w:"f", arrowup:"f", s:"b", arrowdown:"b", a:"l", d:"r", arrowleft:"tl", arrowright:"tr"};
+  let last = 0, raf = 0;
+  const tick = (t)=>{
+    if (!v3.keys.size || !view3dOpen){ raf = 0; return; }
+    const dt = Math.min(0.05, (t - (last || t))/1000); last = t;
+    const has = x => v3.keys.has(x), sp = V3_WALK_SPEED_MPS*dt;
+    if (v3.mode === "walk"){
+      const turn = (has("tr") ? 1 : 0) - (has("tl") ? 1 : 0);
+      if (turn) ensurePlanCamera(v3Floor()).angle += turn*1.6*dt;
+      v3Walk(((has("f") ? 1 : 0) - (has("b") ? 1 : 0))*sp, ((has("r") ? 1 : 0) - (has("l") ? 1 : 0))*sp);
+    } else {
+      const o = v3.orbit;
+      o.yaw += ((has("tr") ? 1 : 0) - (has("tl") ? 1 : 0))*1.4*dt;
+      o.dist = Math.max(1.5, o.dist*(1 - ((has("f") ? 1 : 0) - (has("b") ? 1 : 0))*dt));
+      v3Draw();
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  canvas.addEventListener("keydown", e=>{
+    const a = KEYS[e.key.toLowerCase()];
+    if (e.key === "Escape"){ closeView3d(); return; }
+    e.stopPropagation();
+    if (!a || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    if (!e.repeat && !v3.keys.size){ // a quick tap still takes one small step / turn
+      if (v3.mode === "walk"){
+        if (a === "tl" || a === "tr"){ ensurePlanCamera(v3Floor()).angle += (a === "tr" ? 1 : -1)*0.08; v3CameraMoved(); }
+        else v3Walk(a === "f" ? 0.15 : a === "b" ? -0.15 : 0, a === "r" ? 0.15 : a === "l" ? -0.15 : 0);
+      }
+    }
+    v3.keys.add(a);
+    if (!raf){ last = 0; raf = requestAnimationFrame(tick); }
+  });
+  canvas.addEventListener("keyup", e=>{ const a = KEYS[e.key.toLowerCase()]; if (a) v3.keys.delete(a); e.stopPropagation(); });
+  canvas.addEventListener("blur", ()=> v3.keys.clear());
+}
+document.getElementById("btnView3d").addEventListener("click", ()=> view3dOpen ? closeView3d() : openView3d());
+document.getElementById("btnV3Close").addEventListener("click", closeView3d);
+document.querySelectorAll("[data-v3mode]").forEach(b => b.addEventListener("click", ()=> v3 && v3SetMode(b.dataset.v3mode)));
+document.getElementById("btnV3Walls").addEventListener("click", ()=>{ if (!v3) return; v3.wallsDown = !v3.wallsDown; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
+document.getElementById("btnV3Size").addEventListener("click", ()=>{
+  const p = document.getElementById("view3d"); p.classList.toggle("large");
+  if (v3) v3SavePrefs();
+  v3Draw();
+});
 
 // ---------------------------------------------------------------------------
 // Init
