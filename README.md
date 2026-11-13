@@ -558,6 +558,15 @@ doors/doorways, flooring — made since **Reset costs**:
   re-estimated, and copies keep their prices. Uses the API key from Build →
   AI Detect.
 
+## Furniture styles (2026-11-13)
+
+Select a piece of furniture and the side panel shows **Style**: a row of tiles, each a little 3D render of that piece in that style (at its own size), plus colour swatches for each part that can change (fabric, wood, paint, metal, worktop, bedding). Picking a style starts it in that style's own colours; picking a swatch keeps the style. Works on a multi-selection of the same kind too, and **Use on all…** copies the look to every piece of that kind on the floor (**Use on the whole kitchen** for kitchen units, sinks and integrated dishwashers).
+
+- Families and styles live in `FURNITURE_STYLES` (sofas & armchairs, beds, dining tables, round tables, dining chairs, coffee tables, desks, desk chairs, TV units, bookshelves, wardrobes, chests/bedsides, kitchen, baths, basins, toilets, fireplaces, fridges, radiators); palettes in `FINISH_PALETTES`. Each style has a 3D builder (`v3BuildStyled`) and a `desc` used by `furnitureDescription(b)` ("forest deep-buttoned leather Chesterfield sofa") — for the AI image prompt to come.
+- Stored on the box as `style` and `finishes` ({slot: hex}); missing = the family's first style in its default colours. Once a piece has a style, the plan fills it with its chosen colour instead of the category colour.
+- The last style/colours picked for a type are remembered in this browser and given to the next one placed — choose a sofa look once and every sofa after it matches.
+- 3D scenes now have a soft reflection environment (`v3Environment`) so steel, mirror, glass and gloss read properly.
+
 ## 3D view (2026-11-13)
 
 **🎥 3D view** (top bar) opens a live 3D model of the floor you're on, in a panel over the plan. It updates as you edit (drag furniture and watch it move). **⤢** makes it fill the canvas; **Esc** or **✕** closes it.

@@ -141,6 +141,12 @@
   .depthCustom{flex:1 1 0; min-width:0; display:flex; align-items:center; gap:2px; font-size:10px; color:var(--text-dim);}
   .depthCustom input{width:100%; min-width:0; font:inherit; font-size:10.5px; padding:3px 4px; background:var(--field-bg); color:var(--text); border:1px solid var(--panel-border); border-radius:5px;}
   .depthCustom input.active{border-color:var(--accent, #4f8cff);}
+  #styleTiles{display:grid; grid-template-columns:repeat(3, 1fr); gap:5px;}
+  .styleTile{display:flex; flex-direction:column; align-items:center; gap:2px; padding:3px 3px 5px; text-align:center; font-size:10.5px; line-height:1.2;}
+  .styleTile img{width:100%; aspect-ratio:4/3; display:block; border-radius:4px; background:linear-gradient(#3a3f48, #2a2e35);}
+  .styleTile.active{background:var(--accent2); border-color:var(--accent2); color:var(--accent2-text);}
+  #styleSwatches{display:flex; flex-direction:column; gap:4px; margin-top:4px;}
+  .styleSlotHead{font-size:10.5px; color:var(--text-dim); margin-top:2px;}
   .furnItem small{display:block; color:var(--text-dim); font-size:10px;}
   .furnItem.active small{color:#dfe8ff;}
   .roomRow{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:4px; border-radius:5px;}
@@ -389,6 +395,12 @@
 
     <div id="selPanel">
       <h2 id="selPanelTitle" style="text-transform:none;font-size:12px;color:var(--text);">Selected</h2>
+      <div class="field" id="fldStyleWrap" style="display:none;">
+        <label>Style</label>
+        <div id="styleTiles"></div>
+        <div id="styleSwatches"></div>
+        <button class="wide" id="btnStyleMatchAll" hidden></button>
+      </div>
       <div class="field" id="fldLabelWrap">
         <label>Label</label>
         <input type="text" id="fldLabel">
@@ -2668,7 +2680,8 @@ function drawBoxes(){
       ctx.rotate(b.rotation);
       const isSel = isItemSelected("box", b.id);
       const underSpec = b.type === "kitchen" && b.under ? furnitureSpec(b.under) : null;
-      drawFurnitureShape(b.type, wScreen, dScreen, underSpec ? mixHex(b.color, underSpec.color, 0.45) : b.color, isSel, b);
+      const planColor = furniturePlanColor(b);
+      drawFurnitureShape(b.type, wScreen, dScreen, underSpec ? mixHex(planColor, underSpec.color, 0.45) : planColor, isSel, b);
       if (underSpec){
         // the appliance's own outline, faint, as if seen through the worktop
         const dd = FURNITURE_DETAIL_DRAWERS[b.under];
@@ -3232,6 +3245,7 @@ function addBoxAt(spec, world, rotation){
   };
   if (spec.kind === "door"){ box.hinge = spec.hinge || -1; box.swing = spec.swing || -1; }
   if (box.type === "stairs"){ box.direction = spec.direction || "up"; }
+  if (box.kind === "furniture"){ if (spec.style){ box.style = spec.style; if (spec.finishes) box.finishes = {...spec.finishes}; } else applyRememberedStyle(box); }
   if (box.type === "kitchencorner" && spec.armDepthCm && spec.armDepthCm !== 60) box.armDepthCm = spec.armDepthCm;
   if (box.type === "sofa"){
     if (spec.cornerSide){ box.cornerSide = spec.cornerSide; box.sofaDepthCm = spec.sofaDepthCm; }
@@ -6105,11 +6119,13 @@ function updateSelPanel(){
       document.getElementById(id).style.display = "none";
     });
     updateUnitDepthField(multiSelection.filter(s => s.kind === "box").map(s => getBox(s.id)));
+    updateStylePanel();
     return;
   }
   title.textContent = "Selected";
   if (stairActiveVertex && !(selection && selection.kind === "box" && selection.id === stairActiveVertex.id)) stairActiveVertex = null;
   updateRugColorActive();
+  updateStylePanel();
   if (!selection){ panel.classList.remove("show"); return; }
   panel.classList.add("show");
   const isBox = selection.kind==="box";
@@ -8827,6 +8843,20 @@ async function loadThree(){
   return THREE;
 }
 
+// A soft studio-ish environment (bright sky, grey horizon, warm floor) so
+// metal, glass and gloss have something to reflect — without one they render near-black.
+function v3Environment(renderer){
+  const c = document.createElement("canvas"); c.width = 256; c.height = 128;
+  const g = c.getContext("2d"), grd = g.createLinearGradient(0, 0, 0, 128);
+  grd.addColorStop(0, "#ffffff"); grd.addColorStop(0.45, "#dde4ec"); grd.addColorStop(0.55, "#a49d92"); grd.addColorStop(1, "#5e564c");
+  g.fillStyle = grd; g.fillRect(0, 0, 256, 128);
+  g.fillStyle = "#ffffff"; g.fillRect(36, 28, 44, 26); g.fillRect(150, 30, 56, 24); // a couple of bright "windows" for highlights
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping; t.colorSpace = THREE.SRGBColorSpace;
+  const pm = new THREE.PMREMGenerator(renderer), env = pm.fromEquirectangular(t).texture;
+  pm.dispose(); t.dispose();
+  return env;
+}
 // The plan camera: auto-placed in the middle of the biggest room, square to its walls.
 function ensurePlanCamera(floor){
   if (floor.camera) return floor.camera;
@@ -8915,8 +8945,6 @@ const V3 = {
   linen:() => v3Mat("#ece6da", {roughness: 1}),
   fabric:(c)=> v3Mat(c, {roughness: 1}),
 };
-// Default 3D finish for each type — real-world colours, not the plan's category colours.
-const V3_FABRIC = {sofa:"#7d8fa3", armchair:"#b9875f", beddbl:"#8fa3a0", bedsgl:"#c9a27a", officechair:"#3a3d44", diningchair:"#b08457"};
 
 // --- geometry helpers, all in an item's local metres (y up, bottom at y0)
 function v3Box(g, w, h, d, x, y0, z, mat){
@@ -8932,15 +8960,6 @@ function v3Cyl(g, rTop, rBot, h, x, y0, z, mat, seg = 24){
 }
 function v3Legs(g, w, d, h, inset, r, mat){
   [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Cyl(g, r, r*0.8, h, sx*(w/2-inset), 0, sz*(d/2-inset), mat, 10));
-}
-// A sofa body along local x, back at z0 (the −z side), facing +z.
-function v3SofaRun(g, x0, x1, z0, depth, mat, cushion, arms){
-  const w = x1 - x0, cx = (x0 + x1)/2;
-  v3Box(g, w, 0.12, depth, cx, 0.06, z0 + depth/2, V3.walnut()); // plinth
-  v3Box(g, w, 0.24, depth, cx, 0.16, z0 + depth/2, mat);           // seat base
-  v3Box(g, w - (arms ? 0.36 : 0.02), 0.12, depth - 0.24, cx, 0.40, z0 + 0.22 + (depth-0.24)/2, cushion); // seat cushions
-  v3Box(g, w, 0.48, 0.2, cx, 0.40, z0 + 0.1, mat);                 // back
-  if (arms) [x0 + 0.09, x1 - 0.09].forEach(ax => v3Box(g, 0.18, 0.62, depth, ax, 0, z0 + depth/2, mat));
 }
 function v3KitchenBase(g, w, d, x, z, front, top = 0.9, withTop = true){
   v3Box(g, w, 0.1, d - 0.06, x, 0, z - 0.03, V3.dark());                 // recessed plinth
@@ -8982,20 +9001,6 @@ function v3Appliance(g, type, w, d, x, z){
   }
   v3KitchenBase(g, w, d, x, z, v3Mat("#e7e3dc", {roughness: 0.5}));
 }
-function v3Bed(g, W, D, duvet){
-  v3Box(g, W, 0.3, D, 0, 0.05, 0, V3.oak());                       // frame
-  v3Legs(g, W, D, 0.05, 0.06, 0.03, V3.oak());
-  v3Box(g, W - 0.04, 0.2, D - 0.04, 0, 0.35, 0, V3.linen());       // mattress
-  v3Box(g, W, 0.08, D*0.68, 0, 0.5, D*0.16 + 0.01, duvet);          // duvet over the foot end
-  const n = W > 1.2 ? 2 : 1, pw = (W - 0.14)/n;
-  for (let i = 0; i < n; i++) v3Box(g, pw - 0.06, 0.12, 0.38, -W/2 + 0.07 + pw*(i + 0.5), 0.55, -D/2 + 0.3, V3.white());
-  v3Box(g, W + 0.04, 1.05, 0.08, 0, 0, -D/2 - 0.02, duvet);         // headboard
-}
-function v3Chair(g, W, D, seatMat, frameMat){
-  v3Legs(g, W, D, 0.43, 0.04, 0.018, frameMat);
-  v3Box(g, W, 0.04, D, 0, 0.43, 0, seatMat);
-  v3Box(g, W, 0.45, 0.04, 0, 0.47, -D/2 + 0.02, frameMat);
-}
 function v3Stairs(g, b, H){
   const geo = stairGeometry(b), W = stairWidth(b)/100;
   const pts = geo.pts.map(p => ({x: p.x/100, y: p.y/100})), total = geo.total/100;
@@ -9009,105 +9014,13 @@ function v3Stairs(g, b, H){
   }
 }
 // One furniture box as a THREE.Group in its own local frame (origin at its centre, on the floor).
+// Styled types (see FURNITURE_STYLES) build in their style; the rest have one model each.
 function v3Furniture(b, H, cut = H){
   const g = new THREE.Group(), W = b.wCm/100, D = b.dCm/100, t = b.type;
-  const fab = V3.fabric(V3_FABRIC[t] || "#9aa0a8");
-  const cushion = v3Mat(new THREE.Color(V3_FABRIC[t] || "#9aa0a8").offsetHSL(0, 0, 0.06).getStyle(), {roughness: 1});
+  if (v3BuildStyled(g, b, W, D, H, cut)) return g;
   switch (t){
-    case "sofa":
-      if (b.cornerSide){
-        const s = b.cornerSide, Dp = (b.sofaDepthCm || SOFA_DEPTH_CM)/100;
-        const sub = new THREE.Group(); sub.scale.x = s; g.add(sub); // build with the return on +x, mirror for −x
-        v3SofaRun(sub, -W/2, W/2 - Dp, -D/2, Dp, fab, cushion, false);
-        v3Box(sub, 0.18, 0.62, Dp, -W/2 + 0.09, 0, -D/2 + Dp/2, fab); // free-end arm
-        v3Box(sub, Dp, 0.48, 0.2, W/2 - Dp/2, 0.4, -D/2 + 0.1, fab); // back across the corner seat
-        const ret = new THREE.Group(); ret.rotation.y = -Math.PI/2; ret.position.set(W/2, 0, 0); sub.add(ret);
-        v3SofaRun(ret, -D/2, D/2, 0, Dp, fab, cushion, false); // the return, its back along the +x side
-      } else v3SofaRun(g, -W/2, W/2, -D/2, D, fab, cushion, true);
-      break;
-    case "armchair": v3SofaRun(g, -W/2, W/2, -D/2, D, fab, cushion, true); break;
-    case "coffee": v3Box(g, W, 0.04, D, 0, 0.38, 0, V3.oak()); v3Box(g, W - 0.1, 0.02, D - 0.1, 0, 0.12, 0, V3.oak()); v3Legs(g, W, D, 0.38, 0.05, 0.02, V3.walnut()); break;
-    case "tvunit":
-      v3Box(g, W, 0.45, D, 0, 0.05, 0, V3.walnut()); v3Legs(g, W, D, 0.05, 0.05, 0.015, V3.dark());
-      { const tw = Math.min(W*0.85, 1.45); v3Box(g, 0.25, 0.02, 0.18, 0, 0.5, -D/2 + 0.14, V3.dark()); v3Box(g, tw, tw*0.57, 0.04, 0, 0.55, -D/2 + 0.14, V3.black()); }
-      break;
-    case "bookshelf": {
-      v3Box(g, W, 1.9, 0.02, 0, 0, -D/2 + 0.01, V3.oak());
-      [-W/2 + 0.01, W/2 - 0.01].forEach(x => v3Box(g, 0.02, 1.9, D, x, 0, 0, V3.oak()));
-      const book = ["#7a3b3b", "#2f4f6b", "#c9a23f", "#3d6b4f", "#d9d2c3", "#5a3350", "#b5603f"];
-      for (let i = 0; i < 6; i++){
-        const y = 0.02 + i*0.37; v3Box(g, W - 0.04, 0.02, D, 0, y, 0, V3.oak());
-        if (i === 5) break;
-        let x = -W/2 + 0.04, k = i*3;
-        while (x < W/2 - 0.08){ const bw = 0.025 + ((k*37) % 5)*0.008, bh = 0.22 + ((k*13) % 4)*0.03; v3Box(g, bw, bh, D*0.75, x + bw/2, y + 0.02, 0, v3Mat(book[k % book.length])); x += bw + 0.004; k++; if (k % 9 === 0) x += 0.12; }
-      }
-      break;
-    }
-    case "fireplace":
-      v3Box(g, W, H, D, 0, 0, 0, V3.wall());
-      v3Box(g, W*0.55, 0.6, 0.02, 0, 0.12, D/2 + 0.002, V3.black());
-      v3Box(g, W + 0.1, 0.06, D + 0.1, 0, 1.1, 0.05, V3.white());
-      v3Box(g, W*0.75, 0.12, 0.25, 0, 0, D/2 + 0.12, v3Mat("#4a4c50"));
-      break;
-    case "dining": v3Box(g, W, 0.04, D, 0, 0.72, 0, V3.oak()); v3Legs(g, W, D, 0.72, 0.07, 0.03, V3.oak()); break;
-    case "dininground": {
-      const top = v3Cyl(g, W/2, W/2, 0.04, 0, 0.72, 0, V3.oak(), 40); top.scale.z = D/W;
-      v3Cyl(g, 0.06, 0.06, 0.68, 0, 0.04, 0, V3.oak(), 16); v3Cyl(g, 0.28, 0.3, 0.04, 0, 0, 0, V3.oak(), 24);
-      break;
-    }
-    case "diningchair": v3Chair(g, W, D, V3.oak(), V3.oak()); break;
-    case "officechair":
-      v3Cyl(g, 0.3, 0.3, 0.03, 0, 0.04, 0, V3.dark(), 5); v3Cyl(g, 0.025, 0.025, 0.4, 0, 0.07, 0, V3.steel(), 10);
-      v3Box(g, W*0.9, 0.08, D*0.9, 0, 0.45, 0, fab); v3Box(g, W*0.85, 0.55, 0.06, 0, 0.55, -D/2 + 0.05, fab);
-      break;
-    case "kitchen": {
-      if (D <= 0.4){ // a 30cm unit is a wall cupboard, hung above the worktop (and gone with the walls cut down)
-        if (cut < H) break;
-        const y0 = 1.45, h = Math.min(0.72, H - 0.05 - y0);
-        v3Box(g, W, h, D, 0, y0, 0, v3Mat("#e7e3dc", {roughness: 0.5}));
-        v3Box(g, 0.02, 0.15, 0.02, W/2 - 0.05, y0 + 0.05, D/2 + 0.01, V3.steel());
-      } else if (b.under === "washer" || b.under === "dryer"){ // slid in under the worktop
-        v3Appliance(g, b.under, W, D - 0.02, 0, -0.02);
-        v3Box(g, W, 0.04, D + 0.02, 0, 0.86, 0.01, v3Mat("#d9d4cb", {roughness: 0.4}));
-      } else if (b.under === "fridge" || b.under === "washerstack") v3KitchenBase(g, W, D, 0, 0, V3.white()); // an under-counter model
-      else if (b.under) v3Appliance(g, b.under, W, D, 0, 0);
-      else v3KitchenBase(g, W, D, 0, 0, v3Mat("#e7e3dc", {roughness: 0.5}));
-      break;
-    }
-    case "kitchencorner": {
-      const ad = (b.armDepthCm || 60)/100, front = v3Mat("#e7e3dc", {roughness: 0.5});
-      v3KitchenBase(g, W, ad, 0, -D/2 + ad/2, front);
-      const arm = new THREE.Group(); arm.rotation.y = Math.PI/2; arm.position.set(-W/2 + ad/2, 0, (ad)/2); g.add(arm);
-      v3KitchenBase(arm, D - ad, ad, 0, 0, front);
-      break;
-    }
-    case "sink": case "cooker": case "fridge": case "dishwasher": case "washer": case "dryer": case "washerstack": case "oven":
+    case "cooker": case "dryer": case "washer": case "washerstack": case "oven":
       v3Appliance(g, t, W, D, 0, 0); break;
-    case "beddbl": case "bedsgl": v3Bed(g, W, D, fab); break;
-    case "wardrobe":
-      v3Box(g, W, 2.0, D, 0, 0.05, 0, V3.white()); v3Box(g, W, 0.05, D - 0.04, 0, 0, -0.02, V3.dark());
-      v3Box(g, 0.006, 1.9, 0.01, 0, 0.1, D/2 + 0.002, V3.dark());
-      [-0.04, 0.04].forEach(x => v3Box(g, 0.015, 0.35, 0.025, x, 0.95, D/2 + 0.015, V3.steel()));
-      break;
-    case "drawers": case "bedside": {
-      const h = t === "drawers" ? 0.85 : 0.5, n = t === "drawers" ? 4 : 2;
-      v3Box(g, W, h - 0.08, D, 0, 0.08, 0, V3.oak()); v3Legs(g, W, D, 0.08, 0.04, 0.015, V3.walnut());
-      for (let i = 1; i < n; i++) v3Box(g, W*0.96, 0.006, 0.01, 0, 0.08 + (h - 0.08)*i/n, D/2 + 0.002, V3.walnut());
-      for (let i = 0; i < n; i++) v3Box(g, 0.12, 0.015, 0.02, 0, 0.08 + (h - 0.08)*(i + 0.5)/n, D/2 + 0.01, V3.steel());
-      break;
-    }
-    case "toilet":
-      v3Box(g, W*0.95, 0.4, 0.18, 0, 0.4, -D/2 + 0.09, V3.ceramic());
-      { const bowl = v3Cyl(g, 0.19, 0.15, 0.4, 0, 0, 0.06, V3.ceramic(), 24); bowl.scale.z = 1.3; }
-      v3Box(g, 0.36, 0.02, 0.44, 0, 0.4, 0.06, V3.white());
-      break;
-    case "bath":
-      v3Box(g, W, 0.12, D, 0, 0, 0, V3.ceramic());
-      [[W, 0.06, 0, -D/2 + 0.03], [W, 0.06, 0, D/2 - 0.03]].forEach(([w, d, x, z]) => v3Box(g, w, 0.44, d, x, 0.12, z, V3.ceramic()));
-      [[-W/2 + 0.03], [W/2 - 0.03]].forEach(([x]) => v3Box(g, 0.06, 0.44, D, x, 0.12, 0, V3.ceramic()));
-      v3Box(g, W - 0.12, 0.02, D - 0.12, 0, 0.12, 0, v3Mat("#dfeef3", {roughness: 0.1}));
-      v3Cyl(g, 0.02, 0.02, 0.18, -W/2 + 0.15, 0.56, 0, V3.steel(), 10);
-      break;
     case "shower":
       v3Box(g, W, 0.05, D, 0, 0, 0, V3.ceramic());
       v3Box(g, W, 1.95, 0.01, 0, 0.05, D/2 - 0.005, V3.glass());
@@ -9115,19 +9028,748 @@ function v3Furniture(b, H, cut = H){
       v3Cyl(g, 0.012, 0.012, 1.95, -W/2 + 0.06, 0.05, -D/2 + 0.06, V3.steel(), 8);
       v3Cyl(g, 0.11, 0.11, 0.015, -W/2 + 0.2, 2.0, -D/2 + 0.2, V3.steel(), 20);
       break;
-    case "basin":
-      v3Box(g, W*0.9, 0.7, D*0.9, 0, 0.1, -D*0.05, V3.oak());
-      v3Box(g, W, 0.12, D, 0, 0.8, 0, V3.ceramic());
-      v3Cyl(g, 0.015, 0.018, 0.18, 0, 0.92, -D/2 + 0.06, V3.steel(), 10);
-      break;
-    case "desk": v3Box(g, W, 0.03, D, 0, 0.72, 0, V3.oak()); v3Legs(g, W, D, 0.72, 0.04, 0.02, V3.dark()); break;
-    case "radiator": v3Box(g, W, 0.6, Math.max(0.06, D), 0, 0.15, 0, V3.white()); break;
     case "stairs": v3Stairs(g, b, H); break;
     case "rug": { const m = v3Box(g, W, 0.012, D, 0, 0, 0, v3Mat(b.color || "#a3b096", {roughness: 1})); if (m) m.castShadow = false; break; }
     case "ruground": { const m = v3Cyl(g, W/2, W/2, 0.012, 0, 0, 0, v3Mat(b.color || "#a3b096", {roughness: 1}), 40); m.scale.z = D/W; m.castShadow = false; break; }
     default: v3Box(g, W, 0.75, D, 0, 0, 0, v3Mat(b.color || "#9aa0a8"));
   }
   return g;
+}
+
+// ---------------------------------------------------------------------------
+// Furniture styles — the "buy mode" catalogue. A furniture box may carry
+// `style` (a key from its family's styles) and `finishes` ({slotKey: hex});
+// missing means the family's first style in its own default colours, so
+// every box placed before styles existed still shows exactly as before in
+// 3D. Each style builds its own 3D model (via v3Furniture) and carries a
+// short `desc` for describing the room in words (e.g. an AI image prompt).
+// The last style/finish picked for a type is remembered (per browser) and
+// given to the next one placed — see applyRememberedStyle.
+// ---------------------------------------------------------------------------
+const FINISH_PALETTES = {
+  fabric: RUG_COLORS,
+  wood: [["Light oak","#c9a374"],["Natural oak","#b08457"],["Pine","#d4ad6a"],["Cherry","#9a5a3c"],["Walnut","#6e4a32"],["Dark oak","#4d3626"],["Ebony","#2f2620"],["White-washed","#e3dccf"],["Painted white","#f2f0ea"],["Painted black","#2a2a2c"]],
+  paint: [["White","#f3f1ec"],["Cream","#ece3cf"],["Pale grey","#cfd0cc"],["Putty","#b7ab96"],["Sage","#a3b096"],["Olive","#6f7553"],["Forest","#2f4f3b"],["Duck egg","#a9c4c0"],["Teal","#2f6f73"],["Navy","#27344d"],["Charcoal","#3d3f43"],["Black","#1d1e20"],["Blush","#e0bdb6"],["Terracotta","#b5603f"],["Mustard","#c9a23f"],["Plum","#5a3350"]],
+  metal: [["Black","#1f2022"],["Chrome","#c9ccd0"],["Brushed steel","#a9adb2"],["Brass","#b8964e"],["Copper","#b46e45"],["White","#f1f1ef"],["Anthracite","#3a3c40"]],
+  worktop: [["White quartz","#eeece6"],["Marble","#e6e2da"],["Grey stone","#9a9893"],["Concrete","#a7a49d"],["Black granite","#232325"],["Oak","#b08457"],["Walnut","#6e4a32"],["Terrazzo","#d8cfc4"]],
+};
+const FINISH_NAMES = new Map(Object.values(FINISH_PALETTES).flat().map(([n, h]) => [h.toLowerCase(), n]));
+// Which style family each furniture type uses.
+const STYLE_FAMILY_OF = {sofa:"sofa", armchair:"sofa", beddbl:"bed", bedsgl:"bed", dining:"table", dininground:"roundtable", diningchair:"chair",
+  coffee:"coffee", desk:"desk", officechair:"officechair", tvunit:"tvunit", bookshelf:"shelf", wardrobe:"wardrobe", drawers:"cabinet", bedside:"cabinet",
+  kitchen:"kitchen", kitchencorner:"kitchen", sink:"kitchen", dishwasher:"kitchen", bath:"bath", basin:"basin", toilet:"toilet", fireplace:"fireplace",
+  fridge:"fridge", radiator:"radiator"};
+// slots: what can be recoloured, with a default palette (a style can swap it, e.g. a metal bed frame).
+const FURNITURE_STYLES = {
+  sofa: {slots:[{key:"main", label:"Fabric", palette:"fabric"}], styles:[
+    {key:"modern", label:"Modern", desc:"modern track-arm", main:"#7d8fa3"},
+    {key:"chesterfield", label:"Chesterfield", desc:"deep-buttoned leather Chesterfield", main:"#4f3a2e"},
+    {key:"midcentury", label:"Mid-century", desc:"mid-century modern on tapered wooden legs", main:"#c9a23f"},
+    {key:"cloud", label:"Cloud", desc:"deep, slouchy cloud-style", main:"#e3d9c3"},
+    {key:"scandi", label:"Scandi frame", desc:"Scandinavian oak-framed", main:"#a3b096"},
+  ]},
+  bed: {slots:[{key:"main", label:"Frame", palette:"fabric"}, {key:"bedding", label:"Bedding", palette:"fabric"}], styles:[
+    {key:"divan", label:"Divan", desc:"upholstered divan with a padded headboard", main:"#8f9194", bedding:"#ece7da"},
+    {key:"upholstered", label:"Tall headboard", desc:"bed with a tall channel-tufted upholstered headboard", main:"#a3b096", bedding:"#f6f5f1"},
+    {key:"sleigh", label:"Sleigh", desc:"wooden sleigh bed", main:"#6e4a32", bedding:"#e3d9c3", palettes:{main:"wood"}},
+    {key:"fourposter", label:"Four-poster", desc:"four-poster bed", main:"#2f2620", bedding:"#f6f5f1", palettes:{main:"wood"}},
+    {key:"platform", label:"Low platform", desc:"low Japanese-style oak platform bed", main:"#c9a374", bedding:"#d3c7ae", palettes:{main:"wood"}},
+    {key:"metal", label:"Iron frame", desc:"black iron-framed bed", main:"#1f2022", bedding:"#f6f5f1", palettes:{main:"metal"}},
+  ]},
+  table: {slots:[{key:"main", label:"Wood", palette:"wood"}], styles:[
+    {key:"scandi", label:"Scandi", desc:"Scandinavian oak dining table", main:"#c9a374"},
+    {key:"farmhouse", label:"Farmhouse", desc:"chunky farmhouse dining table", main:"#9a6a44"},
+    {key:"trestle", label:"Trestle", desc:"trestle dining table", main:"#b08457"},
+    {key:"industrial", label:"Industrial", desc:"industrial dining table on black steel legs", main:"#6e4a32"},
+    {key:"glass", label:"Glass", desc:"glass-topped dining table", main:"#c9ccd0", palettes:{main:"metal"}},
+  ]},
+  roundtable: {slots:[{key:"main", label:"Top", palette:"wood"}], styles:[
+    {key:"pedestal", label:"Pedestal", desc:"round pedestal dining table", main:"#b08457"},
+    {key:"tulip", label:"Tulip", desc:"round marble tulip table", main:"#e6e2da", palettes:{main:"worktop"}},
+    {key:"scandi", label:"Scandi", desc:"round Scandinavian dining table", main:"#c9a374"},
+    {key:"glass", label:"Glass", desc:"round glass dining table", main:"#c9ccd0", palettes:{main:"metal"}},
+  ]},
+  chair: {slots:[{key:"main", label:"Colour", palette:"wood"}], styles:[
+    {key:"scandi", label:"Spindle", desc:"spindle-back wooden dining chairs", main:"#c9a374"},
+    {key:"upholstered", label:"Upholstered", desc:"upholstered dining chairs", main:"#b6a3c9", palettes:{main:"fabric"}},
+    {key:"ladder", label:"Ladder-back", desc:"farmhouse ladder-back chairs with rush seats", main:"#4d3626"},
+    {key:"cafe", label:"Café metal", desc:"metal café chairs", main:"#2f6f73", palettes:{main:"paint"}},
+    {key:"ghost", label:"Ghost", desc:"clear acrylic ghost chairs", noFinish:true},
+  ]},
+  coffee: {slots:[{key:"main", label:"Finish", palette:"wood"}], styles:[
+    {key:"scandi", label:"Scandi", desc:"oak coffee table", main:"#b08457"},
+    {key:"marble", label:"Marble drum", desc:"round marble drum coffee table", main:"#e6e2da", palettes:{main:"worktop"}},
+    {key:"glass", label:"Glass", desc:"glass coffee table", main:"#b8964e", palettes:{main:"metal"}},
+    {key:"trunk", label:"Trunk", desc:"vintage trunk as a coffee table", main:"#6e4a32"},
+  ]},
+  desk: {slots:[{key:"main", label:"Wood", palette:"wood"}], styles:[
+    {key:"scandi", label:"Scandi", desc:"simple oak desk", main:"#c9a374"},
+    {key:"industrial", label:"Industrial", desc:"industrial desk on black steel legs", main:"#6e4a32"},
+    {key:"bureau", label:"Pedestal", desc:"pedestal desk with drawers", main:"#4d3626"},
+    {key:"glass", label:"Glass", desc:"glass desk", main:"#c9ccd0", palettes:{main:"metal"}},
+  ]},
+  officechair: {slots:[{key:"main", label:"Colour", palette:"fabric"}], styles:[
+    {key:"task", label:"Task chair", desc:"mesh office chair", main:"#3a3d44"},
+    {key:"executive", label:"Executive", desc:"leather executive chair", main:"#4f3a2e"},
+    {key:"wooden", label:"Wooden", desc:"wooden desk chair", main:"#b08457", palettes:{main:"wood"}},
+  ]},
+  tvunit: {slots:[{key:"main", label:"Finish", palette:"wood"}], styles:[
+    {key:"midcentury", label:"Mid-century", desc:"mid-century walnut TV unit with slatted doors", main:"#6e4a32"},
+    {key:"gloss", label:"Floating gloss", desc:"wall-floating gloss TV unit", main:"#f3f1ec", palettes:{main:"paint"}},
+    {key:"industrial", label:"Industrial", desc:"open industrial TV stand", main:"#9a6a44"},
+    {key:"rustic", label:"Rustic", desc:"chunky reclaimed-wood TV unit", main:"#8a6a4a"},
+  ]},
+  shelf: {slots:[{key:"main", label:"Finish", palette:"wood"}], styles:[
+    {key:"open", label:"Open shelves", desc:"open bookshelves", main:"#b08457"},
+    {key:"painted", label:"Painted", desc:"painted bookcase", main:"#f3f1ec", palettes:{main:"paint"}},
+    {key:"ladder", label:"Ladder", desc:"leaning ladder shelf", main:"#c9a374"},
+  ]},
+  wardrobe: {slots:[{key:"main", label:"Finish", palette:"paint"}], styles:[
+    {key:"plain", label:"Plain", desc:"fitted wardrobe", main:"#f3f1ec"},
+    {key:"shaker", label:"Shaker", desc:"shaker-style painted wardrobe", main:"#a9c4c0"},
+    {key:"oak", label:"Oak", desc:"solid oak wardrobe", main:"#b08457", palettes:{main:"wood"}},
+    {key:"mirror", label:"Mirrored", desc:"mirrored sliding-door wardrobe", main:"#3a3c40", palettes:{main:"metal"}},
+  ]},
+  cabinet: {slots:[{key:"main", label:"Finish", palette:"wood"}], styles:[
+    {key:"oak", label:"Oak", desc:"oak", main:"#b08457"},
+    {key:"shaker", label:"Shaker", desc:"painted shaker-style", main:"#a3b096", palettes:{main:"paint"}},
+    {key:"midcentury", label:"Mid-century", desc:"mid-century walnut", main:"#6e4a32"},
+    {key:"gloss", label:"Handleless", desc:"handleless gloss", main:"#f3f1ec", palettes:{main:"paint"}},
+  ]},
+  kitchen: {slots:[{key:"main", label:"Doors", palette:"paint"}, {key:"top", label:"Worktop", palette:"worktop"}], styles:[
+    {key:"shaker", label:"Shaker", desc:"shaker kitchen", main:"#a3b096", top:"#b08457"},
+    {key:"slab", label:"Slab", desc:"modern slab-door kitchen", main:"#e7e3dc", top:"#e6e2da"},
+    {key:"handleless", label:"Handleless gloss", desc:"handleless gloss kitchen", main:"#27344d", top:"#eeece6"},
+  ]},
+  bath: {slots:[{key:"main", label:"Outside", palette:"paint"}], styles:[
+    {key:"builtin", label:"Built-in", desc:"built-in bath with a panel", main:"#f3f1ec"},
+    {key:"rolltop", label:"Roll-top", desc:"freestanding roll-top bath on claw feet", main:"#27344d"},
+    {key:"modern", label:"Modern freestanding", desc:"modern freestanding stone bath", noFinish:true},
+  ]},
+  basin: {slots:[{key:"main", label:"Finish", palette:"wood"}], styles:[
+    {key:"vanity", label:"Vanity unit", desc:"basin on a vanity unit", main:"#b08457"},
+    {key:"pedestal", label:"Pedestal", desc:"pedestal basin", noFinish:true},
+    {key:"wallhung", label:"Wall-hung", desc:"wall-hung basin with a drawer", main:"#2f4f3b", palettes:{main:"paint"}},
+  ]},
+  toilet: {slots:[], styles:[
+    {key:"closecoupled", label:"Close-coupled", desc:"close-coupled toilet"},
+    {key:"wallhung", label:"Wall-hung", desc:"wall-hung toilet"},
+    {key:"highlevel", label:"High-level", desc:"Victorian high-level cistern toilet"},
+  ]},
+  fireplace: {slots:[{key:"main", label:"Surround", palette:"paint"}], styles:[
+    {key:"victorian", label:"Victorian", desc:"Victorian cast-iron fireplace with a painted surround", main:"#f3f1ec"},
+    {key:"woodburner", label:"Wood burner", desc:"wood-burning stove in a brick recess", main:"#3d3f43"},
+    {key:"modern", label:"Hole-in-wall", desc:"modern hole-in-the-wall fire", main:"#f3f1ec"},
+  ]},
+  fridge: {slots:[{key:"main", label:"Colour", palette:"metal"}], styles:[
+    {key:"steel", label:"Fridge freezer", desc:"fridge freezer", main:"#a9adb2"},
+    {key:"retro", label:"Retro", desc:"retro rounded fridge", main:"#a9c4c0", palettes:{main:"paint"}},
+    {key:"american", label:"American", desc:"American-style double-door fridge", main:"#3a3c40"},
+  ]},
+  radiator: {slots:[{key:"main", label:"Colour", palette:"paint"}], styles:[
+    {key:"panel", label:"Panel", desc:"panel radiator", main:"#f3f1ec"},
+    {key:"column", label:"Column", desc:"Victorian column radiator", main:"#3d3f43"},
+    {key:"vertical", label:"Vertical", desc:"tall vertical designer radiator", main:"#3a3c40", palettes:{main:"metal"}},
+  ]},
+};
+// Snap every style's default colours onto its slot's palette, so the swatch it starts on shows as picked.
+Object.values(FURNITURE_STYLES).forEach(fam => fam.styles.forEach(st => fam.slots.forEach(sl=>{
+  if (!st[sl.key]) return;
+  const pal = FINISH_PALETTES[(st.palettes && st.palettes[sl.key]) || sl.palette], rgb = h => [1,3,5].map(i => parseInt(h.slice(i, i+2), 16));
+  const c = rgb(st[sl.key]);
+  st[sl.key] = pal.reduce((best, [, h]) => { const d = rgb(h).reduce((s, v, i) => s + (v - c[i])**2, 0); return d < best.d ? {h, d} : best; }, {h: st[sl.key], d: Infinity}).h;
+})));
+const STYLE_FAMILY_PLURAL = {sofa:"sofas and armchairs", bed:"beds", table:"dining tables", roundtable:"round tables", chair:"dining chairs", coffee:"coffee tables",
+  desk:"desks", officechair:"desk chairs", tvunit:"TV units", shelf:"bookshelves", wardrobe:"wardrobes", cabinet:"chests and bedsides", bath:"baths",
+  basin:"basins", toilet:"toilets", fireplace:"fireplaces", fridge:"fridges", radiator:"radiators"};
+function styleFamily(type){ const k = STYLE_FAMILY_OF[type]; return k ? FURNITURE_STYLES[k] : null; }
+function furnitureStyleOf(b){
+  const fam = styleFamily(b.type);
+  if (!fam) return null;
+  return fam.styles.find(s => s.key === b.style) || fam.styles[0];
+}
+// Every slot's colour for this box, as hex: its own pick, else the style's default.
+function furnitureFinishes(b, st = furnitureStyleOf(b)){
+  const fam = styleFamily(b.type), out = {};
+  if (!fam || !st) return out;
+  fam.slots.forEach(sl => { out[sl.key] = (b.finishes && b.finishes[sl.key]) || st[sl.key] || "#9aa0a8"; });
+  return out;
+}
+function slotPalette(st, slot){ return FINISH_PALETTES[(st.palettes && st.palettes[slot.key]) || slot.palette]; }
+// What the plan fills a box with: its chosen colour once it has a style, else its category colour.
+function furniturePlanColor(b){
+  if (!b.style && !b.finishes) return b.color;
+  const st = furnitureStyleOf(b);
+  if (!st || st.noFinish) return b.color;
+  return furnitureFinishes(b, st).main || b.color;
+}
+// "green velvet Chesterfield sofa" — for describing a room in words.
+function furnitureDescription(b){
+  const st = furnitureStyleOf(b), base = furnitureLabel(b.type).replace(/\s*\(.*\)$/, "").toLowerCase();
+  if (!st) return base;
+  const f = furnitureFinishes(b, st), colour = !st.noFinish && f.main ? (FINISH_NAMES.get(f.main.toLowerCase()) || "") : "";
+  const noun = /sofa|bed|table|chair|desk|wardrobe|radiator|fridge|bath|toilet|basin|bookcase|shelves|unit|fire|stove/.test(st.desc) ? "" : " " + base;
+  return `${colour ? colour.toLowerCase() + " " : ""}${st.desc}${noun}`.trim();
+}
+const STYLE_MEMORY_KEY = "floorplan.styleMemory";
+function rememberStyle(b){
+  try{
+    const m = JSON.parse(localStorage.getItem(STYLE_MEMORY_KEY) || "{}");
+    m[b.type] = {style: b.style, finishes: b.finishes};
+    localStorage.setItem(STYLE_MEMORY_KEY, JSON.stringify(m));
+  }catch(e){}
+}
+function applyRememberedStyle(box){
+  if (!styleFamily(box.type)) return;
+  try{
+    const m = JSON.parse(localStorage.getItem(STYLE_MEMORY_KEY) || "{}")[box.type];
+    if (m && m.style){ box.style = m.style; if (m.finishes) box.finishes = {...m.finishes}; }
+  }catch(e){}
+}
+
+// --- 3D builders per style. Same conventions as v3Furniture: local metres,
+// origin at the item's centre on the floor, back at −z, front at +z.
+const M3 = { // material makers by look, cached through v3Mat
+  fabric: h => v3Mat(h, {roughness: 1}),
+  leather: h => v3Mat(h, {roughness: 0.45}),
+  wood: h => v3Mat(h, {roughness: 0.7}),
+  paint: h => v3Mat(h, {roughness: 0.55}),
+  gloss: h => v3Mat(h, {roughness: 0.12}),
+  stone: h => v3Mat(h, {roughness: 0.3}),
+  metal: h => { const c = new THREE.Color(h), l = c.r + c.g + c.b; return v3Mat(h, {roughness: 0.32, metalness: l < 0.3 || l > 2.6 ? 0.25 : 0.8}); },
+  clear: () => v3Mat("#e8f2f6", {transparent: true, opacity: 0.35, roughness: 0.05, depthWrite: false}),
+};
+function shade(hex, dl){ return "#" + new THREE.Color(hex).offsetHSL(0, 0, dl).getHexString(); }
+function v3Sphere(g, rx, ry, rz, x, y, z, mat){
+  const m = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), mat);
+  m.scale.set(rx, ry, rz); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true;
+  g.add(m); return m;
+}
+// A horizontal cylinder along x ("x") or z ("z") centred at (x, y, z).
+function v3Rod(g, r, len, x, y, z, axis, mat, seg = 16){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
+  if (axis === "x") m.rotation.z = Math.PI/2; else m.rotation.x = Math.PI/2;
+  m.position.set(x, y, z); m.castShadow = m.receiveShadow = true;
+  g.add(m); return m;
+}
+// Tapered legs splayed outward a little, mid-century style.
+function v3SplayLegs(g, w, d, h, inset, mat){
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz])=>{
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.012, h, 10), mat);
+    m.position.set(sx*(w/2-inset), h/2, sz*(d/2-inset)); m.rotation.z = -sx*0.12; m.rotation.x = sz*0.12;
+    m.castShadow = true; g.add(m);
+  });
+}
+// One straight sofa body x0..x1, back along z0, depth d, facing +z.
+function v3SofaRunStyled(g, x0, x1, z0, d, key, hex, armL, armR){
+  const w = x1 - x0, cx = (x0 + x1)/2, fab = M3.fabric(hex), soft = M3.fabric(shade(hex, 0.05));
+  const seats = Math.max(1, Math.round((w - (armL ? 0.2 : 0) - (armR ? 0.2 : 0))/0.65));
+  const sx0 = x0 + (armL ? 0.2 : 0), sx1 = x1 - (armR ? 0.2 : 0), sw = (sx1 - sx0)/seats;
+  const zc = z0 + d/2;
+  if (key === "chesterfield"){
+    const lea = M3.leather(hex), dark = M3.leather(shade(hex, -0.12));
+    [[x0 + 0.08, z0 + 0.08], [x1 - 0.08, z0 + 0.08], [x0 + 0.08, z0 + d - 0.08], [x1 - 0.08, z0 + d - 0.08]].forEach(([x, z]) => v3Sphere(g, 0.04, 0.04, 0.04, x, 0.04, z, M3.wood("#2f2620")));
+    v3Box(g, w, 0.32, d, cx, 0.07, zc, lea);
+    v3Box(g, sx1 - sx0, 0.1, d - 0.26, (sx0 + sx1)/2, 0.39, z0 + 0.24 + (d - 0.26)/2, lea);
+    v3Box(g, w, 0.4, 0.22, cx, 0.36, z0 + 0.11, lea);
+    v3Rod(g, 0.07, w, cx, 0.76, z0 + 0.12, "x", lea);
+    for (let i = 0; i < Math.round(w/0.13); i++) for (let r = 0; r < 3; r++) v3Sphere(g, 0.012, 0.012, 0.008, x0 + 0.1 + i*0.13 + (r % 2)*0.065, 0.48 + r*0.08, z0 + 0.222, dark);
+    [[armL, x0 + 0.1], [armR, x1 - 0.1]].forEach(([on, ax]) => { if (!on) return; v3Box(g, 0.2, 0.62, d - 0.06, ax, 0.07, zc + 0.03, lea); v3Rod(g, 0.1, d - 0.02, ax + (ax < cx ? -0.02 : 0.02), 0.68, zc + 0.01, "z", lea); });
+    return;
+  }
+  if (key === "midcentury"){
+    v3SplayLegs(g, w, d, 0.2, 0.08, M3.wood("#6e4a32"));
+    v3Box(g, w, 0.16, d, cx, 0.2, zc, fab);
+    for (let i = 0; i < seats; i++) v3Box(g, sw - 0.02, 0.12, d - 0.2, sx0 + sw*(i + 0.5), 0.36, z0 + 0.18 + (d - 0.2)/2, soft);
+    v3Box(g, w, 0.4, 0.12, cx, 0.36, z0 + 0.06, fab);
+    for (let i = 0; i < seats; i++){ const m = v3Box(g, sw - 0.04, 0.32, 0.1, sx0 + sw*(i + 0.5), 0.46, z0 + 0.17, soft); if (m) m.rotation.x = -0.12; }
+    [[armL, x0 + 0.04], [armR, x1 - 0.04]].forEach(([on, ax]) => { if (on) v3Box(g, 0.08, 0.26, d, ax, 0.32, zc, fab); });
+    return;
+  }
+  if (key === "cloud"){
+    v3Box(g, w, 0.36, d, cx, 0.02, zc, fab);
+    for (let i = 0; i < seats; i++){
+      v3Sphere(g, sw/2, 0.09, (d - 0.3)/2, sx0 + sw*(i + 0.5), 0.42, z0 + 0.3 + (d - 0.3)/2, soft);
+      v3Sphere(g, sw/2 - 0.01, 0.26, 0.14, sx0 + sw*(i + 0.5), 0.62, z0 + 0.17, soft);
+    }
+    [[armL, x0 + 0.16], [armR, x1 - 0.16]].forEach(([on, ax]) => { if (!on) return; v3Box(g, 0.32, 0.3, d, ax, 0.02, zc, fab); v3Rod(g, 0.16, d, ax, 0.4, zc, "z", fab, 20); });
+    return;
+  }
+  if (key === "scandi"){
+    const oak = M3.wood("#c9a374");
+    [x0 + 0.03, x1 - 0.03].forEach(x => [z0 + 0.03, z0 + d - 0.03].forEach(z => v3Box(g, 0.045, 0.6, 0.045, x, 0, z, oak)));
+    v3Box(g, w - 0.04, 0.04, d - 0.04, cx, 0.2, zc, oak);
+    v3Box(g, w - 0.06, 0.04, 0.04, cx, 0.62, z0 + 0.03, oak);
+    [[armL, x0 + 0.03], [armR, x1 - 0.03]].forEach(([on, ax]) => { if (on) v3Box(g, 0.07, 0.03, d, ax, 0.6, zc, oak); });
+    for (let i = 0; i < seats; i++){
+      v3Box(g, sw - 0.02, 0.14, d - 0.12, sx0 + sw*(i + 0.5), 0.24, z0 + 0.1 + (d - 0.12)/2, fab);
+      const m = v3Box(g, sw - 0.04, 0.4, 0.12, sx0 + sw*(i + 0.5), 0.36, z0 + 0.11, soft); if (m) m.rotation.x = -0.15;
+    }
+    return;
+  }
+  // modern
+  v3Box(g, w - 0.04, 0.08, d - 0.04, cx, 0, zc, M3.wood("#2f2620"));
+  v3Box(g, w, 0.32, d, cx, 0.08, zc, fab);
+  for (let i = 0; i < seats; i++) v3Box(g, sw - 0.015, 0.12, d - 0.24, sx0 + sw*(i + 0.5), 0.4, z0 + 0.22 + (d - 0.24)/2, soft);
+  v3Box(g, w, 0.44, 0.2, cx, 0.4, z0 + 0.1, fab);
+  [[armL, x0 + 0.09], [armR, x1 - 0.09]].forEach(([on, ax]) => { if (on) v3Box(g, 0.18, 0.62, d, ax, 0, zc, fab); });
+}
+function v3BuildSofa(g, b, W, D, key, f){
+  if (b.type === "sofa" && b.cornerSide){
+    const s = b.cornerSide, Dp = (b.sofaDepthCm || SOFA_DEPTH_CM)/100;
+    const sub = new THREE.Group(); sub.scale.x = s; g.add(sub); // built with the return on +x, mirrored for −x
+    v3SofaRunStyled(sub, -W/2, W/2 - Dp, -D/2, Dp, key, f.main, true, false);
+    const ret = new THREE.Group(); ret.rotation.y = -Math.PI/2; ret.position.set(W/2, 0, 0); sub.add(ret);
+    v3SofaRunStyled(ret, -D/2, D/2, 0, Dp, key, f.main, false, false);
+  } else v3SofaRunStyled(g, -W/2, W/2, -D/2, D, key, f.main, true, true);
+}
+function v3BuildBed(g, b, W, D, key, f){
+  const frameMat = key === "metal" ? M3.metal(f.main) : (key === "divan" || key === "upholstered") ? M3.fabric(f.main) : M3.wood(f.main);
+  const low = key === "platform", top = low ? 0.42 : 0.6;
+  // mattress, bedding and pillows, common to all
+  v3Box(g, W - 0.04, 0.2, D - 0.06, 0, top - 0.2, 0.01, V3.linen());
+  v3Box(g, W, 0.07, D*0.7, 0, top - 0.02, D*0.15 + 0.01, M3.fabric(f.bedding));
+  v3Box(g, W + 0.01, 0.03, 0.4, 0, top + 0.035, D/2 - 0.35, M3.fabric(shade(f.bedding, -0.15))); // a throw across the foot
+  const n = W > 1.2 ? 2 : 1, pw = (W - 0.14)/n;
+  for (let i = 0; i < n; i++) v3Sphere(g, pw/2 - 0.03, 0.07, 0.2, -W/2 + 0.07 + pw*(i + 0.5), top + 0.06, -D/2 + 0.3, V3.white());
+  if (key === "platform"){
+    v3Box(g, W + 0.24, 0.17, D + 0.2, 0, 0.05, 0.05, frameMat);
+    v3Box(g, W - 0.3, 0.05, D - 0.3, 0, 0, 0.05, M3.wood("#2f2620"));
+    v3Box(g, W + 0.24, 0.55, 0.04, 0, 0.05, -D/2 - 0.04, frameMat);
+    return;
+  }
+  if (key === "metal"){
+    v3Box(g, W, 0.05, D, 0, top - 0.25, 0, frameMat);
+    [[-D/2, 1.15], [D/2, 0.85]].forEach(([z, h])=>{
+      [-W/2, W/2].forEach(x => v3Cyl(g, 0.018, 0.018, h, x, 0, z, frameMat, 10));
+      v3Rod(g, 0.014, W, 0, h - 0.04, z, "x", frameMat, 10); v3Rod(g, 0.012, W, 0, top + 0.05, z, "x", frameMat, 10);
+      for (let x = -W/2 + 0.12; x < W/2 - 0.06; x += 0.12) v3Cyl(g, 0.007, 0.007, h - 0.04 - top - 0.05, x, top + 0.05, z, frameMat, 6);
+    });
+    return;
+  }
+  v3Box(g, W, top - 0.28, D, 0, 0.08, 0, frameMat); // base / frame
+  v3Legs(g, W, D, 0.08, 0.06, 0.025, key === "divan" ? M3.wood("#2f2620") : frameMat);
+  if (key === "divan") v3Box(g, W + 0.04, 0.6, 0.08, 0, top - 0.1, -D/2 - 0.02, frameMat);
+  else if (key === "upholstered"){
+    v3Box(g, W + 0.2, 1.35, 0.1, 0, 0, -D/2 - 0.03, frameMat);
+    const dark = M3.fabric(shade(f.main, -0.07));
+    for (let x = -W/2 - 0.1 + 0.13; x < W/2 + 0.1; x += 0.13) v3Box(g, 0.012, 0.75, 0.01, x, 0.55, -D/2 + 0.025, dark);
+  } else if (key === "sleigh"){
+    const hb = v3Box(g, W + 0.06, 1.0, 0.06, 0, 0, -D/2 - 0.05, frameMat); if (hb) hb.rotation.x = -0.12;
+    v3Rod(g, 0.07, W + 0.06, 0, 1.0, -D/2 - 0.14, "x", frameMat);
+    const fb = v3Box(g, W + 0.06, 0.62, 0.06, 0, 0, D/2 + 0.04, frameMat); if (fb) fb.rotation.x = 0.12;
+    v3Rod(g, 0.06, W + 0.06, 0, 0.62, D/2 + 0.11, "x", frameMat);
+  } else if (key === "fourposter"){
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Box(g, 0.07, 2.1, 0.07, sx*(W/2 + 0.02), 0, sz*(D/2 + 0.02), frameMat));
+    [[-1],[1]].forEach(([sz]) => v3Box(g, W + 0.11, 0.07, 0.07, 0, 2.05, sz*(D/2 + 0.02), frameMat));
+    [[-1],[1]].forEach(([sx]) => v3Box(g, 0.07, 0.07, D + 0.11, sx*(W/2 + 0.02), 2.05, 0, frameMat));
+    v3Box(g, W, 0.55, 0.04, 0, top + 0.05, -D/2 - 0.02, frameMat);
+  }
+}
+function v3BuildTable(g, W, D, key, f, round){
+  const wood = M3.wood(f.main);
+  if (round){
+    const ry = (top, mat, h = 0.04) => { const m = v3Cyl(g, W/2, W/2, h, 0, top, 0, mat, 44); m.scale.z = D/W; return m; };
+    if (key === "tulip"){ ry(0.71, M3.stone(f.main), 0.03); v3Cyl(g, 0.05, 0.14, 0.66, 0, 0.05, 0, V3.white(), 24); v3Cyl(g, 0.3, 0.32, 0.05, 0, 0, 0, V3.white(), 32); }
+    else if (key === "glass"){ ry(0.72, V3.glass(), 0.012); const met = M3.metal(f.main); [0, Math.PI/2].forEach(a => { const m = v3Box(g, W*0.7, 0.03, 0.03, 0, 0.69, 0, met); if (m) m.rotation.y = a; }); v3Cyl(g, 0.03, 0.03, 0.69, 0, 0, 0, met, 12); v3Box(g, W*0.6, 0.02, 0.05, 0, 0, 0, met); v3Box(g, 0.05, 0.02, W*0.6, 0, 0, 0, met); }
+    else if (key === "scandi"){ ry(0.72, wood); v3SplayLegs(g, W*0.75, D*0.75, 0.72, 0.03, wood); }
+    else { ry(0.72, wood); v3Cyl(g, 0.07, 0.09, 0.68, 0, 0.04, 0, wood, 16); v3Cyl(g, 0.28, 0.3, 0.05, 0, 0, 0, wood, 28); }
+    return;
+  }
+  if (key === "farmhouse"){
+    v3Box(g, W, 0.06, D, 0, 0.7, 0, wood);
+    v3Box(g, W - 0.16, 0.1, D - 0.16, 0, 0.6, 0, M3.wood(shade(f.main, -0.06)));
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Box(g, 0.09, 0.7, 0.09, sx*(W/2 - 0.1), 0, sz*(D/2 - 0.1), wood));
+  } else if (key === "trestle"){
+    v3Box(g, W, 0.045, D, 0, 0.71, 0, wood);
+    [-1, 1].forEach(sx => [-1, 1].forEach(sz => { const m = v3Box(g, 0.06, 0.74, 0.06, sx*(W/2 - 0.2), -0.02, sz*D*0.22, wood); if (m) m.rotation.x = sz*0.28; }));
+    [-1, 1].forEach(sx => v3Box(g, 0.06, 0.06, D*0.8, sx*(W/2 - 0.2), 0.62, 0, wood));
+    v3Box(g, W - 0.4, 0.05, 0.05, 0, 0.2, 0, wood);
+  } else if (key === "industrial"){
+    v3Box(g, W, 0.045, D, 0, 0.71, 0, wood);
+    const steel = M3.metal("#1f2022");
+    [-1, 1].forEach(sx => { const x = sx*(W/2 - 0.12); [-1, 1].forEach(sz => v3Box(g, 0.04, 0.71, 0.04, x, 0, sz*(D/2 - 0.06), steel)); v3Box(g, 0.04, 0.04, D - 0.08, x, 0.67, 0, steel); v3Box(g, 0.04, 0.04, D - 0.08, x, 0, 0, steel); });
+  } else if (key === "glass"){
+    v3Box(g, W, 0.012, D, 0, 0.72, 0, V3.glass());
+    v3Legs(g, W, D, 0.72, 0.06, 0.02, M3.metal(f.main));
+  } else {
+    v3Box(g, W, 0.035, D, 0, 0.715, 0, wood);
+    v3SplayLegs(g, W, D, 0.72, 0.08, wood);
+  }
+}
+function v3BuildChair(g, W, D, key, f){
+  const m = key === "upholstered" ? M3.fabric(f.main) : key === "cafe" ? M3.metal(f.main) : key === "ghost" ? M3.clear() : M3.wood(f.main);
+  if (key === "ghost"){ v3Legs(g, W, D, 0.45, 0.03, 0.015, m); v3Box(g, W, 0.03, D, 0, 0.45, 0, m); const b = v3Box(g, W, 0.42, 0.03, 0, 0.48, -D/2 + 0.02, m); if (b) b.rotation.x = -0.1; return; }
+  if (key === "upholstered"){
+    v3Legs(g, W*0.95, D*0.95, 0.42, 0.04, 0.016, M3.wood("#4d3626"));
+    v3Box(g, W, 0.08, D, 0, 0.42, 0, m); v3Box(g, W, 0.52, 0.07, 0, 0.46, -D/2 + 0.035, m);
+    return;
+  }
+  if (key === "cafe"){
+    v3SplayLegs(g, W, D, 0.45, 0.05, m);
+    v3Box(g, W*0.95, 0.025, D*0.9, 0, 0.45, 0, m);
+    const b = v3Box(g, W*0.85, 0.32, 0.02, 0, 0.5, -D/2 + 0.04, m); if (b) b.rotation.x = -0.18;
+    return;
+  }
+  v3Legs(g, W, D, 0.44, 0.04, 0.018, m);
+  v3Box(g, W, 0.035, D, 0, 0.44, 0, key === "ladder" ? M3.fabric("#c9b592") : m);
+  [-1, 1].forEach(sx => v3Cyl(g, 0.017, 0.017, 0.45, sx*(W/2 - 0.04), 0.47, -D/2 + 0.04, m, 8));
+  if (key === "ladder") [0.62, 0.73, 0.84].forEach(y => v3Box(g, W - 0.08, 0.05, 0.02, 0, y, -D/2 + 0.04, m));
+  else { v3Box(g, W - 0.04, 0.06, 0.03, 0, 0.86, -D/2 + 0.04, m); [-0.1, -0.03, 0.04, 0.11].forEach(x => v3Cyl(g, 0.007, 0.007, 0.36, x*W/0.45, 0.5, -D/2 + 0.04, m, 6)); }
+}
+function v3BuildCoffee(g, W, D, key, f){
+  if (key === "marble"){ const t = v3Cyl(g, W/2, W/2, 0.06, 0, 0.36, 0, M3.stone(f.main), 40); t.scale.z = D/W; const b = v3Cyl(g, W*0.35, W*0.38, 0.36, 0, 0, 0, M3.stone(shade(f.main, -0.08)), 32); b.scale.z = D/W; return; }
+  if (key === "glass"){ const met = M3.metal(f.main); v3Box(g, W, 0.012, D, 0, 0.4, 0, V3.glass()); v3Box(g, W - 0.06, 0.008, D - 0.06, 0, 0.12, 0, V3.glass());
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Box(g, 0.02, 0.4, 0.02, sx*(W/2 - 0.02), 0, sz*(D/2 - 0.02), met));
+    [-1, 1].forEach(sz => v3Box(g, W, 0.02, 0.02, 0, 0.38, sz*(D/2 - 0.02), met)); [-1, 1].forEach(sx => v3Box(g, 0.02, 0.02, D, sx*(W/2 - 0.02), 0.38, 0, met)); return; }
+  if (key === "trunk"){ const w = M3.wood(f.main), brass = M3.metal("#b8964e"); v3Box(g, W, 0.38, D, 0, 0.02, 0, w); v3Box(g, W + 0.01, 0.05, D + 0.01, 0, 0.36, 0, M3.wood(shade(f.main, -0.08)));
+    [-1, 1].forEach(sx => [-1, 1].forEach(sz => v3Box(g, 0.06, 0.42, 0.06, sx*(W/2 - 0.025), 0, sz*(D/2 - 0.025), brass))); v3Box(g, 0.08, 0.06, 0.02, 0, 0.28, D/2 + 0.005, brass); return; }
+  const w = M3.wood(f.main); v3Box(g, W, 0.04, D, 0, 0.38, 0, w); v3Box(g, W - 0.1, 0.02, D - 0.1, 0, 0.12, 0, w); v3SplayLegs(g, W, D, 0.38, 0.05, M3.wood(shade(f.main, -0.12)));
+}
+function v3BuildDesk(g, W, D, key, f){
+  const w = M3.wood(f.main);
+  if (key === "industrial"){ v3BuildTable(g, W, D, "industrial", f, false); return; }
+  if (key === "glass"){ v3Box(g, W, 0.012, D, 0, 0.73, 0, V3.glass()); const met = M3.metal(f.main); [-1, 1].forEach(sx => { const x = sx*(W/2 - 0.08); [-1, 1].forEach(sz => { const m = v3Box(g, 0.025, 0.74, 0.025, x, 0, sz*D*0.18, met); if (m) m.rotation.x = sz*0.3; }); }); return; }
+  if (key === "bureau"){
+    v3Box(g, W, 0.035, D, 0, 0.715, 0, w);
+    const pw = Math.min(0.42, W*0.35), px = W/2 - pw/2;
+    v3Box(g, pw, 0.71, D - 0.04, px, 0, -0.02, w); v3Box(g, 0.04, 0.71, D - 0.04, -W/2 + 0.02, 0, -0.02, w);
+    [0.08, 0.31, 0.52].forEach(y => { v3Box(g, pw - 0.04, 0.008, 0.01, px, y + 0.18, D/2 - 0.02, M3.wood(shade(f.main, -0.1))); v3Box(g, 0.1, 0.015, 0.02, px, y + 0.09, D/2 - 0.01, M3.metal("#b8964e")); });
+    return;
+  }
+  v3Box(g, W, 0.03, D, 0, 0.72, 0, w); v3SplayLegs(g, W, D, 0.72, 0.05, w);
+}
+function v3BuildOfficeChair(g, W, D, key, f){
+  if (key === "wooden"){ v3BuildChair(g, W*0.85, D*0.85, "scandi", f); return; }
+  const fab = key === "executive" ? M3.leather(f.main) : M3.fabric(f.main);
+  for (let i = 0; i < 5; i++){ const a = i*Math.PI*2/5, m = v3Box(g, 0.3, 0.03, 0.04, Math.cos(a)*0.15, 0.04, Math.sin(a)*0.15, V3.dark()); if (m) m.rotation.y = -a; v3Sphere(g, 0.025, 0.025, 0.025, Math.cos(a)*0.29, 0.025, Math.sin(a)*0.29, V3.black()); }
+  v3Cyl(g, 0.025, 0.025, 0.38, 0, 0.07, 0, V3.steel(), 10);
+  v3Box(g, W*0.9, 0.09, D*0.85, 0, 0.45, 0.02, fab);
+  const backH = key === "executive" ? 0.85 : 0.55, back = v3Box(g, W*0.85, backH, 0.07, 0, 0.56, -D/2 + 0.06, fab);
+  if (back) back.rotation.x = -0.1;
+  if (key === "executive") [-1, 1].forEach(sx => { v3Box(g, 0.06, 0.04, D*0.6, sx*(W/2 - 0.03), 0.66, 0.02, fab); v3Box(g, 0.03, 0.18, 0.03, sx*(W/2 - 0.03), 0.5, 0.02, V3.dark()); });
+}
+function v3BuildTv(g, W, D, key, f){
+  const tv = (y)=>{ const tw = Math.min(W*0.85, 1.45); v3Box(g, 0.25, 0.02, 0.18, 0, y, -D/2 + 0.14, V3.dark()); v3Box(g, tw, tw*0.57, 0.04, 0, y + 0.05, -D/2 + 0.14, V3.black()); };
+  if (key === "gloss"){ v3Box(g, W, 0.3, D, 0, 0.25, 0, M3.gloss(f.main)); v3Box(g, 0.006, 0.28, 0.01, 0, 0.26, D/2 + 0.002, V3.dark()); tv(0.55); return; }
+  if (key === "industrial"){ const st = M3.metal("#1f2022"), w = M3.wood(f.main);
+    [-1, 1].forEach(sx => [-1, 1].forEach(sz => v3Box(g, 0.03, 0.5, 0.03, sx*(W/2 - 0.015), 0, sz*(D/2 - 0.015), st)));
+    [0.08, 0.26, 0.47].forEach(y => v3Box(g, W, 0.03, D, 0, y, 0, w)); tv(0.5); return; }
+  if (key === "rustic"){ const w = M3.wood(f.main); v3Box(g, W, 0.5, D, 0, 0, 0, w); [0.17, 0.34].forEach(y => v3Box(g, W*0.98, 0.01, 0.01, 0, y, D/2 + 0.002, M3.wood(shade(f.main, -0.15)))); tv(0.5); return; }
+  const w = M3.wood(f.main); v3SplayLegs(g, W, D, 0.16, 0.06, w); v3Box(g, W, 0.36, D, 0, 0.16, 0, w);
+  for (let x = -W/2 + 0.03; x < W/2 - 0.02; x += 0.03) v3Box(g, 0.012, 0.3, 0.01, x, 0.19, D/2 + 0.004, M3.wood(shade(f.main, -0.1)));
+  tv(0.52);
+}
+function v3BooksRow(g, x0, x1, y, depth, seed){
+  const book = ["#7a3b3b", "#2f4f6b", "#c9a23f", "#3d6b4f", "#d9d2c3", "#5a3350", "#b5603f"];
+  let x = x0, k = seed;
+  while (x < x1 - 0.06){ const bw = 0.025 + ((k*37) % 5)*0.008, bh = 0.2 + ((k*13) % 4)*0.03; v3Box(g, bw, bh, depth*0.75, x + bw/2, y, 0, v3Mat(book[k % book.length])); x += bw + 0.004; k++; if (k % 9 === 0) x += 0.12; }
+}
+function v3BuildShelf(g, W, D, key, f){
+  const mat = key === "painted" ? M3.paint(f.main) : M3.wood(f.main);
+  if (key === "ladder"){
+    [-1, 1].forEach(sx => { const m = v3Box(g, 0.04, 1.85, 0.04, sx*(W/2 - 0.02), 0, 0, mat); if (m) m.rotation.x = 0.16; });
+    for (let i = 0; i < 5; i++){ const y = 0.05 + i*0.38, d = D*(1 - i*0.15), z = -0.15*(y/1.85) + 0.15 - d/2; v3Box(g, W - 0.06, 0.025, d, 0, y, z - 0.05, mat); if (i < 4){ const sub = new THREE.Group(); sub.position.z = z - 0.05; g.add(sub); v3BooksRow(sub, -W/2 + 0.05, W/2 - 0.05, y + 0.025, d, i*3); } }
+    return;
+  }
+  v3Box(g, W, 1.9, 0.02, 0, 0, -D/2 + 0.01, mat);
+  [-W/2 + 0.01, W/2 - 0.01].forEach(x => v3Box(g, 0.02, 1.9, D, x, 0, 0, mat));
+  for (let i = 0; i < 6; i++){ const y = 0.02 + i*0.37; v3Box(g, W - 0.04, 0.02, D, 0, y, 0, mat); if (i < 5) v3BooksRow(g, -W/2 + 0.04, W/2 - 0.04, y + 0.02, D, i*3); }
+}
+function v3BuildWardrobe(g, W, D, key, f){
+  const mat = key === "oak" ? M3.wood(f.main) : key === "mirror" ? M3.metal(f.main) : M3.paint(f.main);
+  v3Box(g, W, 2.0, D, 0, 0.05, 0, mat); v3Box(g, W, 0.05, D - 0.04, 0, 0, -0.02, V3.dark());
+  const front = D/2 + 0.004, doors = Math.max(2, Math.round(W/0.5)), dw = W/doors;
+  if (key === "mirror"){ [-1, 1].forEach(s => v3Box(g, W/2 - 0.04, 1.9, 0.01, s*W/4, 0.1, front, v3Mat("#dfe9ee", {roughness: 0.04, metalness: 0.9}))); return; }
+  for (let i = 1; i < doors; i++) v3Box(g, 0.005, 1.9, 0.01, -W/2 + dw*i, 0.1, front, V3.dark());
+  for (let i = 0; i < doors; i++){
+    const cx = -W/2 + dw*(i + 0.5), hx = cx + (i % 2 ? -1 : 1)*(dw/2 - 0.05);
+    if (key === "shaker"){ const fr = M3.paint(shade(f.main, -0.04)); [[0.15],[1.97]].forEach(([y]) => v3Box(g, dw - 0.03, 0.06, 0.015, cx, y, front, fr)); [-1, 1].forEach(s => v3Box(g, 0.06, 1.88, 0.015, cx + s*(dw/2 - 0.045), 0.12, front, fr)); v3Sphere(g, 0.015, 0.015, 0.015, hx, 1.05, front + 0.02, M3.metal("#b8964e")); }
+    else v3Box(g, 0.015, 0.35, 0.025, hx, 0.9, front + 0.01, key === "oak" ? M3.metal("#1f2022") : V3.steel());
+  }
+}
+function v3BuildCabinet(g, W, D, key, f, tall){
+  const h = tall ? 0.85 : 0.5, n = tall ? 4 : 2, legs = key === "midcentury" ? 0.14 : 0.06;
+  const mat = key === "shaker" ? M3.paint(f.main) : key === "gloss" ? M3.gloss(f.main) : M3.wood(f.main);
+  if (key === "midcentury") v3SplayLegs(g, W, D, legs, 0.05, mat); else v3Box(g, W - 0.04, legs, D - 0.04, 0, 0, -0.01, V3.dark());
+  v3Box(g, W, h - legs, D, 0, legs, 0, mat);
+  const dh = (h - legs)/n, front = D/2 + 0.004;
+  for (let i = 0; i < n; i++){
+    const y = legs + dh*i;
+    if (i) v3Box(g, W*0.97, 0.006, 0.01, 0, y, front, V3.dark());
+    if (key === "shaker") v3Sphere(g, 0.016, 0.016, 0.016, 0, y + dh/2, front + 0.015, M3.metal("#b8964e"));
+    else if (key === "gloss") v3Box(g, W*0.97, 0.012, 0.012, 0, y + dh - 0.02, front, V3.dark());
+    else if (key === "midcentury") v3Box(g, 0.1, 0.03, 0.012, 0, y + dh - 0.04, front - 0.002, M3.wood(shade(f.main, -0.15)));
+    else v3Box(g, 0.12, 0.015, 0.02, 0, y + dh/2, front + 0.008, V3.steel());
+  }
+}
+// A kitchen base cabinet (w × d at x, z) in a kitchen style; `top` is its worktop finish.
+function v3KitchenUnit(g, w, d, x, z, key, f, opts = {}){
+  const doorMat = key === "handleless" ? M3.gloss(f.main) : M3.paint(f.main), front = z + d/2;
+  v3Box(g, w, 0.1, d - 0.06, x, 0, z - 0.03, V3.dark());
+  v3Box(g, w, 0.72, d - 0.02, x, 0.1, z - 0.01, doorMat);
+  if (opts.top !== false) v3Box(g, w, 0.04, d + 0.02, x, 0.86, z + 0.01, f.top === "#b08457" || f.top === "#6e4a32" ? M3.wood(f.top) : M3.stone(f.top));
+  if (opts.plain) return;
+  if (key === "shaker"){
+    const fr = M3.paint(shade(f.main, -0.05));
+    [[0.12],[0.76]].forEach(([y]) => v3Box(g, w - 0.03, 0.055, 0.012, x, y, front, fr));
+    [-1, 1].forEach(s => v3Box(g, 0.055, 0.64, 0.012, x + s*(w/2 - 0.04), 0.12, front, fr));
+    v3Box(g, 0.08, 0.015, 0.02, x, 0.7, front + 0.012, M3.metal("#b8964e"));
+  } else if (key === "handleless") v3Box(g, w, 0.035, 0.012, x, 0.79, front - 0.006, V3.black());
+  else v3Box(g, Math.min(0.3, w*0.6), 0.012, 0.022, x, 0.76, front + 0.012, M3.metal("#1f2022"));
+}
+function v3BuildKitchen(g, b, W, D, key, f, H, cut){
+  const t = b.type;
+  if (t === "kitchen"){
+    if (D <= 0.4){ // a 30cm unit is a wall cupboard, hung above the worktop (and gone with the walls cut down)
+      if (cut < H) return;
+      const y0 = 1.45, h = Math.min(0.72, H - 0.05 - y0), sub = new THREE.Group(); sub.position.y = y0 - 0.1; g.add(sub);
+      const mat = key === "handleless" ? M3.gloss(f.main) : M3.paint(f.main);
+      v3Box(sub, W, h, D, 0, 0.1, 0, mat);
+      if (key === "shaker"){ const fr = M3.paint(shade(f.main, -0.05)); [0.12, 0.04 + h].forEach(y => v3Box(sub, W - 0.03, 0.05, 0.012, 0, y, D/2 + 0.002, fr)); v3Sphere(sub, 0.014, 0.014, 0.014, W/2 - 0.06, 0.18, D/2 + 0.015, M3.metal("#b8964e")); }
+      else if (key !== "handleless") v3Box(sub, 0.02, 0.15, 0.02, W/2 - 0.05, 0.15, D/2 + 0.01, M3.metal("#1f2022"));
+      return;
+    }
+    if (b.under === "washer" || b.under === "dryer"){ v3Appliance(g, b.under, W, D - 0.02, 0, -0.02); v3Box(g, W, 0.04, D + 0.02, 0, 0.86, 0.01, M3.stone(f.top)); return; } // slid in under the worktop
+    if (b.under === "oven"){ v3KitchenUnit(g, W, D, 0, 0, key, f, {plain: true}); v3Box(g, W*0.9, 0.58, 0.01, 0, 0.14, D/2 + 0.003, V3.black()); v3Box(g, W*0.7, 0.015, 0.025, 0, 0.66, D/2 + 0.015, V3.steel()); return; }
+    if (b.under === "fridge" || b.under === "washerstack"){ v3KitchenUnit(g, W, D, 0, 0, key, f); return; }
+    v3KitchenUnit(g, W, D, 0, 0, key, f);
+    return;
+  }
+  if (t === "dishwasher"){ v3KitchenUnit(g, W, D, 0, 0, key, f); return; } // integrated, behind a matching door
+  if (t === "sink"){
+    if (key === "shaker"){ // a butler sink sitting proud of the units
+      v3KitchenUnit(g, W, D, 0, 0, key, f, {top: false});
+      v3Box(g, W, 0.04, 0.14, 0, 0.86, -D/2 + 0.07, M3.stone(f.top));
+      v3Box(g, Math.min(W - 0.04, 0.6), 0.24, D - 0.12, 0, 0.66, 0.06, V3.ceramic());
+      v3Box(g, Math.min(W - 0.04, 0.6) - 0.06, 0.01, D - 0.18, 0, 0.9, 0.06, v3Mat("#d9dde0", {roughness: 0.2}));
+      v3Cyl(g, 0.018, 0.022, 0.3, 0, 0.9, -D/2 + 0.07, M3.metal("#b8964e"), 12);
+      return;
+    }
+    v3KitchenUnit(g, W, D, 0, 0, key, f);
+    v3Box(g, Math.min(W*0.8, 0.6), 0.012, D*0.6, 0, 0.9, 0.03, V3.steel());
+    v3Cyl(g, 0.018, 0.022, 0.3, 0, 0.9, -D/2 + 0.08, V3.steel(), 12);
+    return;
+  }
+  // corner (L) unit: arms along the back (−z) and the left (−x)
+  const ad = (b.armDepthCm || 60)/100;
+  v3KitchenUnit(g, W, ad, 0, -D/2 + ad/2, key, f);
+  const arm = new THREE.Group(); arm.rotation.y = Math.PI/2; arm.position.set(-W/2 + ad/2, 0, ad/2); g.add(arm);
+  v3KitchenUnit(arm, D - ad, ad, 0, 0, key, f);
+}
+function v3BuildBath(g, W, D, key, f){
+  if (key === "rolltop"){
+    const out = M3.gloss(f.main), tub = new THREE.Group(); g.add(tub);
+    const body = v3Cyl(tub, 0.5, 0.42, 0.5, 0, 0.12, 0, out, 32); body.scale.set(W/1.0, 1, D/1.0);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.035, 10, 40), V3.ceramic()); rim.rotation.x = Math.PI/2; rim.scale.set(W/1.0, D/1.0, 1); rim.position.y = 0.62; g.add(rim);
+    const inner = v3Cyl(g, 0.46, 0.4, 0.02, 0, 0.58, 0, v3Mat("#eef3f5", {roughness: 0.1}), 32); inner.scale.set(W/1.0, 1, D/1.0);
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => v3Sphere(g, 0.04, 0.07, 0.04, sx*W*0.36, 0.06, sz*D*0.3, M3.metal("#b8964e")));
+    v3Cyl(g, 0.015, 0.015, 0.75, -W/2 + 0.05, 0, 0, M3.metal("#b8964e"), 10);
+    return;
+  }
+  if (key === "modern"){
+    const s = v3Mat("#f4f2ee", {roughness: 0.4});
+    const body = v3Cyl(g, 0.5, 0.46, 0.56, 0, 0, 0, s, 40); body.scale.set(W/1.0, 1, D/1.0);
+    const inner = v3Cyl(g, 0.45, 0.45, 0.01, 0, 0.56, 0, v3Mat("#dfeef3", {roughness: 0.1}), 40); inner.scale.set(W/1.0, 1, D/1.0);
+    v3Cyl(g, 0.02, 0.02, 0.9, -W/2 - 0.08, 0, 0, V3.steel(), 10);
+    return;
+  }
+  const panel = M3.gloss(f.main);
+  v3Box(g, W, 0.12, D, 0, 0, 0, V3.ceramic());
+  v3Box(g, W, 0.44, 0.06, 0, 0.12, -D/2 + 0.03, V3.ceramic()); v3Box(g, W, 0.44, 0.06, 0, 0.12, D/2 - 0.03, panel);
+  [-W/2 + 0.03, W/2 - 0.03].forEach(x => v3Box(g, 0.06, 0.44, D, x, 0.12, 0, V3.ceramic()));
+  v3Box(g, W - 0.12, 0.02, D - 0.12, 0, 0.12, 0, v3Mat("#dfeef3", {roughness: 0.1}));
+  v3Cyl(g, 0.02, 0.02, 0.18, -W/2 + 0.15, 0.56, 0, V3.steel(), 10);
+}
+function v3BuildBasin(g, W, D, key, f){
+  const tap = () => v3Cyl(g, 0.015, 0.018, 0.18, 0, 0.92, -D/2 + 0.06, V3.steel(), 10);
+  if (key === "pedestal"){ v3Cyl(g, 0.07, 0.11, 0.78, 0, 0, -0.04, V3.ceramic(), 20); v3Box(g, W, 0.14, D, 0, 0.78, 0, V3.ceramic()); tap(); return; }
+  if (key === "wallhung"){ v3Box(g, W*0.95, 0.3, D*0.9, 0, 0.5, -D*0.05, M3.gloss(f.main)); v3Box(g, W, 0.08, D, 0, 0.8, 0, V3.ceramic()); tap(); return; }
+  v3Box(g, W*0.9, 0.7, D*0.9, 0, 0.1, -D*0.05, M3.wood(f.main));
+  v3Box(g, W, 0.12, D, 0, 0.8, 0, V3.ceramic());
+  tap();
+}
+function v3BuildToilet(g, W, D, key){
+  const bowl = (y0) => { const m = v3Cyl(g, 0.19, 0.15, 0.4 - y0, 0, y0, 0.06, V3.ceramic(), 24); m.scale.z = 1.3; v3Box(g, 0.36, 0.02, 0.44, 0, 0.4, 0.06, V3.white()); };
+  if (key === "wallhung"){ v3Box(g, W*0.95, 1.0, 0.16, 0, 0, -D/2 + 0.08, V3.white()); v3Box(g, 0.2, 0.13, 0.01, 0, 0.9, -D/2 + 0.165, V3.steel()); bowl(0.12); return; }
+  if (key === "highlevel"){ v3Box(g, 0.48, 0.25, 0.22, 0, 1.85, -D/2 + 0.11, V3.ceramic()); v3Cyl(g, 0.02, 0.02, 1.45, 0, 0.4, -D/2 + 0.06, M3.metal("#b8964e"), 10); v3Cyl(g, 0.004, 0.004, 0.6, 0.2, 1.25, -D/2 + 0.2, M3.metal("#b8964e"), 4); bowl(0); v3Box(g, 0.36, 0.025, 0.44, 0, 0.4, 0.06, M3.wood("#6e4a32")); return; }
+  v3Box(g, W*0.95, 0.4, 0.18, 0, 0.4, -D/2 + 0.09, V3.ceramic()); bowl(0);
+}
+function v3BuildFireplace(g, W, D, key, f, H){
+  if (key === "woodburner"){
+    v3Box(g, W, H, D, 0, 0, 0, M3.paint(f.main === "#3d3f43" ? "#f1eee8" : f.main));
+    v3Box(g, W*0.75, 1.05, 0.02, 0, 0.1, D/2 + 0.001, v3Mat("#8a4a35", {roughness: 0.95})); // brick back
+    v3Box(g, W*0.85, 0.08, 0.3, 0, 0, D/2 + 0.12, M3.stone("#3a3c40"));
+    const stove = M3.metal(f.main); v3Box(g, 0.48, 0.55, 0.38, 0, 0.12, D/2 - 0.05, stove); v3Box(g, 0.32, 0.26, 0.01, 0, 0.26, D/2 + 0.145, v3Mat("#ff8a3d", {emissive: "#ff5a1f", emissiveIntensity: 0.6}));
+    v3Cyl(g, 0.065, 0.065, 0.5, 0, 0.67, D/2 - 0.08, stove, 16);
+    v3Box(g, W*0.9, 0.12, 0.25, 0, 1.15, D/2 + 0.02, M3.wood("#6e4a32"));
+    return;
+  }
+  if (key === "modern"){
+    v3Box(g, W, H, D, 0, 0, 0, M3.paint(f.main));
+    v3Box(g, W*0.8, 0.35, 0.02, 0, 0.45, D/2 + 0.001, V3.black());
+    for (let i = 0; i < 6; i++) v3Sphere(g, 0.05, 0.08, 0.03, -W*0.3 + i*W*0.12, 0.52, D/2 + 0.01, v3Mat("#ff9a4d", {emissive: "#ff6a1f", emissiveIntensity: 0.8}));
+    return;
+  }
+  v3Box(g, W, H, D, 0, 0, 0, V3.wall());
+  const sur = M3.paint(f.main);
+  [-1, 1].forEach(s => v3Box(g, 0.2, 1.1, 0.06, s*(W/2 - 0.1), 0, D/2 + 0.03, sur));
+  v3Box(g, W, 0.22, 0.06, 0, 0.88, D/2 + 0.03, sur); v3Box(g, W + 0.12, 0.05, 0.2, 0, 1.1, D/2 + 0.05, sur);
+  v3Box(g, W - 0.4, 0.86, 0.02, 0, 0, D/2 + 0.005, v3Mat("#2f6f73", {roughness: 0.2})); // tiled slips
+  v3Box(g, W*0.4, 0.55, 0.03, 0, 0.1, D/2 + 0.01, V3.black());
+  v3Box(g, W*0.9, 0.04, 0.3, 0, 0, D/2 + 0.15, v3Mat("#2f6f73", {roughness: 0.2}));
+}
+function v3BuildFridge(g, W, D, key, f){
+  if (key === "retro"){
+    const p = M3.gloss(f.main); v3Box(g, W, 1.45, D - 0.1, 0, 0.1, -0.05, p);
+    v3Rod(g, D/2 - 0.05, W, 0, 1.55, -0.05, "x", p, 24);
+    v3Box(g, W*0.9, 0.006, 0.01, 0, 1.1, D/2 - 0.095, V3.dark());
+    [-1, 1].forEach(s => v3Cyl(g, 0.02, 0.02, 0.1, s*(W/2 - 0.06), 0, 0, V3.steel(), 8));
+    v3Box(g, 0.03, 0.18, 0.04, W/2 - 0.08, 1.2, D/2 - 0.08, V3.steel());
+    return;
+  }
+  const m = M3.metal(f.main), h = key === "american" ? 1.78 : 1.8;
+  v3Box(g, W, h, D, 0, 0, 0, m);
+  if (key === "american"){ v3Box(g, 0.006, h - 0.04, 0.01, 0, 0.02, D/2 + 0.002, V3.dark()); [-1, 1].forEach(s => v3Box(g, 0.025, 0.7, 0.04, s*0.05, 0.7, D/2 + 0.02, V3.steel())); v3Box(g, 0.22, 0.3, 0.01, -W/4, 1.0, D/2 + 0.004, V3.black()); return; }
+  v3Box(g, W*0.98, 0.01, 0.01, 0, 1.15, D/2 + 0.005, V3.dark());
+  v3Box(g, 0.02, 0.4, 0.03, W/2 - 0.06, 1.25, D/2 + 0.015, V3.dark());
+  v3Box(g, 0.02, 0.4, 0.03, W/2 - 0.06, 0.6, D/2 + 0.015, V3.dark());
+}
+function v3BuildRadiator(g, W, D, key, f){
+  if (key === "column"){ const m = M3.paint(f.main); for (let x = -W/2 + 0.025; x < W/2; x += 0.05) v3Box(g, 0.035, 0.6, Math.max(0.06, D), x, 0.12, 0, m); v3Box(g, W, 0.03, Math.max(0.06, D)*0.6, 0, 0.66, 0, m); [-1, 1].forEach(s => v3Cyl(g, 0.012, 0.012, 0.12, s*(W/2 - 0.03), 0, 0, m, 8)); return; }
+  if (key === "vertical"){ const m = M3.metal(f.main), h = 1.75; for (let x = -W/2 + 0.04; x < W/2; x += 0.08) v3Box(g, 0.05, h, 0.03, x, 0.15, 0, m); return; }
+  v3Box(g, W, 0.6, Math.max(0.06, D), 0, 0.15, 0, M3.paint(f.main));
+}
+// Builds b in its style; false when its type has no styles (v3Furniture then uses its own model).
+function v3BuildStyled(g, b, W, D, H, cut){
+  const fam = STYLE_FAMILY_OF[b.type], st = fam && furnitureStyleOf(b);
+  if (!st) return false;
+  const f = furnitureFinishes(b, st), k = st.key;
+  switch (fam){
+    case "sofa": v3BuildSofa(g, b, W, D, k, f); break;
+    case "bed": v3BuildBed(g, b, W, D, k, f); break;
+    case "table": v3BuildTable(g, W, D, k, f, false); break;
+    case "roundtable": v3BuildTable(g, W, D, k, f, true); break;
+    case "chair": v3BuildChair(g, W, D, k, f); break;
+    case "coffee": v3BuildCoffee(g, W, D, k, f); break;
+    case "desk": v3BuildDesk(g, W, D, k, f); break;
+    case "officechair": v3BuildOfficeChair(g, W, D, k, f); break;
+    case "tvunit": v3BuildTv(g, W, D, k, f); break;
+    case "shelf": v3BuildShelf(g, W, D, k, f); break;
+    case "wardrobe": v3BuildWardrobe(g, W, D, k, f); break;
+    case "cabinet": v3BuildCabinet(g, W, D, k, f, b.type === "drawers"); break;
+    case "kitchen": v3BuildKitchen(g, b, W, D, k, f, H, cut); break;
+    case "bath": v3BuildBath(g, W, D, k, f); break;
+    case "basin": v3BuildBasin(g, W, D, k, f); break;
+    case "toilet": v3BuildToilet(g, W, D, k); break;
+    case "fireplace": v3BuildFireplace(g, W, D, k, f, H); break;
+    case "fridge": v3BuildFridge(g, W, D, k, f); break;
+    case "radiator": v3BuildRadiator(g, W, D, k, f); break;
+    default: return false;
+  }
+  return true;
+}
+
+// --- style thumbnails: each style rendered once at the selected item's size and colours
+let thumbRenderer = null;
+const thumbCache = new Map();
+function styleThumb(b, styleKey){
+  const probe = {...b, style: styleKey, finishes: b.style === styleKey ? b.finishes : undefined};
+  const key = JSON.stringify([b.type, styleKey, probe.finishes || null, Math.round(b.wCm/10), Math.round(b.dCm/10), b.cornerSide || 0, b.under || ""]);
+  if (thumbCache.has(key)) return thumbCache.get(key);
+  if (!thumbRenderer){
+    thumbRenderer = new THREE.WebGLRenderer({antialias: true, alpha: true, preserveDrawingBuffer: true});
+    thumbRenderer.setSize(160, 120, false); thumbRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  }
+  const scene = new THREE.Scene();
+  if (!thumbRenderer.env) thumbRenderer.env = v3Environment(thumbRenderer);
+  scene.environment = thumbRenderer.env; scene.environmentIntensity = 0.5;
+  scene.add(new THREE.HemisphereLight("#ffffff", "#8a8070", 1.8));
+  const sun = new THREE.DirectionalLight("#fff3e0", 2.2); sun.position.set(2, 4, 3); scene.add(sun);
+  const g = new THREE.Group(); scene.add(g);
+  if (!v3BuildStyled(g, probe, b.wCm/100, b.dCm/100, 2.4, 2.4)) return "";
+  const box = new THREE.Box3().setFromObject(g), c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length()/2;
+  const cam = new THREE.PerspectiveCamera(30, 4/3, 0.01, 50), dir = new THREE.Vector3(0.75, 0.6, 1.25).normalize();
+  cam.position.copy(c).addScaledVector(dir, r/Math.sin(15*Math.PI/180)*0.95); cam.lookAt(c);
+  thumbRenderer.render(scene, cam);
+  const url = thumbRenderer.domElement.toDataURL("image/png");
+  g.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  thumbCache.set(key, url);
+  return url;
+}
+
+// --- the Style section of the selection panel
+let stylePanelSig = "";
+function styleTargets(){
+  const boxes = (multiSelection.length ? multiSelection.filter(s => s.kind === "box").map(s => getBox(s.id)) : selection && selection.kind === "box" ? [getBox(selection.id)] : []).filter(Boolean);
+  if (!boxes.length) return null;
+  const fam = STYLE_FAMILY_OF[boxes[0].type];
+  if (!fam || boxes.some(b => STYLE_FAMILY_OF[b.type] !== fam)) return null; // a mixed group has no one catalogue
+  return {boxes, fam, family: FURNITURE_STYLES[fam]};
+}
+function updateStylePanel(){
+  const wrap = document.getElementById("fldStyleWrap"), t = styleTargets();
+  wrap.style.display = t ? "flex" : "none";
+  if (!t){ stylePanelSig = ""; return; }
+  const b = t.boxes[0], st = furnitureStyleOf(b), fin = furnitureFinishes(b, st);
+  const sig = JSON.stringify([t.boxes.map(x => x.id), b.style, b.finishes, b.wCm, b.dCm, b.cornerSide, b.under, !!THREE]);
+  if (sig === stylePanelSig) return;
+  stylePanelSig = sig;
+  const tiles = document.getElementById("styleTiles"), sw = document.getElementById("styleSwatches");
+  tiles.innerHTML = ""; sw.innerHTML = "";
+  t.family.styles.forEach(s=>{
+    const btn = document.createElement("button");
+    btn.className = "styleTile" + (s.key === st.key ? " active" : "");
+    btn.title = s.desc;
+    const img = document.createElement("img"); img.alt = "";
+    if (THREE) img.src = styleThumb(b, s.key);
+    const lab = document.createElement("span"); lab.textContent = s.label;
+    btn.append(img, lab);
+    btn.addEventListener("click", ()=> setFurnitureStyle(t.boxes, s.key));
+    tiles.appendChild(btn);
+  });
+  if (!THREE) loadThree().then(() => { stylePanelSig = ""; updateStylePanel(); }).catch(()=>{});
+  if (!st.noFinish) t.family.slots.forEach(slot=>{
+    const head = document.createElement("div"); head.className = "styleSlotHead";
+    head.textContent = `${slot.label}: ${FINISH_NAMES.get((fin[slot.key]||"").toLowerCase()) || ""}`;
+    const chips = document.createElement("div"); chips.className = "rugChips";
+    slotPalette(st, slot).forEach(([name, hex])=>{
+      const c = document.createElement("button");
+      c.style.background = hex; c.title = name;
+      if (hex.toLowerCase() === (fin[slot.key]||"").toLowerCase()) c.classList.add("active");
+      c.addEventListener("click", ()=> setFurnitureFinish(t.boxes, slot.key, hex));
+      chips.appendChild(c);
+    });
+    sw.append(head, chips);
+  });
+  const all = activeFloor().boxes.filter(x => x.kind === "furniture" && STYLE_FAMILY_OF[x.type] === t.fam);
+  const match = document.getElementById("btnStyleMatchAll");
+  match.hidden = all.length <= t.boxes.length;
+  match.textContent = t.fam === "kitchen" ? `Use on the whole kitchen (${all.length} units)` : `Use on all ${all.length} ${STYLE_FAMILY_PLURAL[t.fam]} on this floor`;
+  match.onclick = ()=> matchStyleToAll(b, all);
+}
+function setFurnitureStyle(boxes, key){
+  pushUndoSnapshot();
+  boxes.forEach(b=>{
+    if (b.style !== key){ b.style = key; delete b.finishes; } // a new style starts in its own colours
+    rememberStyle(b);
+  });
+  scheduleAutosave(); updateStylePanel(); render();
+}
+function setFurnitureFinish(boxes, slot, hex){
+  pushUndoSnapshot();
+  boxes.forEach(b=>{
+    if (!b.style) b.style = furnitureStyleOf(b).key;
+    b.finishes = {...(b.finishes || {}), [slot]: hex};
+    rememberStyle(b);
+  });
+  scheduleAutosave(); updateStylePanel(); render();
+}
+function matchStyleToAll(src, all){
+  pushUndoSnapshot();
+  const style = furnitureStyleOf(src).key;
+  all.forEach(b=>{ b.style = style; if (src.finishes) b.finishes = {...src.finishes}; else delete b.finishes; });
+  scheduleAutosave(); updateStylePanel(); render();
 }
 
 // --- walls, windows and doors
@@ -9366,7 +10008,8 @@ async function openView3d(){
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#cdd7e1");
-    scene.add(new THREE.HemisphereLight("#eef4ff", "#b6a48a", 1.4));
+    scene.environment = v3Environment(renderer); scene.environmentIntensity = 0.45;
+    scene.add(new THREE.HemisphereLight("#eef4ff", "#b6a48a", 1.1));
     scene.add(new THREE.AmbientLight("#ffffff", 0.35));
     const sun = new THREE.DirectionalLight("#fff3e0", 2.4);
     sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
