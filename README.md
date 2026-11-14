@@ -635,7 +635,13 @@ The 3D view is also an editor: without Space held, a press picks things rather t
 - **Outside finish carries up:** a floor without its own outside finish uses the one below (`floorExterior`).
 - **Saving:** `exterior` (and `stack` and `roomHM`) are now kept by `normalizeFloor`. Before this, the outside finish was lost on reload.
 - **Fix:** where an inside wall meets an outside wall, the outside finish no longer creeps a few centimetres onto the inside face.
-- **Next:** stage 2, one staircase connecting floors (stair height from the floor-to-floor gap, a stairwell hole cut in the floor above, the stair outline on the upstairs plan, and stairs drawn on both floors treated as one). After that, walking up the stairs between floors, and roofs.
+- **One staircase between floors (stage 2):** in Whole house, a staircase going up from a floor with the next floor in the scene climbs room height + floor depth and lands on that floor. Its rise per step comes from its tread count as before.
+  - It opens a stairwell in the floor above, covering the stretch of the flight from where headroom under that floor drops below 2m (`stairWellStart`) to the top. The opening is cut out of the upper floor's texture and the lower floor's ceiling texture (`v3CutHoles`).
+  - The opening's edge is lined in ceiling white, and a landing banister in the stair's own style runs along each side set to banister and across the low end, leaving the top open (`v3StairWell`).
+  - On the upstairs plan the stairwell shows hatched, with "stairwell" written in it, even when the ghost of the floor below is off (`drawStairWells`).
+  - A staircase also drawn on the upper floor (plans often show it "down") that sits over one coming up from below counts as the same staircase, and isn't built in 3D (`isStairTopFromBelow`).
+  - Walking about, every floor in the house gets its ceiling, so looking up the stairwell shows the floor above.
+- **Next:** walking up the stairs between floors, and roofs.
 
 ## Installable app and updates (2026-10-24)
 

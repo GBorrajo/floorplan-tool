@@ -2105,6 +2105,7 @@ function render(){
   if (showOverlay){
     if (showFlooring) drawFlooring();
     drawFloorBelowGhost();
+    drawStairWells();
     drawStackPick();
     drawFloorHover();
     drawWalls();
@@ -4222,6 +4223,83 @@ function autoStackFloor(f, opts = {}){
   f.stack = {x: Math.round(best.tx*1000)/1000, z: Math.round(best.tz*1000)/1000, rot};
   const outside = mine.filter(p => p.w > 1), on = outside.filter(p => dist(p.x*best.sg + best.tx, p.y*best.sg + best.tz) < 0.1).length;
   return {cover: outside.length ? on/outside.length : null, scale: best.sg};
+}
+// --- Stairwells: a staircase going up from one floor opens a hole in the floor above it — over the stretch of the
+// flight from where there'd be less than 2m headroom under that floor, to the top. (Whole house view and the plan.)
+const STAIR_HEADROOM_M = 2.0, STAIRWELL_MARGIN_CM = 3;
+// how far along the flight (same units as geo.total) the opening starts, for a floor with rooms H metres high
+function stairWellStart(total, H){ return total*Math.max(0, Math.min(0.9, (H - STAIR_HEADROOM_M)/(H + FLOOR_DEPTH_M))); }
+// The centreline from `s0` to the top, then its two edges `off` out to either side (mitred at the turns):
+// {left, right} point lists, side +1 being the left going up (as in v3Stairs).
+function stairEdgesFrom(pts, s0, off){
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y));
+  const q = stairPointAt(pts, s0), path = [{x: q.x, y: q.y}];
+  pts.forEach((p, i) => { if (cum[i] > s0 + 1e-6) path.push(p); });
+  if (path.length < 2) path.push(pts.at(-1));
+  const nrm = (a, c) => { const l = Math.hypot(c.x - a.x, c.y - a.y) || 1; return {x: (c.y - a.y)/l, y: -(c.x - a.x)/l}; };
+  const side = sd => path.map((p, i)=>{
+    const n1 = nrm(path[Math.max(0, i-1)], path[Math.max(1, i)]), n2 = nrm(path[Math.min(i, path.length-2)], path[Math.min(i+1, path.length-1)]);
+    const mx = n1.x + n2.x, my = n1.y + n2.y, ml = Math.hypot(mx, my) || 1, sc = 1/Math.max(0.3, (mx*n1.x + my*n1.y)/ml);
+    return {x: p.x + mx/ml*sd*off*sc, y: p.y + my/ml*sd*off*sc};
+  });
+  return {left: side(1), right: side(-1)};
+}
+// Every staircase going up from `lower`, with its stairwell and its whole footprint as outlines in `lower`'s plan units.
+function stairWells(lower){
+  return withFloor(lower, ()=> lower.boxes.filter(b => b.type === "stairs" && b.direction !== "down").map(b=>{
+    const geo = stairGeometry(b), W = stairWidth(b), H = floorRoomH(lower);
+    const toPlan = q => { const o = rotate(cmToWorld(q.x), cmToWorld(q.y), b.rotation || 0); return {x: b.x + o.x, y: b.y + o.y}; };
+    const ring = e => [...e.left, ...e.right.reverse()].map(toPlan);
+    return {b, hole: ring(stairEdgesFrom(geo.pts, stairWellStart(geo.total, H), W/2 + STAIRWELL_MARGIN_CM)), full: ring(stairEdgesFrom(geo.pts, 0, W/2))};
+  }));
+}
+// The stairwells opening into floor `f` from the floor below, in `f`'s own plan units.
+function stairWellsInto(f){
+  const below = floorBelow(f);
+  if (!below) return [];
+  const map = p => { const h = floorToHouse(below, p.x, p.y); return houseToFloor(f, h.x, h.z); };
+  return stairWells(below).map(w => ({b: w.b, hole: w.hole.map(map), full: w.full.map(map)}));
+}
+function pointInPoly(p, poly){
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const a = poly[i], c = poly[j];
+    if ((a.y > p.y) !== (c.y > p.y) && p.x < (c.x - a.x)*(p.y - a.y)/(c.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+// A staircase drawn on an upper floor too (as plans often show it, "down") is the top of the same one from below:
+// true if `b` on floor `f` sits over a staircase coming up from the floor below.
+function isStairTopFromBelow(f, b){
+  if (b.type !== "stairs") return false;
+  const mine = withFloor(f, () => boxCornersPoly(b)), mid = poly => poly.reduce((a, p) => ({x: a.x + p.x/poly.length, y: a.y + p.y/poly.length}), {x: 0, y: 0});
+  return stairWellsInto(f).some(w => pointInPoly({x: b.x, y: b.y}, w.full) || pointInPoly(mid(w.full), mine));
+}
+function boxCornersPoly(b){
+  const hw = cmToWorld(b.wCm)/2, hd = cmToWorld(b.dCm)/2;
+  return [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([x, y]) => { const o = rotate(x, y, b.rotation || 0); return {x: b.x + o.x, y: b.y + o.y}; });
+}
+// On the plan of the floor above: each stairwell as a dark, hatched opening with the stairs arriving into it.
+function drawStairWells(){
+  const wells = stairWellsInto(activeFloor());
+  if (!wells.length) return;
+  ctx.save();
+  wells.forEach(w=>{
+    const pts = w.hole.map(p => toScreen(p.x, p.y));
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath();
+    ctx.fillStyle = "rgba(10,12,16,0.55)"; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.strokeStyle = "rgba(255,255,255,0.10)"; ctx.lineWidth = 1;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    for (let x = x0 - (y1 - y0); x < x1; x += 9){ ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x + (y1 - y0), y0); ctx.stroke(); }
+    ctx.restore();
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); // (the hatching replaced the path)
+    ctx.strokeStyle = "rgba(230,235,245,0.75)"; ctx.lineWidth = 1.2; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    const c = pts.reduce((a, p) => ({x: a.x + p.x/pts.length, y: a.y + p.y/pts.length}), {x: 0, y: 0});
+    ctx.fillStyle = "rgba(230,235,245,0.85)"; ctx.font = "11px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("stairwell", c.x, c.y);
+  });
+  ctx.restore();
 }
 // Every floor above the ground placed somewhere (each new one lined up on the one below it).
 function ensureHouseStacked(){
@@ -9990,8 +10068,10 @@ function v3Tube(g, pts, r, mat){
 }
 // A staircase in its style (see FURNITURE_STYLES.stairs): treads laid along its centreline (winders round a
 // curved turn, a flat landing at a sharp one), and each side's banister or wall rail following the pitch.
-function v3Stairs(g, b, H, key = "classic", f = {}){
+function v3Stairs(g, b, roomH, key = "classic", f = {}){
   const geo = stairGeometry(b), W = stairWidth(b)/100, up = b.direction !== "down";
+  // with the floor above in the scene (Whole house), it climbs through the floor's depth to land on it
+  const toFloorAbove = up && !!(v3 && v3.reachUp && v3.reachUp.has(activeFloor().id)), H = roomH + (toFloorAbove ? FLOOR_DEPTH_M : 0);
   const pts = geo.pts.map(p => ({x: p.x/100, z: p.y/100})), total = geo.total/100, going = STAIR_GOING_CM/100;
   const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].z - pts[i-1].z));
   // the treads: [s0, s1, landing?] along the centreline
@@ -10089,6 +10169,41 @@ function v3Stairs(g, b, H, key = "classic", f = {}){
     const rr = key === "victorian" ? 0.035 : key === "industrial" ? 0.02 : key === "floating" ? 0.018 : 0.028;
     v3Tube(g, ss.map(e => { const p = sideP(e.s, side, off, e.j); return new THREE.Vector3(p.x, railY(e.s) + (glass ? 0 : 0.01), p.z); }), rr, rm);
   });
+  if (toFloorAbove) v3StairWell(g, pts, total, W, roomH, H, key, sideKind, {fm, rm, tm});
+}
+// The opening a staircase makes in the floor above (in the staircase's own frame, metres): the floor's cut edge lined
+// in ceiling white, and a landing banister round it upstairs — along each side that isn't against a wall, and across
+// the low end, leaving the top end open where you step off.
+function v3StairWell(g, pts, total, W, roomH, H, key, sideKind, {fm, rm, tm}){
+  const path = pts.map(p => ({x: p.x, y: p.z})), s0 = stairWellStart(total, roomH);
+  const hole = stairEdgesFrom(path, s0, W/2 + STAIRWELL_MARGIN_CM/100);
+  const ring = [...hole.left, ...hole.right.slice().reverse()];
+  v3Ribbon(g, [...ring, ring[0]].map(p => ({x: p.x, z: p.y, y0: roomH - 0.002, y1: H + 0.002})), M3.paint(CEILING_PLAIN));
+  const rail = stairEdgesFrom(path, s0, W/2 + STAIRWELL_MARGIN_CM/100 + 0.05), Lok = sideKind[1] === "banister", Rok = sideKind[-1] === "banister";
+  const run = (Lok ? rail.left.slice().reverse() : [rail.left[0]]).concat(Rok ? rail.right : [rail.right[0]]);
+  if (!Lok && !Rok && Math.hypot(run[1].x - run[0].x, run[1].y - run[0].y) < 0.2) return;
+  const y0 = H, top = H + 0.9, glass = key === "glass" || key === "floating";
+  const newel = p=>{
+    const h = top + 0.08 - y0;
+    if (key === "victorian"){ v3Box(g, 0.1, h - 0.1, 0.1, p.x, y0, p.y, fm); v3Sphere(g, 0.055, 0.055, 0.055, p.x, y0 + h - 0.02, p.y, rm); }
+    else if (key === "industrial") v3Box(g, 0.05, h, 0.05, p.x, y0, p.y, fm);
+    else if (!glass){ v3Box(g, 0.09, h, 0.09, p.x, y0, p.y, key === "openoak" ? tm : fm); v3Box(g, 0.11, 0.03, 0.11, p.x, y0 + h, p.y, rm); }
+  };
+  run.forEach(newel);
+  for (let i = 1; i < run.length; i++){
+    const a = run[i-1], c = run[i], L = Math.hypot(c.x - a.x, c.y - a.y);
+    if (L < 0.05) continue;
+    if (glass){ v3Ribbon(g, [a, c].map(p => ({x: p.x, z: p.y, y0: y0 + 0.03, y1: top - 0.03})), M3.clear()); continue; }
+    const n = Math.max(1, Math.round(L/0.115));
+    for (let j = 1; j < n; j++){
+      const x = a.x + (c.x - a.x)*j/n, z = a.y + (c.y - a.y)*j/n, h = top - y0 - 0.02;
+      if (key === "victorian"){ v3Cyl(g, 0.016, 0.022, h, x, y0, z, fm, 8); v3Sphere(g, 0.026, 0.05, 0.026, x, y0 + h*0.3, z, fm); }
+      else if (key === "industrial") v3Cyl(g, 0.007, 0.007, h, x, y0, z, fm, 6);
+      else { const w2 = key === "cottage" ? 0.028 : 0.035; v3Box(g, w2, h, w2, x, y0, z, fm); }
+    }
+  }
+  const rr = key === "victorian" ? 0.035 : key === "industrial" ? 0.02 : key === "floating" ? 0.018 : 0.028;
+  v3Tube(g, run.map(p => new THREE.Vector3(p.x, top + (glass ? 0 : 0.01), p.y)), rr, rm);
 }
 // One furniture box as a THREE.Group in its own local frame (origin at its centre, on the floor).
 // Styled types (see FURNITURE_STYLES) build in their style; the rest have one model each.
@@ -11424,10 +11539,17 @@ function paintAssignments(floor, areas, list = floor.paints){
 const CEILING_PLAIN = "#fbfaf7";
 // The ceilings (walk view only): one plane at ceiling height, textured with each room's ceiling colour.
 const v3CeilTexes = new Map(); // floor id -> {key, tex}, one per floor so the whole house can show at once
-function v3CeilingPlane(group, floor, k, H){
+// Cuts each outline in `holes` (plan points) out of a plan-aligned texture canvas.
+function v3CutHoles(g, holes, ra, scale){
+  if (!holes.length) return;
+  g.save(); g.globalCompositeOperation = "destination-out"; g.fillStyle = "#000";
+  holes.forEach(h => { g.beginPath(); h.forEach((p, i) => { const x = (p.x - ra.ox)*scale, y = (p.y - ra.oy)*scale; if (i) g.lineTo(x, y); else g.moveTo(x, y); }); g.closePath(); g.fill(); });
+  g.restore();
+}
+function v3CeilingPlane(group, floor, k, H, holes = []){
   const areas = getRoomAreasForFloor(floor), ra = areas.raster;
   if (!ra) return;
-  const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.ceilings || []);
+  const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.ceilings || []) + JSON.stringify(holes);
   let v3CeilTex = v3CeilTexes.get(floor.id);
   if (!v3CeilTex || v3CeilTex.key !== key){
     const scale = Math.min(1024/Math.max(ra.w, ra.h), 0.5*100*k), assign = paintAssignments(floor, areas, floor.ceilings);
@@ -11442,6 +11564,7 @@ function v3CeilingPlane(group, floor, k, H){
       tg.globalCompositeOperation = "destination-in"; tg.drawImage(mk.canvas, 0, 0, t.width, t.height);
       g.drawImage(t, mk.x*scale, mk.y*scale);
     });
+    v3CutHoles(g, holes, ra, scale); // stairwells up to the floor above
     if (v3CeilTex) v3CeilTex.tex.dispose();
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -11548,10 +11671,10 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0){
 }
 // Floor texture: every room in a neutral screed, its flooring (if any) on top; outside is transparent.
 const v3FloorTexes = new Map(); // floor id -> {key, tex}
-function v3FloorPlane(group, floor, k){
+function v3FloorPlane(group, floor, k, holes = []){
   const areas = getRoomAreasForFloor(floor), ra = areas.raster;
   if (!ra) return;
-  const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.floorings || []);
+  const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.floorings || []) + JSON.stringify(holes);
   let v3FloorTex = v3FloorTexes.get(floor.id);
   if (!v3FloorTex || v3FloorTex.key !== key){
     const scale = Math.min(4096/Math.max(ra.w, ra.h), 1.6*100*k); // ~1.6px per cm, capped at a 4K texture
@@ -11568,6 +11691,7 @@ function v3FloorPlane(group, floor, k){
     });
     const assign = flooringAssignments(floor, areas);
     if (assign.size) g.drawImage(buildFlooringLayer(floor, areas, assign, scale), 0, 0);
+    v3CutHoles(g, holes, ra, scale); // stairwells coming up from the floor below
     if (v3FloorTex) v3FloorTex.tex.dispose();
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
@@ -11604,8 +11728,10 @@ function v3FloorMatrix(f){
 function v3RelMatrix(f){ return v3FloorMatrix(activeFloor()).invert().multiply(v3FloorMatrix(f)); }
 // One floor's furniture into `group`. With `live`, each piece is registered for picking, dragging and highlighting.
 function v3BuildFloorItems(group, floor, k, H, cut, live){
+  const fromBelow = v3.reachUp && v3.reachUp.has((floorBelow(floor) || {}).id); // the floor below's stairs come up into this one
   floor.boxes.forEach(b=>{
     if (b.kind !== "furniture") return;
+    if (fromBelow && isStairTopFromBelow(floor, b)) return; // drawn here too, but it's the top of the staircase below
     const g = v3Furniture(b, H, cut);
     // its own height and lift as built, so b.hCm (stretch to this height) and b.elevCm (bottom this far off the floor) can override them
     const bb = new THREE.Box3().setFromObject(g);
@@ -11633,13 +11759,17 @@ function v3Rebuild(){
   v3.scene.add(root);
   if (v3.house) ensureHouseStacked();
   const shown = v3HouseFloors(), top = shown.at(-1);
-  v3FloorPlane(root, floor, k);
+  // floors with the next one up also in the scene: their stairs climb to it, and open a stairwell in it
+  v3.reachUp = new Set(shown.filter((f, i) => shown[i+1] && floorBelow(shown[i+1]) === f).map(f => f.id));
+  const wellsInto = f => v3.reachUp.has((floorBelow(f) || {}).id) ? stairWellsInto(f).map(w => w.hole) : [];
+  const wellsUp = f => v3.reachUp.has(f.id) ? stairWells(f).map(w => w.hole) : [];
+  v3FloorPlane(root, floor, k, wellsInto(floor));
   v3.doorGroups = new Map(); // filled by v3Door, for the selection outline
   v3BuildStructure(root, floor, k, H, cut, floor !== top ? FLOOR_DEPTH_M - 0.005 : 0);
   v3.groups = new Map(); v3.natural = new Map();
   v3BuildFloorItems(root, floor, k, H, cut, true);
   // ceiling only when you're inside looking around
-  if (v3.mode === "walk") v3CeilingPlane(root, floor, k, H);
+  if (v3.mode === "walk") v3CeilingPlane(root, floor, k, H, wellsUp(floor));
   // the rest of the house, each floor in its own group (clicking one switches to it)
   const bd = v3Bounds(floor, k);
   const grow = (x, z) => { bd.x0 = Math.min(bd.x0, x); bd.x1 = Math.max(bd.x1, x); bd.z0 = Math.min(bd.z0, z); bd.z1 = Math.max(bd.z1, z); };
@@ -11650,12 +11780,13 @@ function v3Rebuild(){
     g.matrixAutoUpdate = false; g.matrix.copy(v3RelMatrix(f));
     withFloor(f, ()=>{
       const fk = metersPerWorldUnitForFloor(f), fH = v3Ceiling(), doors = v3.doorGroups;
-      v3FloorPlane(g, f, fk);
+      v3FloorPlane(g, f, fk, wellsInto(f));
       v3.doorGroups = new Map(); // only the active floor's doors get selection outlines
       v3BuildStructure(g, f, fk, fH, fH, f !== top ? FLOOR_DEPTH_M - 0.005 : 0);
       v3.doorGroups = doors;
       v3BuildFloorItems(g, f, fk, fH, fH, false);
-      if (houseFloors().indexOf(f) < houseFloors().indexOf(floor)) v3CeilingPlane(g, f, fk, fH); // a single-storey part's flat top
+      // under you, a single-storey part's flat top; walking about, every floor's ceiling (seen up a stairwell)
+      if (v3.mode === "walk" || houseFloors().indexOf(f) < houseFloors().indexOf(floor)) v3CeilingPlane(g, f, fk, fH, wellsUp(f));
       const fb = v3Bounds(f, fk);
       [[fb.x0, fb.z0], [fb.x1, fb.z0], [fb.x0, fb.z1], [fb.x1, fb.z1]].forEach(([x, z]) => { const p = new THREE.Vector3(x, 0, z).applyMatrix4(g.matrix); grow(p.x, p.z); });
     });
