@@ -4,7 +4,7 @@
 const CACHE = "floorplan-shell";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png",
   "./icons/icon-maskable-512.png", "./icons/favicon-32.png", "./icons/apple-touch-icon.png",
-  "./vendor/three.module.min.js", "./vendor/three.core.js"];
+  "./vendor/three.module.min.js", "./vendor/three.core.js", "./paints.js", "./wallpapers.js"];
 
 self.addEventListener("install", (e)=>{
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
