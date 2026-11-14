@@ -72,6 +72,22 @@
   .stackRow .stackUnit{font-size:10.5px; color:var(--text-dim); margin-right:2px;}
   .stackRow button:not(.stackName){padding-left:7px; padding-right:7px;}
   #stackNudge button{flex:1;}
+  #roofPanel{display:flex; flex-direction:column; gap:5px;}
+  #roofPanel .roofNote{font-size:10.5px; color:var(--text-dim); line-height:1.4; margin:0;}
+  #roofPanel .roofHead{font-size:11px; font-weight:600; color:var(--text); margin-top:6px; text-transform:uppercase; letter-spacing:0.04em;}
+  #roofPanel .roofSub{font-size:11px; color:var(--text-dim);}
+  #roofPanel .roofChips, #roofPanel .roofWins{display:flex; flex-wrap:wrap; gap:4px;}
+  #roofPanel .roofChips button, #roofPanel .roofWins button{font-size:11px; padding:4px 7px;}
+  #roofPanel .roofCovers{display:grid; grid-template-columns:repeat(auto-fill, minmax(38px, 1fr)); gap:4px;}
+  #roofPanel .roofCovers button{padding:0; aspect-ratio:1; overflow:hidden; border-radius:6px;}
+  #roofPanel .roofCovers button img{width:100%; height:100%; display:block;}
+  #roofPanel .roofCovers button.active{outline:2px solid var(--accent, #4f8cff); outline-offset:1px;}
+  #roofPanel .roofNum{font-size:11px; color:var(--text-dim); display:flex; align-items:center; gap:4px;}
+  #roofPanel .roofNum input{width:64px;}
+  #roofPanel .roofSize{display:flex; gap:8px; flex-wrap:wrap;}
+  #roofPanel .roofSlider{font-size:11px; color:var(--text-dim); display:flex; align-items:center; gap:6px;}
+  #roofPanel .roofSlider input{flex:1;}
+  #roofPanel .roofEnds{font-size:11px; color:var(--text-dim);}
   .paletteCategory{width:100%; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); opacity:.75; margin:6px 0 0;}
   .paletteCategory:first-child{margin-top:0;}
   button{
@@ -335,6 +351,11 @@
     </section>
 
     <section data-modes="build">
+      <h2>Roof</h2>
+      <div id="roofPanel"></div>
+    </section>
+
+    <section data-modes="build">
       <h2>Copy between floors</h2>
       <div class="row">
         <button id="btnSelectAll" title="Ctrl/Cmd+A">Select all</button>
@@ -573,6 +594,7 @@
         <button id="btnV3Walls" hidden></button>
         <button id="btnV3House" hidden title="Every floor of the house, stacked — line them up in Build → Floors of the house">🏘 Whole house</button>
         <span id="v3FloorStep" hidden><button id="btnV3FloorDown" title="Down a floor">▼</button><span id="v3FloorName"></span><button id="btnV3FloorUp" title="Up a floor">▲</button></span>
+        <button id="btnV3Roof" hidden title="Put the roof on, or take it off to see in"></button>
         <button id="btnV3Above" hidden title="Show the floors above this one too (they lift off so you can see in)"></button>
         <label id="v3FovWrap" title="Field of view — or pinch on a trackpad" style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);margin-left:6px;">
           ↔ <input type="range" id="v3Fov" min="60" max="120" step="1" style="width:90px;"> <span id="v3FovLabel"></span></label>
@@ -1349,6 +1371,7 @@ function normalizeFloor(f){
     ...(f.exterior ? {exterior: f.exterior} : {}), // the outside walls' finish — see EXTERIOR_FINISHES
     ...(f.stack ? {stack: f.stack} : {}), // where this floor sits in the house — see floorStack
     ...(f.roomHM ? {roomHM: f.roomHM} : {}), // this floor's own room height (m) — see floorRoomH
+    ...(f.roof ? {roof: f.roof} : {}), // its roof — see roofWingModel
   };
 }
 // data.versions is the current save shape; the other two branches migrate
@@ -2110,6 +2133,7 @@ function render(){
     drawFloorHover();
     drawWalls();
     drawBoxes();
+    drawRoofPlan();
     drawCostOverlay();
     if (showClearance) drawClearanceGuides();
     if (showRoomAreas) drawRoomAreaLabels();
@@ -2130,7 +2154,8 @@ function render(){
 
   if (selection && showOverlay) drawSelectionHandles();
   if (view3dOpen && showOverlay) drawPlanCamera();
-  if (!drag){ updateRoomAreaStats(); updateFlooringPanel(); updateRoomsPanel(); updateFurnishPanel(); updateCostsPanel(); }
+  if (roofEdit && uiMode !== "build"){ roofEdit = false; roofArm = null; roofSel = null; } // the roof is a Build job
+  if (!drag){ updateRoomAreaStats(); updateFlooringPanel(); updateRoomsPanel(); updateFurnishPanel(); updateCostsPanel(); renderRoofPanel(); }
   view3dSync();
 }
 
@@ -6181,6 +6206,12 @@ cv.addEventListener("pointerdown", (e)=>{
   // pointerup comparison below just finds nothing changed and skips it.
   dragUndoSnapshot = snapshotState();
   if (view3dOpen && showOverlay && planCameraPointerDown(ms)) return;
+  if (roofEdit && e.button === 0){
+    const before = dragUndoSnapshot;
+    roofPointerDown(mw, ms);
+    if (!drag && snapshotState() !== before){ commitUndoSnapshot(before); dragUndoSnapshot = null; } // a click that changed something (an end's shape)
+    return;
+  }
   if (stackPick && floorBelow(activeFloor()) && e.button === 0){ stackPickClick(mw); dragUndoSnapshot = null; return; }
   if (stackDragMode && floorBelow(activeFloor()) && e.button === 0){ // lining up by hand: any drag slides the floor below
     ensureHouseStacked();
@@ -6382,6 +6413,7 @@ window.addEventListener("pointermove", (e)=>{
   const ms = getMouseScreen(e);
   const mw = toWorld(ms.x, ms.y);
   if (drag.type === "cam-move" || drag.type === "cam-aim"){ planCameraPointerMove(mw); return; }
+  if (drag.type.startsWith("roof-")){ roofPointerMove(mw, e.shiftKey); return; }
   if (drag.type === "stack-align"){ moveFloorBelowGhost(activeFloor(), mw.x - drag.sx, mw.y - drag.sy, drag.from); stackNote = ""; render(); return; }
 
   const isDrawSeg = drag.type === "draw-wall";
@@ -6635,6 +6667,7 @@ window.addEventListener("pointermove", (e)=>{
 window.addEventListener("pointerup", (e)=>{
   if (!drag) return;
   if (drag.type === "cam-move" || drag.type === "cam-aim"){ drag = null; dragUndoSnapshot = null; v3CameraMoved(); return; } // moving the camera isn't an edit to undo
+  if (drag.type.startsWith("roof-")){ drag = null; if (snapshotState() !== dragUndoSnapshot) commitUndoSnapshot(dragUndoSnapshot); dragUndoSnapshot = null; scheduleAutosave(); renderRoofPanel(true); render(); return; }
   if (drag.type === "stack-align"){ drag = null; if (snapshotState() !== dragUndoSnapshot) commitUndoSnapshot(dragUndoSnapshot); dragUndoSnapshot = null; scheduleAutosave(); renderStackPanel(); render(); return; }
   if (drag.type === "draw-wall"){
     const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
@@ -6744,6 +6777,17 @@ window.addEventListener("keydown", (e)=>{
     deleteSelection();
     e.preventDefault();
   }
+  if (roofEdit && (e.key === "Delete" || e.key === "Backspace") && roofSel){
+    const roof = activeFloor().roof;
+    if (roof){
+      pushUndoSnapshot();
+      if (roofSel.kind === "win") roof.windows = (roof.windows || []).filter(w => w.id !== roofSel.id);
+      else { roof.wings = roof.wings.filter(w => w.id !== roofSel.id); if (!roof.wings.length){ delete activeFloor().roof; roofEdit = false; } }
+      roofSel = null; scheduleAutosave(); renderRoofPanel(true); render();
+    }
+    e.preventDefault(); return;
+  }
+  if (roofEdit && e.key === "Escape"){ if (roofArm) roofArm = null; else if (roofSel) roofSel = null; else roofEdit = false; renderRoofPanel(true); render(); return; }
   if (stackDragMode && e.key.startsWith("Arrow") && !(e.metaKey || e.ctrlKey)){
     const d = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[e.key];
     if (d){ nudgeFloorBelow(d[0], d[1], e.shiftKey ? 1 : 5); e.preventDefault(); return; }
@@ -10066,15 +10110,10 @@ function v3Tube(g, pts, r, mat){
   const m = new THREE.Mesh(new THREE.TubeGeometry(path, Math.max(8, path.curves.length*3), r, 10, false), mat);
   m.castShadow = true; g.add(m);
 }
-// A staircase in its style (see FURNITURE_STYLES.stairs): treads laid along its centreline (winders round a
-// curved turn, a flat landing at a sharp one), and each side's banister or wall rail following the pitch.
-function v3Stairs(g, b, roomH, key = "classic", f = {}){
-  const geo = stairGeometry(b), W = stairWidth(b)/100, up = b.direction !== "down";
-  // with the floor above in the scene (Whole house), it climbs through the floor's depth to land on it
-  const toFloorAbove = up && !!(v3 && v3.reachUp && v3.reachUp.has(activeFloor().id)), H = roomH + (toFloorAbove ? FLOOR_DEPTH_M : 0);
-  const pts = geo.pts.map(p => ({x: p.x/100, z: p.y/100})), total = geo.total/100, going = STAIR_GOING_CM/100;
-  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].z - pts[i-1].z));
-  // the treads: [s0, s1, landing?] along the centreline
+// A staircase's steps and slope, in metres along its centreline: the treads [s0, s1, landing?], each tread's top
+// (topOf), and the pitch line through the treads' front edges (hp, flat across a landing) — rising to H at the top.
+function stairProfile(geo, H, up = true){
+  const total = geo.total/100, going = STAIR_GOING_CM/100;
   const lands = geo.landings.map(([a, c]) => [Math.max(0, a/100), Math.min(total, c/100)]).filter(([a, c]) => c > a + 0.01).sort((p, q) => p[0] - q[0]);
   const treads = [];
   const flight = (s0, s1) => { if (s1 - s0 < 0.01) return; const n = Math.max(1, Math.round((s1 - s0)/going)); for (let i = 0; i < n; i++) treads.push([s0 + (s1 - s0)*i/n, s0 + (s1 - s0)*(i + 1)/n, false]); };
@@ -10083,11 +10122,21 @@ function v3Stairs(g, b, roomH, key = "classic", f = {}){
   flight(at, total);
   const N = treads.length, rise = up ? H/N : 0;
   const topOf = i => up ? rise*(i + 1) : 0.02;
-  // the pitch line, through each tread's front edge (flat across a landing)
   const pitch = [[0, topOf(0)]];
   treads.forEach(([s0, s1, land], i) => { pitch.push([s0, topOf(i)]); if (land) pitch.push([s1, topOf(i)]); });
   pitch.push([total, up ? H : 0.02]);
   const hp = s => { for (let i = 1; i < pitch.length; i++) if (s <= pitch[i][0] + 1e-9){ const [a, ya] = pitch[i-1], [c, yc] = pitch[i]; return c - a < 1e-6 ? yc : ya + (yc - ya)*(s - a)/(c - a); } return pitch.at(-1)[1]; };
+  return {lands, treads, N, rise, topOf, hp};
+}
+// A staircase in its style (see FURNITURE_STYLES.stairs): treads laid along its centreline (winders round a
+// curved turn, a flat landing at a sharp one), and each side's banister or wall rail following the pitch.
+function v3Stairs(g, b, roomH, key = "classic", f = {}){
+  const geo = stairGeometry(b), W = stairWidth(b)/100, up = b.direction !== "down";
+  // with the floor above in the scene (Whole house), it climbs through the floor's depth to land on it
+  const toFloorAbove = up && !!(v3 && v3.reachUp && v3.reachUp.has(activeFloor().id)), H = roomH + (toFloorAbove ? FLOOR_DEPTH_M : 0);
+  const pts = geo.pts.map(p => ({x: p.x/100, z: p.y/100})), total = geo.total/100;
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].z - pts[i-1].z));
+  const {lands, treads, rise, topOf, hp} = stairProfile(geo, H, up);
   const treadAt = s => Math.max(0, treads.findIndex(([s0, s1]) => s >= s0 - 1e-9 && s <= s1 + 1e-9));
   // a point `off` out from the centreline on one side (+1 left going up), mitred at a sharp corner
   const nrm = j => { const a = pts[j], c = pts[j+1], l = Math.hypot(c.x - a.x, c.z - a.z) || 1; return {x: (c.z - a.z)/l, z: -(c.x - a.x)/l}; };
@@ -11593,9 +11642,12 @@ function v3WallUVs(m, s0){
   for (let i = 0; i < 8; i++) uv.setXY(i, s0 + pos.getZ(i)*(i < 4 ? 1 : -1), m.position.y + pos.getY(i)); // the two ends, so brick doesn't smear round a corner
   uv.needsUpdate = true;
 }
-function v3BuildStructure(group, floor, k, H, cut, over = 0){
-  // `over`: with a floor on top (the Whole house view), the walls carry on up through its depth to meet it
-  const top = cut < H ? cut : H + over, capMat = cut < H ? V3.cap() : null;
+function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
+  // `over`: with a floor on top (the Whole house view), the walls carry on up through its depth to meet it — but only
+  // where that floor actually sits on them (not under a single-storey part's roof)
+  const top = cut < H ? cut : H, capMat = cut < H ? V3.cap() : null;
+  const aboveAreas = above && over > 0 ? getRoomAreasForFloor(above) : null;
+  const underAbove = q => { const h = floorToHouse(floor, q.x, q.y), p = houseToFloor(above, h.x, h.z); return !!roomAtWorld(aboveAreas, p.x, p.y); };
   const areas = getRoomAreasForFloor(floor), assign = paintAssignments(floor, areas), cutters = wallCutters(floor);
   floor.walls.forEach(w=>{
     const isWin = (w.type||"wall") === "window", pts = wallCenterlinePoints(w), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
@@ -11639,6 +11691,15 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0){
           if (m){ m.userData.wall = {id: w.id, ax: a.x, ay: a.y, nx, ny, off, rooms}; v3WallUVs(m, along + cuts[j-1]); }
         }
       };
+      if (aboveAreas && cut >= H){ // up through the floor's depth, along the stretches with the floor above over them
+        const ext = isWin ? 0 : T/2, step = 0.2, cov = sM => underAbove(at(sM, 1)) || underAbove(at(sM, -1));
+        let run = null;
+        for (let sM = -ext; sM <= L + ext + 1e-6; sM += step){
+          const c = cov(Math.max(0, Math.min(L, sM)));
+          if (c && run == null) run = sM;
+          if ((!c || sM + step > L + ext + 1e-6) && run != null){ wallSlab(run, c ? L + ext : sM, H, H + over); run = null; }
+        }
+      }
       if (isWin){
         const {sill, head} = windowSpanY(w, H);
         if (sill > 0.005) wallSlab(0, L, 0, Math.min(sill, top));
@@ -11718,6 +11779,9 @@ function v3HouseFloors(){
   const i = fl.indexOf(cur);
   return v3.mode === "walk" || v3.showAbove ? fl : fl.slice(0, i + 1);
 }
+// Roofs: always when you're walking about; from the dollhouse, when "Roof" is on (or you're editing it).
+function v3RoofsOn(){ return v3.mode === "walk" || !!v3.showRoof || roofEdit; }
+function v3IsRoof(o){ for (; o && o !== v3.root; o = o.parent) if (o.userData.roof != null) return true; return false; }
 // A floor's place in the house as a 3D transform from its own plan metres: turned, shifted, and lifted to its level.
 function v3FloorMatrix(f){
   const s = floorStack(f);
@@ -11765,11 +11829,13 @@ function v3Rebuild(){
   const wellsUp = f => v3.reachUp.has(f.id) ? stairWells(f).map(w => w.hole) : [];
   v3FloorPlane(root, floor, k, wellsInto(floor));
   v3.doorGroups = new Map(); // filled by v3Door, for the selection outline
-  v3BuildStructure(root, floor, k, H, cut, floor !== top ? FLOOR_DEPTH_M - 0.005 : 0);
+  const nextUp = f => { const i = shown.indexOf(f); return shown[i+1] && floorBelow(shown[i+1]) === f ? shown[i+1] : null; };
+  v3BuildStructure(root, floor, k, H, cut, nextUp(floor) ? FLOOR_DEPTH_M - 0.005 : 0, nextUp(floor));
   v3.groups = new Map(); v3.natural = new Map();
   v3BuildFloorItems(root, floor, k, H, cut, true);
   // ceiling only when you're inside looking around
   if (v3.mode === "walk") v3CeilingPlane(root, floor, k, H, wellsUp(floor));
+  if (v3RoofsOn()) v3BuildRoof(root, floor, k, H);
   // the rest of the house, each floor in its own group (clicking one switches to it)
   const bd = v3Bounds(floor, k);
   const grow = (x, z) => { bd.x0 = Math.min(bd.x0, x); bd.x1 = Math.max(bd.x1, x); bd.z0 = Math.min(bd.z0, z); bd.z1 = Math.max(bd.z1, z); };
@@ -11782,11 +11848,12 @@ function v3Rebuild(){
       const fk = metersPerWorldUnitForFloor(f), fH = v3Ceiling(), doors = v3.doorGroups;
       v3FloorPlane(g, f, fk, wellsInto(f));
       v3.doorGroups = new Map(); // only the active floor's doors get selection outlines
-      v3BuildStructure(g, f, fk, fH, fH, f !== top ? FLOOR_DEPTH_M - 0.005 : 0);
+      v3BuildStructure(g, f, fk, fH, fH, nextUp(f) ? FLOOR_DEPTH_M - 0.005 : 0, nextUp(f));
       v3.doorGroups = doors;
       v3BuildFloorItems(g, f, fk, fH, fH, false);
       // under you, a single-storey part's flat top; walking about, every floor's ceiling (seen up a stairwell)
       if (v3.mode === "walk" || houseFloors().indexOf(f) < houseFloors().indexOf(floor)) v3CeilingPlane(g, f, fk, fH, wellsUp(f));
+      if (v3RoofsOn()) v3BuildRoof(g, f, fk, fH);
       const fb = v3Bounds(f, fk);
       [[fb.x0, fb.z0], [fb.x1, fb.z0], [fb.x0, fb.z1], [fb.x1, fb.z1]].forEach(([x, z]) => { const p = new THREE.Vector3(x, 0, z).applyMatrix4(g.matrix); grow(p.x, p.z); });
     });
@@ -11812,8 +11879,8 @@ function v3Rebuild(){
 }
 function v3SceneSig(){
   const f = v3Floor(), floors = v3.house ? houseFloors() : [f];
-  return JSON.stringify([f.id, v3.mode, v3.wallsDown, v3.house, v3.showAbove, costSettings().ceilingM,
-    floors.map(g => [g.id, g.walls, g.boxes, g.floorings, g.paints, g.ceilings, floorExterior(g), g.calibration, g.stack, g.roomHM, getRoomAreasForFloor(g).uid])]);
+  return JSON.stringify([f.id, v3.mode, v3.wallsDown, v3.house, v3.showAbove, v3RoofsOn(), costSettings().ceilingM,
+    floors.map(g => [g.id, g.walls, g.boxes, g.floorings, g.paints, g.ceilings, floorExterior(g), g.calibration, g.stack, g.roomHM, g.roof, getRoomAreasForFloor(g).uid])]);
 }
 function v3PlaceCamera(){
   const cam = v3.camera, el = v3.renderer.domElement, aspect = Math.max(0.2, el.clientWidth/Math.max(1, el.clientHeight));
@@ -11822,9 +11889,10 @@ function v3PlaceCamera(){
     const f = v3Floor(), c = ensurePlanCamera(f), k = metersPerWorldUnitForFloor(f);
     const hf = v3Fov(c)*Math.PI/180;
     cam.fov = 2*Math.atan(Math.tan(hf/2)/aspect)*180/Math.PI; // three.js takes the vertical angle
-    cam.position.set(c.x*k, V3_EYE_M, c.y*k);
+    const eye = V3_EYE_M + v3StairLift(f, c);
+    cam.position.set(c.x*k, eye, c.y*k);
     const p = v3.pitch || 0;
-    cam.lookAt(cam.position.x + Math.cos(c.angle)*Math.cos(p), V3_EYE_M + Math.sin(p), cam.position.z + Math.sin(c.angle)*Math.cos(p));
+    cam.lookAt(cam.position.x + Math.cos(c.angle)*Math.cos(p), eye + Math.sin(p), cam.position.z + Math.sin(c.angle)*Math.cos(p));
     v3.lamp.position.set(cam.position.x, v3Ceiling() - 0.2, cam.position.z);
     v3.lamp.visible = true;
   } else {
@@ -11880,6 +11948,9 @@ function v3UpdateBar(){
   document.getElementById("v3FloorName").textContent = activeFloor().name;
   document.getElementById("btnV3FloorDown").disabled = i <= 0;
   document.getElementById("btnV3FloorUp").disabled = i >= fl.length - 1;
+  const rb = document.getElementById("btnV3Roof");
+  rb.hidden = v3.mode !== "doll" || !houseFloors().some(f => f.roof);
+  rb.textContent = v3.showRoof ? "⌂ Roof off" : "⌂ Roof on"; rb.classList.toggle("active", !!v3.showRoof);
   const above = document.getElementById("btnV3Above");
   above.hidden = !multi || !v3.house || v3.mode !== "doll" || i >= fl.length - 1;
   above.textContent = v3.showAbove ? "⬆ Hide floors above" : "⬆ Show floors above";
@@ -11887,7 +11958,7 @@ function v3UpdateBar(){
   const fov = v3Fov(ensurePlanCamera(v3Floor()));
   document.getElementById("v3Fov").value = fov; document.getElementById("v3FovLabel").textContent = fov + "°";
   document.getElementById("view3dHint").textContent = v3.mode === "walk"
-    ? "Hold Space + drag to look around · W A S D to walk · pinch to widen or narrow the view · click furniture to pick it, drag to move, Q / E to turn · click a wall to paint it"
+    ? "Hold Space + drag to look around · W A S D to walk" + (v3.house && multi ? " — walk up the stairs to go up a floor" : "") + " · pinch to widen or narrow the view · click furniture to pick it, drag to move, Q / E to turn · click a wall to paint it"
     : "Hold Space + drag to spin (right-drag to slide) · scroll to zoom · click furniture to pick it, drag to move, Q / E to turn · click a wall to paint it";
 }
 async function openView3d(){
@@ -11919,7 +11990,7 @@ async function openView3d(){
     const ground = new THREE.Mesh(new THREE.CircleGeometry(120, 48), new THREE.MeshStandardMaterial({color: "#9fb38a", roughness: 1}));
     ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
     v3 = {renderer, scene, sun, lamp, ground, camera: new THREE.PerspectiveCamera(60, 1, 0.05, 500), mode: "walk", wallsDown: false, pitch: 0, keys: new Set()};
-    try{ const s = JSON.parse(localStorage.getItem("floorplan.view3d") || "{}"); if (s.mode === "doll") v3.mode = "doll"; if (s.wallsDown) v3.wallsDown = true; if (s.house) v3.house = true; if (s.showAbove) v3.showAbove = true; if (s.size === "large") panel.classList.add("large"); }catch(e){}
+    try{ const s = JSON.parse(localStorage.getItem("floorplan.view3d") || "{}"); if (s.mode === "doll") v3.mode = "doll"; if (s.wallsDown) v3.wallsDown = true; if (s.house) v3.house = true; if (s.showAbove) v3.showAbove = true; if (s.showRoof) v3.showRoof = true; if (s.size === "large") panel.classList.add("large"); }catch(e){}
     v3Wire(canvas);
     new ResizeObserver(() => v3Draw()).observe(canvas);
   }
@@ -11937,18 +12008,73 @@ function closeView3d(){
   render();
 }
 function v3SavePrefs(){
-  try{ localStorage.setItem("floorplan.view3d", JSON.stringify({mode: v3.mode, wallsDown: v3.wallsDown, house: !!v3.house, showAbove: !!v3.showAbove, size: document.getElementById("view3d").classList.contains("large") ? "large" : "small"})); }catch(e){}
+  try{ localStorage.setItem("floorplan.view3d", JSON.stringify({mode: v3.mode, wallsDown: v3.wallsDown, house: !!v3.house, showAbove: !!v3.showAbove, showRoof: !!v3.showRoof, size: document.getElementById("view3d").classList.contains("large") ? "large" : "small"})); }catch(e){}
 }
 function v3SetMode(m){
   v3.mode = m; v3.pitch = 0;
   if (m !== "walk" && v3Paint && v3Paint.ceiling) v3Paint = null; // no ceiling to look at from above
   v3UpdateBar(); v3SavePrefs(); view3dSync(); updateV3Fields();
 }
+// --- Walking up and down stairs. On a staircase your eye rises with it (along its pitch line); in the Whole house,
+// stepping off the top takes you onto the floor above, and stepping down into a stairwell takes you to the floor below.
+// Where plan point `p` on floor `f` is on one of its staircases going up: {b, s, total} (cm along its centreline).
+function stairUnderfoot(f, p){
+  return withFloor(f, ()=>{
+    for (const b of f.boxes){
+      if (b.type !== "stairs" || b.direction === "down") continue;
+      const o = rotate(p.x - b.x, p.y - b.y, -(b.rotation || 0)), lx = worldToCm(o.x), ly = worldToCm(o.y);
+      const geo = stairGeometry(b), W = stairWidth(b);
+      let best = null, acc = 0;
+      const n = geo.pts.length;
+      for (let i = 1; i < n; i++){
+        const a = geo.pts[i-1], c = geo.pts[i], dx = c.x - a.x, dy = c.y - a.y, L = Math.hypot(dx, dy);
+        if (L < 1e-6) continue;
+        const raw = ((lx - a.x)*dx + (ly - a.y)*dy)/(L*L), t = Math.max(0, Math.min(1, raw)), d = Math.hypot(lx - a.x - dx*t, ly - a.y - dy*t);
+        // in front of the bottom step, or past the top one, isn't on the stairs
+        if (!best || d < best.d) best = {d, s: acc + L*t, off: (i === 1 && raw < 0) || (i === n - 1 && raw > 1)};
+        acc += L;
+      }
+      if (best && !best.off && best.d <= W/2 + 5) return {b, s: best.s, total: geo.total, geo};
+    }
+    return null;
+  });
+}
+// How far up (m) the walk camera's feet are: the pitch line of the staircase it's on, if any.
+function v3StairLift(f, c){
+  const st = stairUnderfoot(f, c);
+  if (!st) return 0;
+  const H = floorRoomH(f), climbs = !!(v3.reachUp && v3.reachUp.has(f.id)), pr = stairProfile(st.geo, H + (climbs ? FLOOR_DEPTH_M : 0));
+  const s = st.s/100, h = Math.max(0, pr.hp(s) - pr.rise*(1 - s/(st.total/100))); // eased in from the floor at the foot, to the full height at the top
+  return climbs ? h : Math.min(h, Math.max(0, H - V3_EYE_M - 0.15)); // with no floor above in the scene, don't put your head through the ceiling
+}
+// After a step: off the top of a staircase onto the floor above, or down into a stairwell to the floor below.
+function v3StairHop(){
+  if (!v3.house || v3.mode !== "walk") return false;
+  const f = v3Floor(), c = ensurePlanCamera(f), fl = houseFloors(), i = fl.indexOf(f), reach = v3.reachUp || new Set();
+  const hop = g=>{
+    const h = floorToHouse(f, c.x, c.y), q = houseToFloor(g, h.x, h.z), cg = ensurePlanCamera(g);
+    cg.x = q.x; cg.y = q.y; cg.angle = c.angle + floorStack(f).rot - floorStack(g).rot; cg.fovDeg = c.fovDeg;
+    v3Paint = null; switchFloor(g.id);
+    return true;
+  };
+  const st = stairUnderfoot(f, c), was = v3.lastStair;
+  v3.lastStair = st ? {f: f.id, s: st.s, total: st.total} : null;
+  // at the top step — or just stepped off it (a long stride can go straight past)
+  const atTop = st ? st.s >= st.total - 5 : !!(was && was.f === f.id && was.s >= was.total - 40);
+  if (fl[i+1] && reach.has(f.id) && atTop){ v3.lastStair = null; return hop(fl[i+1]); }
+  const below = fl[i-1];
+  if (below && reach.has(below.id)){
+    const h = floorToHouse(f, c.x, c.y), sb = stairUnderfoot(below, houseToFloor(below, h.x, h.z));
+    if (sb && sb.s < sb.total - 15){ v3.lastStair = null; return hop(below); } // well into the stairwell, not just at its top edge
+  }
+  return false;
+}
 // Moves the plan camera by (forward, right) metres, keeping it on this floor's plan.
 function v3Walk(fwd, right){
   const f = v3Floor(), c = ensurePlanCamera(f), k = metersPerWorldUnitForFloor(f);
   c.x += (Math.cos(c.angle)*fwd - Math.sin(c.angle)*right)/k;
   c.y += (Math.sin(c.angle)*fwd + Math.cos(c.angle)*right)/k;
+  v3StairHop(); // up or down a floor, if that step took you off the top of the stairs or down into a stairwell
   v3CameraMoved();
 }
 let v3SaveTimer = null;
@@ -12010,7 +12136,7 @@ function v3Pick(e){
 // the nearest wall, into a corner, square to the room.
 function v3FloorPoint(e){
   const rc = v3Ray(e), k = metersPerWorldUnitForFloor(v3Floor());
-  const hit = v3.root && rc.intersectObject(v3.root, true).find(h => h.object.visible && !h.object.userData.ceiling && !v3OtherFloorOf(h.object) && !(h.object.material && h.object.material.transparent && h.object.material.opacity < 0.5));
+  const hit = v3.root && rc.intersectObject(v3.root, true).find(h => h.object.visible && !h.object.userData.ceiling && !v3OtherFloorOf(h.object) && !v3IsRoof(h.object) && !(h.object.material && h.object.material.transparent && h.object.material.opacity < 0.5));
   let p = null;
   if (hit && hit.point.y > 0.01){ // a wall or a unit: stand back toward the eye a little, so it's this side of it
     const d = rc.ray.direction; p = new THREE.Vector3(hit.point.x - d.x*0.05, 0, hit.point.z - d.z*0.05);
@@ -12333,7 +12459,7 @@ function drawExterior(e, bump){
   } else if (e.kind === "render" || e.kind === "dash"){
     x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
     if (!bump) for (let i = 0; i < 40; i++){ x.fillStyle = `rgba(${rnd() < 0.5 ? "0,0,0" : "255,255,255"},${0.025*rnd()})`; x.beginPath(); x.arc(rnd()*W, rnd()*H, 30 + rnd()*120, 0, Math.PI*2); x.fill(); }
-    if (e.kind === "dash"){ const n = W*H/(e.fine ? 14 : 22); for (let i = 0; i < n; i++){ const v = rnd(); x.fillStyle = bump ? col(null, 150 + Math.round(v*100)) : jit(v < 0.3 ? shadeHex(e.base, -0.18) : v < 0.6 ? shadeHex(e.base, 0.06) : e.base, 0.15); const r = (e.fine ? 1 : 1.6) + rnd()*(e.fine ? 1.2 : 2.4); x.beginPath(); x.arc(rnd()*W, rnd()*H, r, 0, Math.PI*2); x.fill(); } }
+    if (e.kind === "dash"){ const n = W*H/(e.fine ? 14 : 22); for (let i = 0; i < n; i++){ const v = rnd(); x.fillStyle = bump ? col(null, 150 + Math.round(v*100)) : jit(v < 0.3 ? shiftHex(e.base, -0.18) : v < 0.6 ? shiftHex(e.base, 0.06) : e.base, 0.15); const r = (e.fine ? 1 : 1.6) + rnd()*(e.fine ? 1.2 : 2.4); x.beginPath(); x.arc(rnd()*W, rnd()*H, r, 0, Math.PI*2); x.fill(); } }
     else speckle(W*H/40, 0.05);
   } else if (e.kind === "stone"){
     let y = 0;
@@ -12372,7 +12498,7 @@ function drawExterior(e, bump){
   }
   return {canvas: c, tw: e.bond === "flemish" ? 0.675 : tw, th};
 }
-function shadeHex(hex, dl){ const [r, g, b] = hexRgb(hex), f = v => Math.max(0, Math.min(255, Math.round(v + dl*255))); return "#" + [r, g, b].map(v => f(v).toString(16).padStart(2, "0")).join(""); }
+function shiftHex(hex, dl){ const [r, g, b] = hexRgb(hex), f = v => Math.max(0, Math.min(255, Math.round(v + dl*255))); return "#" + [r, g, b].map(v => f(v).toString(16).padStart(2, "0")).join(""); }
 const v3ExtMats = new Map(), extThumbs = new Map();
 function v3ExtMat(id){
   let m = v3ExtMats.get(id);
@@ -12878,6 +13004,7 @@ document.getElementById("v3Fov").addEventListener("input", e => { if (v3) v3SetF
 document.querySelectorAll("[data-v3mode]").forEach(b => b.addEventListener("click", ()=> v3 && v3SetMode(b.dataset.v3mode)));
 document.getElementById("btnV3Walls").addEventListener("click", ()=>{ if (!v3) return; v3.wallsDown = !v3.wallsDown; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
 document.getElementById("btnV3House").addEventListener("click", ()=>{ if (!v3) return; v3.house = !v3.house; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
+document.getElementById("btnV3Roof").addEventListener("click", ()=>{ if (!v3) return; v3.showRoof = !v3.showRoof; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
 document.getElementById("btnV3Above").addEventListener("click", ()=>{ if (!v3) return; v3.showAbove = !v3.showAbove; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
 [["btnV3FloorDown", -1], ["btnV3FloorUp", 1]].forEach(([id, d]) => document.getElementById(id).addEventListener("click", ()=>{
   const fl = houseFloors(), f = fl[fl.indexOf(activeFloor()) + d];
@@ -12933,6 +13060,737 @@ function saveView3dBox(){
   bar.addEventListener("pointerup", end); bar.addEventListener("pointercancel", end);
   new ResizeObserver(() => { if (!d) saveView3dBox(); }).observe(panel); // the corner was dragged
 })();
+
+// ---------------------------------------------------------------------------
+// Roofs. Each floor can carry a roof (floor.roof) sitting on its wall tops: the top floor's main roof, or a
+// lower floor's roofs over whatever sticks out beyond the floor above (an extension, a bay). A roof is made of
+// rectangular sections ("wings"), each with its own spine (ridge): {id, cx, cy (plan units, its middle), lenCm
+// (along the spine), widCm (across), rot (the spine's direction), ridge (0..1 — where the spine sits across it:
+// 0.5 even, off-centre for uneven pitches, 0 or 1 for a single slope), riseCm (spine height above the wall tops),
+// ends: [gable|hip|half, gable|hip|half], flat}. An L, T or U-shaped house is several wings that overlap; the
+// roof is the highest of them at every point, so valleys form where one runs into another.
+// floor.roof = {wings, cover, flatCover, trim, overhangCm, windows: [{id, type, x, y, wCm, hCm}]}
+// ---------------------------------------------------------------------------
+const ROOF_T_M = 0.12, ROOF_FLAT_T_M = 0.2, ROOF_VERGE_M = 0.05, ROOF_PITCH_DEG = 40, ROOF_LEAN_DEG = 15;
+const ROOF_COVERS = [
+  {key:"slate-welsh", label:"Welsh slate", kind:"slate", base:"#4a5059", mix:["#464c55", "#4f555e", "#4a5160"]},
+  {key:"slate-dark", label:"Dark slate", kind:"slate", base:"#2f3237", mix:["#2c2f34", "#33363b"]},
+  {key:"slate-green", label:"Westmorland green slate", kind:"slate", base:"#5d6657", mix:["#5a6354", "#616a5a", "#576050"]},
+  {key:"plain-red", label:"Clay plain tiles", kind:"plain", base:"#a24a32", mix:["#93412b", "#b25a3e", "#8c4632"]},
+  {key:"plain-brindle", label:"Brindle plain tiles", kind:"plain", base:"#7c4434", mix:["#5e352a", "#94573e", "#6c3e30", "#a0603f"]},
+  {key:"pantile-red", label:"Red pantiles", kind:"pantile", base:"#b2553a", mix:["#a24c33", "#bd6243"]},
+  {key:"pantile-black", label:"Black glazed pantiles", kind:"pantile", base:"#26272a", mix:["#2c2d31", "#202124"]},
+  {key:"interlock-brown", label:"Concrete tiles, brown", kind:"interlock", base:"#6b4a3a", mix:["#61433a", "#735040"]},
+  {key:"interlock-grey", label:"Concrete tiles, grey", kind:"interlock", base:"#5c5e60", mix:["#55575a", "#636567"]},
+  {key:"shingle-cedar", label:"Cedar shingles", kind:"shingle", base:"#9a6a45", mix:["#8a5d3c", "#a8774f", "#7e5a40", "#b0855c"]},
+  {key:"seam-zinc", label:"Standing seam zinc", kind:"seam", base:"#8c9196"},
+  {key:"seam-anthracite", label:"Standing seam, anthracite", kind:"seam", base:"#3b3e42"},
+  {key:"thatch", label:"Thatch", kind:"thatch", base:"#a8875a", mix:["#977a50", "#b8976a", "#8a6e48"]},
+  {key:"felt", label:"Felt", kind:"felt", base:"#3a3b3d", flat:true},
+  {key:"epdm", label:"Rubber (EPDM)", kind:"smooth", base:"#232426", flat:true},
+  {key:"grp", label:"Grey fibreglass", kind:"smooth", base:"#8d9196", flat:true},
+  {key:"lead", label:"Lead", kind:"lead", base:"#7d8388", flat:true},
+  {key:"sedum", label:"Green (sedum) roof", kind:"sedum", base:"#6f8a45", flat:true},
+  {key:"gravel", label:"Gravel", kind:"gravel", base:"#b1aa9c", flat:true},
+];
+const ROOF_COVER_BY_KEY = new Map(ROOF_COVERS.map(c => [c.key, c]));
+const ROOF_TILE_M = {slate: [2.0, 1.6], plain: [1.32, 1.2], pantile: [1.36, 1.2], interlock: [1.2, 1.36], shingle: [1.6, 1.04], seam: [1.0, 1.0], thatch: [0.8, 0.8], felt: [1, 1], smooth: [2, 2], lead: [1.2, 1.2], sedum: [1.2, 1.2], gravel: [0.8, 0.8]};
+// One repeat of a roof covering — across is along the eaves, down the canvas is down the slope.
+function drawRoofCover(e, bump){
+  const [tw, th] = ROOF_TILE_M[e.kind], ppm = 400, W = Math.round(tw*ppm), H = Math.round(th*ppm);
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const x = c.getContext("2d");
+  let seed = [...e.key].reduce((a, ch) => a*31 + ch.charCodeAt(0), 11) >>> 0;
+  const rnd = () => (seed = (seed*1664525 + 1013904223) >>> 0)/4294967296;
+  const jit = (hex, a) => { if (bump) return hex; const [r, g, b] = hexRgb(hex), d = (rnd() - 0.5)*a*255; return `rgb(${[r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v + d)))).join(",")})`; };
+  const col = (hex, ht) => bump ? `rgb(${ht},${ht},${ht})` : hex;
+  const pick = () => e.mix && rnd() < 0.45 ? e.mix[Math.floor(rnd()*e.mix.length)] : e.base;
+  const wrapRect = (rx, ry, rw, rh) => { x.fillRect(rx, ry, rw, rh); if (rx + rw > W) x.fillRect(rx - W, ry, rw, rh); if (rx < 0) x.fillRect(rx + W, ry, rw, rh); };
+  const speckle = (n, a, r = 1.2) => { if (bump) return; for (let i = 0; i < n; i++){ x.fillStyle = `rgba(${rnd() < 0.5 ? "0,0,0" : "255,255,255"},${a*rnd()})`; x.fillRect(rnd()*W, rnd()*H, r*(0.5 + rnd()), r*(0.5 + rnd())); } };
+  x.fillStyle = col(shiftHex(e.base, -0.08), 60); x.fillRect(0, 0, W, H);
+  // courses of separate pieces: each row `gauge` deep, pieces `pw` wide, every other row offset by half a piece
+  const courses = (gauge, pw, gap, shadow, varyW, vary = 0.1)=>{
+    const rows = Math.round(H/gauge);
+    for (let r = 0; r < rows; r++){
+      let xx = (r % 2)*pw/2 - pw;
+      while (xx < W){
+        const w = varyW ? pw*(0.45 + rnd()*0.9) : pw;
+        x.fillStyle = col(jit(pick(), vary), 200 + Math.round(rnd()*25)); wrapRect(xx + gap/2, r*gauge, w - gap, gauge);
+        x.fillStyle = bump ? "rgb(25,25,25)" : `rgba(0,0,0,${shadow})`; wrapRect(xx + gap/2, r*gauge + gauge - Math.max(3, gauge*0.08), w - gap, Math.max(3, gauge*0.08)); // the lap's shadow, down-slope edge
+        xx += w;
+      }
+    }
+  };
+  if (e.kind === "slate"){ courses(0.2*ppm, 0.25*ppm, 2, 0.3, false, 0.035); speckle(W*H/70, 0.08); }
+  else if (e.kind === "plain"){ courses(0.1*ppm, 0.165*ppm, 2, 0.35, false, 0.07); speckle(W*H/60, 0.12); }
+  else if (e.kind === "shingle"){ courses(0.13*ppm, 0.16*ppm, 3, 0.4, true); if (!bump){ x.strokeStyle = "rgba(0,0,0,0.08)"; for (let i = 0; i < W*H/900; i++){ const px = rnd()*W, py = rnd()*H; x.beginPath(); x.moveTo(px, py); x.lineTo(px + (rnd() - 0.5)*2, py + 12 + rnd()*20); x.stroke(); } } }
+  else if (e.kind === "pantile" || e.kind === "interlock"){
+    const gauge = (e.kind === "pantile" ? 0.3 : 0.34)*ppm, pw = (e.kind === "pantile" ? 0.34 : 0.3)*ppm, rolls = e.kind === "pantile" ? 1 : 2, rows = Math.round(H/gauge);
+    for (let r = 0; r < rows; r++) for (let xx = 0; xx < W; xx += pw){
+      const base = jit(pick(), 0.08);
+      for (let i = 0; i < pw; i++){ // a wave across each tile: lit on the roll, dark in the pan
+        const t = Math.sin((i/pw)*Math.PI*2*rolls);
+        x.fillStyle = bump ? `rgb(${Math.round(128 + t*110)},${Math.round(128 + t*110)},${Math.round(128 + t*110)})` : base; x.fillRect(xx + i, r*gauge, 1, gauge);
+        if (!bump){ x.fillStyle = t > 0 ? `rgba(255,255,255,${t*0.16})` : `rgba(0,0,0,${-t*0.3})`; x.fillRect(xx + i, r*gauge, 1, gauge); }
+      }
+      x.fillStyle = bump ? "rgb(20,20,20)" : "rgba(0,0,0,0.4)"; x.fillRect(xx, r*gauge + gauge - 5, pw, 5);
+    }
+    speckle(W*H/90, 0.1);
+  } else if (e.kind === "seam"){
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
+    if (!bump) for (let i = 0; i < 6; i++){ x.fillStyle = `rgba(255,255,255,${0.02 + rnd()*0.03})`; x.fillRect(0, rnd()*H, W, 20 + rnd()*60); }
+    for (let s = 0; s < W; s += 0.5*ppm){ x.fillStyle = bump ? "rgb(250,250,250)" : "rgba(255,255,255,0.35)"; x.fillRect(s, 0, 4, H); x.fillStyle = bump ? "rgb(10,10,10)" : "rgba(0,0,0,0.35)"; x.fillRect(s + 4, 0, 4, H); }
+  } else if (e.kind === "thatch"){
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
+    for (let i = 0; i < W*H/40; i++){ const px = rnd()*W, py = rnd()*H, len = 20 + rnd()*50; if (bump){ const v = Math.round(80 + rnd()*170); x.strokeStyle = `rgb(${v},${v},${v})`; } else x.strokeStyle = jit(pick(), 0.25); x.lineWidth = 1 + rnd()*1.5; x.beginPath(); x.moveTo(px, py); x.lineTo(px + (rnd() - 0.5)*4, py + len); x.stroke(); }
+  } else if (e.kind === "lead"){
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H); speckle(W*H/50, 0.06, 3);
+    for (let s = 0; s < W; s += 0.6*ppm){ x.fillStyle = bump ? "rgb(240,240,240)" : "rgba(255,255,255,0.25)"; x.fillRect(s, 0, 10, H); x.fillStyle = bump ? "rgb(30,30,30)" : "rgba(0,0,0,0.3)"; x.fillRect(s + 10, 0, 5, H); }
+  } else if (e.kind === "sedum"){
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
+    const greens = ["#5d7a38", "#7f9a4c", "#8c8a3c", "#9a5a4a", "#6a8f4a", "#a8a858"];
+    for (let i = 0; i < W*H/30; i++){ const r = 2 + rnd()*5; x.fillStyle = bump ? `rgb(${Math.round(100 + rnd()*150)},${Math.round(100 + rnd()*150)},${Math.round(100 + rnd()*150)})` : greens[Math.floor(rnd()*greens.length)]; x.beginPath(); x.arc(rnd()*W, rnd()*H, r, 0, Math.PI*2); x.fill(); }
+  } else if (e.kind === "gravel"){
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
+    for (let i = 0; i < W*H/16; i++){ const r = 1.5 + rnd()*3, v = rnd(); x.fillStyle = bump ? `rgb(${Math.round(120 + v*130)},${Math.round(120 + v*130)},${Math.round(120 + v*130)})` : jit(v < 0.3 ? shiftHex(e.base, -0.2) : v < 0.6 ? shiftHex(e.base, 0.1) : e.base, 0.15); x.beginPath(); x.ellipse(rnd()*W, rnd()*H, r, r*0.75, rnd()*3, 0, Math.PI*2); x.fill(); }
+  } else { // felt, smooth membranes
+    x.fillStyle = col(e.base, 128); x.fillRect(0, 0, W, H);
+    speckle(W*H/(e.kind === "felt" ? 8 : 80), e.kind === "felt" ? 0.2 : 0.04);
+  }
+  return {canvas: c, tw, th};
+}
+const roofCoverMats = new Map(), roofCoverThumbs = new Map();
+function v3RoofMat(key){
+  let m = roofCoverMats.get(key);
+  if (m) return m;
+  const e = ROOF_COVER_BY_KEY.get(key) || ROOF_COVERS[0], t = drawRoofCover(e, false), bmp = drawRoofCover(e, true);
+  const tex = new THREE.CanvasTexture(t.canvas), bt = new THREE.CanvasTexture(bmp.canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  [tex, bt].forEach(q => { q.wrapS = q.wrapT = THREE.RepeatWrapping; q.repeat.set(1/t.tw, 1/t.th); q.anisotropy = 8; });
+  m = new THREE.MeshStandardMaterial({map: tex, bumpMap: bt, bumpScale: e.kind === "seam" || e.kind === "smooth" ? 0.6 : e.kind === "slate" || e.kind === "plain" ? 1.5 : 3, roughness: e.kind === "seam" ? 0.45 : e.kind === "pantile" && e.key.includes("black") ? 0.4 : 0.9, metalness: e.kind === "seam" || e.kind === "lead" ? 0.35 : 0});
+  roofCoverMats.set(key, m);
+  return m;
+}
+function roofCoverThumb(key){
+  if (roofCoverThumbs.has(key)) return roofCoverThumbs.get(key);
+  const e = ROOF_COVER_BY_KEY.get(key), t = drawRoofCover(e, false), c = document.createElement("canvas"); c.width = c.height = 72;
+  const src = Math.min(t.canvas.width, t.canvas.height, 0.6*400);
+  c.getContext("2d").drawImage(t.canvas, 0, 0, src, src, 0, 0, 72, 72);
+  const url = c.toDataURL("image/png");
+  roofCoverThumbs.set(key, url);
+  return url;
+}
+// --- the shape of one wing, in its own frame (metres: u along the spine, v across it, 0,0 at its middle, height 0
+// at the wall tops). The rectangle it covers is its walls plus the overhangs — at the eaves the roof's own overhang,
+// at a gable or the high side of a single slope just a small verge — and its surface is the lowest of its planes:
+// a slope each side of the spine (one, if the spine's at an edge), a hip at each hipped end, and a flat cap at the
+// spine height. Each plane: h = a*u + b*v + c, with the eave it falls to.
+function roofWingModel(w, overhangM){
+  const L = w.lenCm/100, W = w.widCm/100, flat = !!w.flat, R = flat ? 0 : Math.max(0.05, (w.riseCm || 0)/100);
+  const f = flat ? 0.5 : Math.max(0, Math.min(1, w.ridge == null ? 0.5 : w.ridge)), ends = w.ends || ["gable", "gable"];
+  const sideA = !flat && f > 0.01, sideB = !flat && f < 0.99;
+  const kind = {vA: flat || sideA ? "eave" : "high", vB: flat || sideB ? "eave" : "high", u0: flat || ends[0] === "hip" ? "eave" : "gable", u1: flat || ends[1] === "hip" ? "eave" : "gable"};
+  const ov = k => k === "eave" ? (flat ? Math.min(overhangM, 0.1) : overhangM) : ROOF_VERGE_M;
+  const u0 = -L/2 - ov(kind.u0), u1 = L/2 + ov(kind.u1), v0 = -W/2 - ov(kind.vA), v1 = W/2 + ov(kind.vB), vr = -W/2 + f*W;
+  const planes = [];
+  if (flat) planes.push({a: 0, b: 0, c: 0, kind: "flat"});
+  else {
+    const runA = vr - v0, runB = v1 - vr;
+    if (sideA) planes.push({a: 0, b: R/runA, c: -R/runA*v0, kind: "A", eave: {axis: "v", at: v0, dir: 1}});
+    if (sideB) planes.push({a: 0, b: -R/runB, c: R/runB*v1, kind: "B", eave: {axis: "v", at: v1, dir: -1}});
+    const run = Math.min(sideA ? runA : Infinity, sideB ? runB : Infinity);
+    [0, 1].forEach(i=>{
+      const e = ends[i], at = i ? u1 : u0, dir = i ? -1 : 1;
+      if (e === "hip"){ const s = R/run; planes.push({a: dir*s, b: 0, c: -dir*s*at, kind: "E" + i, eave: {axis: "u", at, dir}}); }
+      else if (e === "half"){ const hg = R*0.6, s = (R - hg)/(run*0.45); planes.push({a: dir*s, b: 0, c: hg - dir*s*at, kind: "E" + i, eave: {axis: "u", at, dir}}); }
+    });
+    planes.push({a: 0, b: 0, c: R, kind: "top"});
+  }
+  return {L, W, R, f, u0, u1, v0, v1, vr, kind, planes, flat};
+}
+function roofHeightAt(m, u, v){ return m.planes.reduce((h, p) => Math.min(h, p.a*u + p.b*v + p.c), Infinity); }
+// keeps the part of convex polygon `poly` ({u, v} points) where A*u + B*v + C <= 0
+function clipHalfPlane(poly, A, B, C){
+  const out = [];
+  for (let i = 0; i < poly.length; i++){
+    const p = poly[i], q = poly[(i + 1) % poly.length], dp = A*p.u + B*p.v + C, dq = A*q.u + B*q.v + C;
+    if (dp <= 1e-9) out.push(p);
+    if ((dp < -1e-9 && dq > 1e-9) || (dp > 1e-9 && dq < -1e-9)){ const t = dp/(dp - dq); out.push({u: p.u + (q.u - p.u)*t, v: p.v + (q.v - p.v)*t}); }
+  }
+  return out;
+}
+function polyAreaUV(poly){ let a = 0; for (let i = 0; i < poly.length; i++){ const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.u*q.v - q.u*p.v; } return a/2; }
+// Each plane's face: where it's the lowest — the rectangle cut down by every other plane.
+function roofWingFacets(m){
+  const rect = [{u: m.u0, v: m.v0}, {u: m.u1, v: m.v0}, {u: m.u1, v: m.v1}, {u: m.u0, v: m.v1}];
+  return m.planes.map((p, i)=>{
+    let poly = rect;
+    m.planes.forEach((q, j) => { if (i !== j && poly.length >= 3) poly = clipHalfPlane(poly, p.a - q.a, p.b - q.b, p.c - q.c + (j < i ? 1e-7 : 0)); });
+    return {plane: p, poly};
+  }).filter(f => f.poly.length >= 3 && Math.abs(polyAreaUV(f.poly)) > 1e-4);
+}
+// wing frame <-> the floor's plan
+function wingToPlan(w, k, u, v){ const o = rotate(u/k, v/k, w.rot || 0); return {x: w.cx + o.x, y: w.cy + o.y}; }
+function planToWing(w, k, x, y){ const o = rotate((x - w.cx)*k, (y - w.cy)*k, -(w.rot || 0)); return {u: o.x, v: o.y}; }
+// The roof surface under plan point (x, y) of floor f: the highest wing there, and its plane.
+function roofAt(f, x, y){
+  const roof = f.roof;
+  if (!roof) return null;
+  const k = metersPerWorldUnitForFloor(f), ov = (roof.overhangCm == null ? 30 : roof.overhangCm)/100;
+  let best = null;
+  roof.wings.forEach(w=>{
+    const m = roofWingModel(w, ov), q = planToWing(w, k, x, y);
+    if (q.u < m.u0 || q.u > m.u1 || q.v < m.v0 || q.v > m.v1) return;
+    const h = roofHeightAt(m, q.u, q.v), plane = m.planes.reduce((b, p) => (p.a*q.u + p.b*q.v + p.c) < (b.a*q.u + b.b*q.v + b.c) ? p : b);
+    if (!best || h > best.h) best = {w, m, u: q.u, v: q.v, h, plane};
+  });
+  return best;
+}
+function roofPitchDeg(m, side){ const run = side === "A" ? m.vr - m.v0 : m.v1 - m.vr; return m.flat ? 0 : Math.round(Math.atan2(m.R, run)*180/Math.PI); }
+// --- A roof from the house's own shape. The floor's footprint (its rooms, grown out to the walls' outer faces) is
+// gridded square to the house and split into rectangles, biggest first — each a wing with its spine along its
+// length. A wing that runs into an earlier one is carried on to that one's spine, so the two meet in valleys. On a
+// floor with another above it, only what sticks out beyond the floor above gets a roof: a single slope rising to
+// the house wall it leans against.
+function houseAxisOf(f){
+  const bins = new Map();
+  f.walls.forEach(w=>{
+    if ((w.type||"wall") !== "wall") return;
+    let d = Math.round(((Math.atan2(w.y2 - w.y1, w.x2 - w.x1)*180/Math.PI) % 90 + 90) % 90);
+    if (d === 90) d = 0;
+    bins.set(d, (bins.get(d) || 0) + Math.hypot(w.x2 - w.x1, w.y2 - w.y1));
+  });
+  let best = 0, bw = -1;
+  bins.forEach((v, d) => { if (v > bw){ bw = v; best = d; } });
+  return best*Math.PI/180;
+}
+const ROOF_CELL_M = 0.1;
+// cells (ROOF_CELL_M square, in the house's own axes) covered by floor f — and, given `minus`, not by that floor
+function roofFootprintGrid(f, axis, minus){
+  const k = metersPerWorldUnitForFloor(f), cu = ROOF_CELL_M/k, areas = getRoomAreasForFloor(f);
+  const pts = f.walls.flatMap(w => [{x: w.x1, y: w.y1}, {x: w.x2, y: w.y2}]).map(p => rotate(p.x, p.y, -axis));
+  if (!pts.length) return null;
+  const pad = 1/k, a0 = Math.min(...pts.map(p => p.x)) - pad, b0 = Math.min(...pts.map(p => p.y)) - pad;
+  const nx = Math.ceil((Math.max(...pts.map(p => p.x)) + pad - a0)/cu), ny = Math.ceil((Math.max(...pts.map(p => p.y)) + pad - b0)/cu);
+  const toPlan = (i, j) => rotate(a0 + (i + 0.5)*cu, b0 + (j + 0.5)*cu, axis);
+  const covered = (fl, areasOf, map)=>{
+    const g = new Uint8Array(nx*ny);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++){ const p = map(toPlan(i, j)); if (p && roomAtWorld(areasOf, p.x, p.y)) g[j*nx + i] = 1; }
+    // grown out over the walls (interior ones close up, the outside ones reach their outer face)
+    const r = Math.round(0.25/ROOF_CELL_M), out = new Uint8Array(nx*ny);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++){
+      if (!g[j*nx + i]) continue;
+      for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++){ const x = i + di, y = j + dj; if (x >= 0 && y >= 0 && x < nx && y < ny) out[y*nx + x] = 1; }
+    }
+    return out;
+  };
+  const grid = covered(f, areas, p => p);
+  let above = null;
+  if (minus){
+    const am = getRoomAreasForFloor(minus);
+    above = covered(minus, am, p => { const h = floorToHouse(f, p.x, p.y); return houseToFloor(minus, h.x, h.z); });
+    for (let i = 0; i < grid.length; i++) if (above[i]) grid[i] = 0;
+  }
+  return {grid, above, nx, ny, a0, b0, cu, axis, k};
+}
+// the largest all-set rectangle in a grid: {i0, j0, i1, j1} (inclusive), by the histogram method
+function largestRect(grid, nx, ny){
+  const hgt = new Int32Array(nx);
+  let best = null, ba = 0;
+  for (let j = 0; j < ny; j++){
+    for (let i = 0; i < nx; i++) hgt[i] = grid[j*nx + i] ? hgt[i] + 1 : 0;
+    const st = [];
+    for (let i = 0; i <= nx; i++){
+      const h = i < nx ? hgt[i] : 0;
+      let start = i;
+      while (st.length && st[st.length - 1][1] >= h){
+        const [si, sh] = st.pop(), area = sh*(i - si);
+        if (area > ba){ ba = area; best = {i0: si, i1: i - 1, j0: j - sh + 1, j1: j}; }
+        start = si;
+      }
+      st.push([start, h]);
+    }
+  }
+  return best;
+}
+function autoRoofWings(f){
+  const fl = houseFloors(), above = fl[fl.indexOf(f) + 1] || null, axis = houseAxisOf(f), G = roofFootprintGrid(f, axis, above);
+  if (!G) return [];
+  const {grid, nx, ny, a0, b0, cu, k} = G, cellM = ROOF_CELL_M, wings = [], rects = [];
+  for (let n = 0; n < 8; n++){
+    const r = largestRect(grid, nx, ny);
+    if (!r) break;
+    const wM = (r.i1 - r.i0 + 1)*cellM, hM = (r.j1 - r.j0 + 1)*cellM;
+    if (Math.min(wM, hM) < 1.2 || wM*hM < 2.5) break;
+    for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) grid[j*nx + i] = 0;
+    rects.push(r);
+  }
+  const cellAt = (i, j, g) => i >= 0 && j >= 0 && i < nx && j < ny && g[j*nx + i];
+  rects.forEach((r, idx)=>{
+    const wM = (r.i1 - r.i0 + 1)*cellM, hM = (r.j1 - r.j0 + 1)*cellM, alongA = wM >= hM;
+    const cA = a0 + (r.i0 + r.i1 + 1)/2*cu, cB = b0 + (r.j0 + r.j1 + 1)/2*cu, c = rotate(cA, cB, axis);
+    const w = {id: newId(), cx: c.x, cy: c.y, lenCm: Math.round((alongA ? wM : hM)*100), widCm: Math.round((alongA ? hM : wM)*100), rot: alongA ? axis : axis + Math.PI/2, ridge: 0.5, ends: ["gable", "gable"], riseCm: 0};
+    if (above && G.above){
+      // a part sticking out below the floor above: a single slope rising to the side that meets the house
+      const touch = {
+        i0: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => cellAt(r.i0 - 1, r.j0 + t, G.above)).filter(Boolean).length,
+        i1: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => cellAt(r.i1 + 1, r.j0 + t, G.above)).filter(Boolean).length,
+        j0: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => cellAt(r.i0 + t, r.j0 - 1, G.above)).filter(Boolean).length,
+        j1: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => cellAt(r.i0 + t, r.j1 + 1, G.above)).filter(Boolean).length,
+      };
+      const side = Object.keys(touch).reduce((a, b) => touch[b] > touch[a] ? b : a);
+      if (touch[side] > 3){
+        // spine along the house wall, on the slope's high side (v-), falling away from it
+        const alongHouse = side[0] === "j"; // a j-side runs along the a axis
+        w.lenCm = Math.round((alongHouse ? wM : hM)*100); w.widCm = Math.round((alongHouse ? hM : wM)*100);
+        // rot so that local v points away from the house: v = rotate(0,1,rot)
+        const away = {i0: 0, i1: Math.PI, j0: Math.PI/2, j1: -Math.PI/2}[side]; // direction (in house axes) from the touching side into the part
+        w.rot = axis + away - Math.PI/2;
+        w.ridge = 0;
+        w.riseCm = Math.round(Math.min(Math.tan(ROOF_LEAN_DEG*Math.PI/180)*w.widCm, FLOOR_DEPTH_M*100 + 70));
+        wings.push(w);
+        return;
+      }
+    }
+    w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2);
+    // an end that runs into an earlier wing carries on to that wing's spine, so they meet in valleys
+    if (idx > 0){
+      [0, 1].forEach(e=>{
+        const u = rotate(1, 0, w.rot), sgn = e ? 1 : -1, endM = sgn*w.lenCm/200;
+        const probe = {x: w.cx + u.x*(endM + sgn*0.15)/k, y: w.cy + u.y*(endM + sgn*0.15)/k};
+        const host = wings.find(o => { const q = planToWing(o, k, probe.x, probe.y); return Math.abs(q.u) <= o.lenCm/200 && Math.abs(q.v) <= o.widCm/200; });
+        if (!host) return;
+        const hu = rotate(1, 0, host.rot);
+        if (Math.abs(hu.x*u.x + hu.y*u.y) > 0.3) return; // parallel wings: leave them be
+        const q = planToWing(host, k, w.cx + u.x*endM/k, w.cy + u.y*endM/k), spineV = -host.widCm/200 + (host.ridge == null ? 0.5 : host.ridge)*host.widCm/100;
+        const extra = Math.abs(spineV - q.v);
+        w.lenCm += Math.round(extra*100);
+        w.cx += u.x*sgn*extra/2/k; w.cy += u.y*sgn*extra/2/k;
+        w.riseCm = Math.min(w.riseCm, host.riseCm - 5); // a lower ridge, tucked under the main one
+      });
+    }
+    wings.push(w);
+  });
+  return wings;
+}
+function newRoof(wings){ return {wings, cover: "slate-welsh", flatCover: "felt", trim: "#f3f1ec", overhangCm: 30, windows: []}; }
+// Roofs for every floor of the house: the top floor's whole roof, and the parts of lower floors not under the floor above.
+function autoRoofHouse(){
+  let n = 0;
+  houseFloors().forEach(f=>{
+    const wings = autoRoofWings(f);
+    if (wings.length){ const keep = f.roof || {}; f.roof = {...newRoof(wings), ...(keep.cover ? {cover: keep.cover, flatCover: keep.flatCover, trim: keep.trim, overhangCm: keep.overhangCm} : {}), windows: []}; n += wings.length; }
+    else delete f.roof;
+  });
+  return n;
+}
+// --- roof windows: set into a slope, on a flat roof, or built out as dormers
+const ROOF_WINDOWS = [
+  {key:"pivot-s", label:"Roof window, small", kind:"pivot", wCm:55, hCm:98, icon:"▱"},
+  {key:"pivot-m", label:"Roof window, medium", kind:"pivot", wCm:78, hCm:118, icon:"▱"},
+  {key:"pivot-l", label:"Roof window, large", kind:"pivot", wCm:114, hCm:140, icon:"▱"},
+  {key:"conservation", label:"Conservation rooflight", kind:"conservation", wCm:66, hCm:118, icon:"▥"},
+  {key:"flatlight", label:"Flat rooflight", kind:"flatlight", wCm:100, hCm:100, icon:"◻", flatOnly:true},
+  {key:"dome", label:"Dome rooflight", kind:"dome", wCm:90, hCm:90, icon:"◠", flatOnly:true},
+  {key:"lantern", label:"Roof lantern", kind:"lantern", wCm:200, hCm:120, icon:"⌂", flatOnly:true},
+  {key:"dormer-gable", label:"Gable dormer", kind:"dormer", roof:"gable", wCm:130, hCm:110, icon:"⌂"},
+  {key:"dormer-hip", label:"Hipped dormer", kind:"dormer", roof:"hip", wCm:140, hCm:110, icon:"⌂"},
+  {key:"dormer-flat", label:"Box dormer", kind:"dormer", roof:"flat", wCm:220, hCm:110, icon:"▭"},
+];
+const ROOF_WINDOW_BY_KEY = new Map(ROOF_WINDOWS.map(t => [t.key, t]));
+// A plane's frame at a point: X along the eaves, S up the slope, N out of it (Vector3s, in the wing's frame).
+function roofPlaneBasis(p){
+  const g = Math.hypot(p.a, p.b);
+  if (g < 1e-6) return {X: new THREE.Vector3(1, 0, 0), S: new THREE.Vector3(0, 0, -1), N: new THREE.Vector3(0, 1, 0), slope: 0, down: {x: 0, z: 1}};
+  const N = new THREE.Vector3(-p.a, 1, -p.b).normalize(), S = new THREE.Vector3(p.a/g, g, p.b/g).normalize(), X = new THREE.Vector3().crossVectors(S, N).normalize();
+  return {X, S, N, slope: g, down: {x: -p.a/g, z: -p.b/g}};
+}
+function v3RoofWindow(wg, win, m, plane, u, v, roof, extMat){
+  const t = ROOF_WINDOW_BY_KEY.get(win.type) || ROOF_WINDOWS[0], W = (win.wCm || t.wCm)/100;
+  let Hh = (win.hCm || t.hCm)/100;
+  const T = m.flat ? ROOF_FLAT_T_M : ROOF_T_M, y = plane.a*u + plane.b*v + plane.c + T, B = roofPlaneBasis(plane);
+  const g = new THREE.Group(); wg.add(g); g.userData.roofWindowId = win.id;
+  const frameMat = t.kind === "conservation" ? M3.metal("#1f2124") : M3.metal("#4a4e53"), glass = v3Mat("#33424f", {roughness: 0.06, metalness: 0.55}); // seen from outside, roof glass reads dark and reflective
+  if (t.kind === "dormer"){
+    if (B.slope < 0.15) return; // no dormers on a flat roof
+    // its own frame: front face square to the slope, facing down it; Y up
+    const Z = new THREE.Vector3(B.down.x, 0, B.down.z), Y = new THREE.Vector3(0, 1, 0), X = new THREE.Vector3().crossVectors(Y, Z);
+    g.matrixAutoUpdate = false; g.matrix.makeBasis(X, Y, Z).setPosition(u, y - T, v);
+    // kept under the main ridge: it shrinks to fit if it's placed too high up the slope
+    const roomUp = m.R - (plane.a*u + plane.b*v + plane.c) - 0.12, apexH = t.roof === "flat" ? 0.12 : W/2*0.85;
+    const top = Math.max(0.55, Math.min(Hh + 0.3, roomUp - apexH)), apex = top + apexH;
+    Hh = Math.min(Hh, top - 0.3);
+    const cheek = extMat, D = Math.max(0.3, Math.min(6, (apex + 0.3)/B.slope + 0.15, (m.R - (plane.a*u + plane.b*v + plane.c))/B.slope));
+    v3Box(g, W, top + 0.35, D, 0, -0.35, -D/2, cheek); // the cheeks and front, buried at the back in the main roof
+    const fm = M3.paint(roof.trim || "#f3f1ec"), fx = W/2 - 0.08, y0 = 0.14, y1 = 0.14 + Hh; // the window: a frame round the glass, and a mullion
+    v3Box(g, W - 0.16, 0.07, 0.07, 0, y0, 0.02, fm); v3Box(g, W - 0.16, 0.07, 0.07, 0, y1 - 0.07, 0.02, fm);
+    v3Box(g, 0.07, Hh, 0.07, -fx + 0.035, y0, 0.02, fm); v3Box(g, 0.07, Hh, 0.07, fx - 0.035, y0, 0.02, fm);
+    v3Box(g, 0.05, Hh - 0.14, 0.06, 0, y0 + 0.07, 0.02, fm);
+    v3Box(g, W - 0.2, Hh - 0.1, 0.01, 0, y0 + 0.05, 0.005, glass);
+    const cover = v3RoofMat(roof.cover);
+    if (t.roof === "flat"){ v3Box(g, W + 0.1, 0.12, D + 0.1, 0, top, -D/2 + 0.05, M3.metal("#6f7377")); }
+    else v3DormerRoof(g, W + 0.16, apex - top, top, 0.08, -D, t.roof === "hip" ? Math.min(W/2, apex - top) : 0, cover, cheek);
+    return;
+  }
+  g.matrixAutoUpdate = false; g.matrix.makeBasis(B.X, B.S, B.N).setPosition(u, y, v);
+  // in this frame: x along the eaves, y up the slope, z out of the roof
+  if (t.kind === "pivot" || t.kind === "conservation"){
+    const fw = 0.06;
+    [[0, -Hh/2 + fw/2, W, fw], [0, Hh/2 - fw/2, W, fw], [-W/2 + fw/2, 0, fw, Hh], [W/2 - fw/2, 0, fw, Hh]].forEach(([x, yy, w2, h2])=>{
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w2, h2, 0.07), frameMat); b.position.set(x, yy, 0.035); b.castShadow = true; g.add(b);
+    });
+    const gl = new THREE.Mesh(new THREE.BoxGeometry(W - 2*fw, Hh - 2*fw, 0.01), glass); gl.position.set(0, 0, 0.04); g.add(gl);
+    if (t.kind === "conservation"){ const bar = new THREE.Mesh(new THREE.BoxGeometry(0.025, Hh - 2*fw, 0.03), frameMat); bar.position.set(0, 0, 0.05); g.add(bar); }
+    else { const bar = new THREE.Mesh(new THREE.BoxGeometry(W - 2*fw, 0.05, 0.02), frameMat); bar.position.set(0, -Hh/2 + fw + 0.06, 0.05); g.add(bar); } // the opening handle bar
+    return;
+  }
+  // flat-roof lights: an upstand, then glass
+  const up = 0.18, kerb = M3.paint("#e9e7e2");
+  const kerbBox = new THREE.Mesh(new THREE.BoxGeometry(W + 0.12, Hh + 0.12, up), kerb); kerbBox.position.set(0, 0, up/2); kerbBox.castShadow = true; g.add(kerbBox);
+  if (t.kind === "flatlight"){ const gl = new THREE.Mesh(new THREE.BoxGeometry(W + 0.06, Hh + 0.06, 0.03), glass); gl.position.set(0, 0, up + 0.02); g.add(gl); }
+  else if (t.kind === "dome"){
+    const dm = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 10, 0, Math.PI*2, 0, Math.PI/2), new THREE.MeshStandardMaterial({color: "#f4f6f8", transparent: true, opacity: 0.55, roughness: 0.2}));
+    dm.rotation.x = Math.PI/2; dm.scale.set(W, Hh, 0.5); dm.position.set(0, 0, up); g.add(dm);
+  } else if (t.kind === "lantern"){
+    // a glass pyramid on its kerb, with dark glazing bars up each hip and across each face
+    const ph = Math.min(W, Hh)*0.45, z0 = up, bars = M3.metal("#2b2d30");
+    const geo = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1, true); geo.rotateY(Math.PI/4); geo.rotateX(Math.PI/2);
+    const pyr = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color: "#dfe9f0", transparent: true, opacity: 0.35, roughness: 0.1, metalness: 0.1, side: THREE.DoubleSide}));
+    pyr.scale.set(W, Hh, ph); pyr.position.set(0, 0, z0 + ph/2); g.add(pyr);
+    const apex = new THREE.Vector3(0, 0, z0 + ph), C = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => new THREE.Vector3(x*W/2, y*Hh/2, z0));
+    v3Tube(g, [...C, C[0]], 0.025, bars);
+    C.forEach(c => v3Tube(g, [c, apex], 0.022, bars));
+    for (let i = 0; i < 4; i++){ // rafters up each face
+      const a = C[i], c = C[(i + 1) % 4], n = Math.max(1, Math.round(a.distanceTo(c)/0.45));
+      for (let j = 1; j < n; j++) v3Tube(g, [a.clone().lerp(c, j/n), apex], 0.012, bars);
+    }
+  }
+}
+// A dormer's own little roof: eaves `span` wide at height y0, a ridge `rise` above them running back from the front
+// (z = zf) to zb — set back by `hipRun` at the front for a hipped dormer, or with an upright gable there for a gabled one.
+function v3DormerRoof(g, span, rise, y0, zf, zb, hipRun, cover, gableMat){
+  const h = span/2, EL = [-h, y0, zf], ER = [h, y0, zf], BL = [-h, y0, zb], BR = [h, y0, zb], RF = [0, y0 + rise, zf - hipRun], RB = [0, y0 + rise, zb];
+  const c = [0, y0 + rise/3, (zf + zb)/2]; // inside it: every face is turned to face away from here
+  const faces = (list, mat)=>{
+    const pos = [];
+    list.forEach(([p, q, r])=>{
+      const n = [(q[1]-p[1])*(r[2]-p[2]) - (q[2]-p[2])*(r[1]-p[1]), (q[2]-p[2])*(r[0]-p[0]) - (q[0]-p[0])*(r[2]-p[2]), (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])];
+      const out = n[0]*(p[0]-c[0]) + n[1]*(p[1]-c[1]) + n[2]*(p[2]-c[2]) >= 0;
+      pos.push(...p, ...(out ? q : r), ...(out ? r : q));
+    });
+    const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals();
+    const uv = []; for (let i = 0; i < pos.length; i += 3) uv.push(pos[i], pos[i+1] + pos[i+2]); // (rough, but the covering only needs to be at about the right scale)
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; g.add(m);
+  };
+  faces([[EL, RF, RB], [EL, RB, BL], [ER, BR, RB], [ER, RB, RF]], cover); // the two slopes
+  faces([[EL, ER, RF]], hipRun > 0 ? cover : gableMat); // the front: hipped back, or an upright gable
+}
+// One floor's roof into `group` (that floor's own frame), sitting on its wall tops at height H.
+function v3BuildRoof(group, floor, k, H){
+  const roof = floor.roof;
+  if (!roof || !roof.wings.length) return;
+  const ov = (roof.overhangCm == null ? 30 : roof.overhangCm)/100, trim = M3.paint(roof.trim || "#f3f1ec");
+  const fin = floorExterior(floor), extMat = !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : v3Mat(fin, {roughness: 0.95});
+  const models = roof.wings.map(w => ({w, m: roofWingModel(w, ov)}));
+  models.forEach(({w, m})=>{
+    const wg = new THREE.Group(); wg.position.set(w.cx*k, H, w.cy*k); wg.rotation.y = -(w.rot || 0); wg.userData.roof = w.id; group.add(wg);
+    const T = m.flat ? ROOF_FLAT_T_M : ROOF_T_M, cover = v3RoofMat(m.flat ? roof.flatCover : roof.cover), facets = roofWingFacets(m);
+    const onEdge = (p, q)=>{
+      const near = (a, b) => Math.abs(a - b) < 1e-5;
+      if (near(p.u, m.u0) && near(q.u, m.u0)) return "u0"; if (near(p.u, m.u1) && near(q.u, m.u1)) return "u1";
+      if (near(p.v, m.v0) && near(q.v, m.v0)) return "vA"; if (near(p.v, m.v1) && near(q.v, m.v1)) return "vB";
+      return null;
+    };
+    facets.forEach(({plane: p, poly})=>{
+      const h = q => p.a*q.u + p.b*q.v + p.c;
+      // the covering, with texture coordinates in metres: along the eaves, and up the slope
+      const st = Math.sqrt(1 + p.a*p.a + p.b*p.b);
+      const uv = q => !p.eave ? [q.u, q.v] : p.eave.axis === "v" ? [q.u, p.eave.dir*(q.v - p.eave.at)*st] : [q.v, p.eave.dir*(q.u - p.eave.at)*st];
+      const pos = [], uvs = [], idx = [];
+      poly.forEach(q => { pos.push(q.u, h(q) + T, q.v); uvs.push(...uv(q)); });
+      const up = polyAreaUV(poly) < 0; // (u, v) is x, z — counter-clockwise from above is negative here
+      for (let i = 1; i < poly.length - 1; i++) idx.push(...(up ? [0, i, i + 1] : [0, i + 1, i]));
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2)); geo.setIndex(idx); geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, cover); mesh.castShadow = mesh.receiveShadow = true; wg.add(mesh);
+      // its edges on the rectangle's border: a fascia at an eave, the wall carried up at a gable or high side
+      for (let i = 0; i < poly.length; i++){
+        const a = poly[i], b = poly[(i + 1) % poly.length], side = onEdge(a, b);
+        if (!side) continue;
+        const ya = h(a) + T, yb = h(b) + T, L = Math.hypot(b.u - a.u, b.v - a.v);
+        if (L < 1e-4) continue;
+        const wallish = m.kind[side] !== "eave", mat = wallish ? extMat : trim;
+        const g2 = new THREE.BufferGeometry(), along0 = side[0] === "u" ? a.v : a.u, along1 = side[0] === "u" ? b.v : b.u;
+        g2.setAttribute("position", new THREE.Float32BufferAttribute([a.u, 0, a.v, b.u, 0, b.v, b.u, yb, b.v, a.u, ya, a.v], 3));
+        g2.setAttribute("uv", new THREE.Float32BufferAttribute([along0, H, along1, H, along1, H + yb, along0, H + ya], 2));
+        g2.setIndex([0, 1, 2, 0, 2, 3]); g2.computeVertexNormals();
+        const sm = new THREE.Mesh(g2, mat); sm.material.side = THREE.DoubleSide; sm.castShadow = true; sm.receiveShadow = true; wg.add(sm);
+      }
+    });
+    // the soffit underneath, at the wall tops
+    const sof = new THREE.Mesh(new THREE.PlaneGeometry(m.u1 - m.u0, m.v1 - m.v0), trim);
+    sof.rotation.x = Math.PI/2; sof.position.set((m.u0 + m.u1)/2, 0.001, (m.v0 + m.v1)/2); wg.add(sof);
+    // its windows: each on whichever wing is highest under it
+    (roof.windows || []).forEach(win=>{
+      const at = roofAt(floor, win.x, win.y);
+      if (at && at.w === w) v3RoofWindow(wg, win, m, at.plane, at.u, at.v, roof, extMat);
+    });
+  });
+}
+// --- editing the roof on the plan (Build → Roof → "Edit roof on the plan"). The roof is drawn over the plan as a
+// roof plan — each slope shaded, ridges, hips and valleys as lines. Pick a section to get its handles: drag the
+// spine (amber) across to move it — to an edge for a single slope; drag an edge's square handle to resize; drag
+// inside to move it; click a round end marker to switch that end gable → hip → half-hip. Roof windows are placed
+// from the palette with a click, then dragged.
+let roofEdit = false, roofSel = null, roofArm = null; // roofSel: {kind: "wing"|"win", id}
+function roofOverhang(roof){ return (roof.overhangCm == null ? 30 : roof.overhangCm)/100; }
+function roofSelWing(){ const r = activeFloor().roof; return r && roofSel && roofSel.kind === "wing" ? r.wings.find(w => w.id === roofSel.id) || null : null; }
+function roofSelWin(){ const r = activeFloor().roof; return r && roofSel && roofSel.kind === "win" ? (r.windows || []).find(w => w.id === roofSel.id) || null : null; }
+// the handles of a wing, in plan units: spine ends, edge midpoints
+function roofWingHandles(w, k){
+  const L = w.lenCm/100, W = w.widCm/100, vr = -W/2 + (w.ridge == null ? 0.5 : w.ridge)*W, P = (u, v) => wingToPlan(w, k, u, v);
+  return {
+    spine: [P(-L/2, vr), P(L/2, vr)],
+    ends: [P(-L/2 - 0.35, vr), P(L/2 + 0.35, vr)],
+    edges: {u0: P(-L/2, 0), u1: P(L/2, 0), vA: P(0, -W/2), vB: P(0, W/2)},
+  };
+}
+function drawRoofPlan(){
+  if (!roofEdit) return;
+  const f = activeFloor(), roof = f.roof;
+  if (!roof) return;
+  const k = metersPerWorldUnitForFloor(f), ov = roofOverhang(roof), cov = ROOF_COVER_BY_KEY.get(roof.cover), flatCov = ROOF_COVER_BY_KEY.get(roof.flatCover);
+  ctx.save();
+  roof.wings.forEach(w=>{
+    const m = roofWingModel(w, ov), sel = roofSel && roofSel.kind === "wing" && roofSel.id === w.id;
+    roofWingFacets(m).forEach(({plane, poly})=>{
+      const pts = poly.map(q => toScreen(...Object.values(wingToPlan(w, k, q.u, q.v))));
+      // shade each slope by which way it faces, so the roof reads as a roof
+      const g = Math.hypot(plane.a, plane.b), lit = g < 1e-6 ? 0 : (plane.a*0.6 - plane.b*0.8)/g*0.18;
+      ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath();
+      ctx.fillStyle = rgbaHex((m.flat ? flatCov : cov || ROOF_COVERS[0]).base, 0.55); ctx.fill();
+      ctx.fillStyle = lit > 0 ? `rgba(255,255,255,${lit})` : `rgba(0,0,0,${-lit})`; ctx.fill();
+      ctx.strokeStyle = sel ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.45)"; ctx.lineWidth = sel ? 1.5 : 1; ctx.stroke();
+    });
+  });
+  // roof windows
+  (roof.windows || []).forEach(win=>{
+    const t = ROOF_WINDOW_BY_KEY.get(win.type) || ROOF_WINDOWS[0], at = roofAt(f, win.x, win.y), sel = roofSel && roofSel.kind === "win" && roofSel.id === win.id;
+    const W = (win.wCm || t.wCm)/100, Hh = (win.hCm || t.hCm)/100;
+    let ang = 0, depth = Hh;
+    if (at){ const g = Math.hypot(at.plane.a, at.plane.b); if (g > 1e-6){ const d = rotate(-at.plane.a/g, -at.plane.b/g, at.w.rot || 0); ang = Math.atan2(d.y, d.x) - Math.PI/2; depth = t.kind === "dormer" ? 0.9 : Hh/Math.sqrt(1 + g*g); } }
+    const c = toScreen(win.x, win.y), s = fitScale/k;
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(ang);
+    ctx.fillStyle = t.kind === "dormer" ? "rgba(240,235,225,0.85)" : "rgba(150,200,240,0.8)"; ctx.fillRect(-W/2*s, -depth/2*s, W*s, depth*s);
+    ctx.strokeStyle = sel ? "#ffcf5a" : "rgba(30,34,40,0.9)"; ctx.lineWidth = sel ? 2 : 1.2; ctx.strokeRect(-W/2*s, -depth/2*s, W*s, depth*s);
+    ctx.restore();
+  });
+  const w = roofSelWing();
+  if (w){
+    const h = roofWingHandles(w, k), sp = h.spine.map(p => toScreen(p.x, p.y));
+    ctx.strokeStyle = "#ffcf5a"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(sp[0].x, sp[0].y); ctx.lineTo(sp[1].x, sp[1].y); ctx.stroke();
+    ctx.fillStyle = "#ffcf5a"; ctx.font = "bold 10px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    h.ends.forEach((p, i)=>{
+      const q = toScreen(p.x, p.y), e = (w.ends || ["gable", "gable"])[i];
+      ctx.beginPath(); ctx.arc(q.x, q.y, 9, 0, Math.PI*2); ctx.fillStyle = "#1c1f25"; ctx.fill(); ctx.strokeStyle = "#ffcf5a"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = "#ffcf5a"; ctx.fillText(w.flat ? "" : e === "hip" ? "H" : e === "half" ? "½" : "G", q.x, q.y + 0.5);
+    });
+    Object.values(h.edges).forEach(p => { const q = toScreen(p.x, p.y); ctx.fillStyle = "#ffffff"; ctx.fillRect(q.x - 5, q.y - 5, 10, 10); ctx.strokeStyle = "#1c1f25"; ctx.strokeRect(q.x - 5, q.y - 5, 10, 10); });
+  }
+  ctx.restore();
+}
+function roofHitTest(mw, ms){
+  const f = activeFloor(), roof = f.roof;
+  if (!roof) return null;
+  const k = metersPerWorldUnitForFloor(f), near = (p, px) => { const q = toScreen(p.x, p.y); return Math.hypot(q.x - ms.x, q.y - ms.y) <= px; };
+  const w = roofSelWing();
+  if (w){
+    const h = roofWingHandles(w, k);
+    for (let i = 0; i < 2; i++) if (near(h.ends[i], 11)) return {kind: "end", w, i};
+    for (const [side, p] of Object.entries(h.edges)) if (near(p, 9)) return {kind: "edge", w, side};
+    const a = toScreen(h.spine[0].x, h.spine[0].y), b = toScreen(h.spine[1].x, h.spine[1].y), L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L > 1){ const t = ((ms.x - a.x)*(b.x - a.x) + (ms.y - a.y)*(b.y - a.y))/(L*L); if (t > 0.05 && t < 0.95 && Math.abs((ms.x - a.x)*(b.y - a.y) - (ms.y - a.y)*(b.x - a.x))/L <= 7) return {kind: "spine", w}; }
+  }
+  for (const win of (roof.windows || []).slice().reverse()){
+    const t = ROOF_WINDOW_BY_KEY.get(win.type) || ROOF_WINDOWS[0], r = Math.max(win.wCm || t.wCm, 90)/200/k;
+    if (Math.hypot(win.x - mw.x, win.y - mw.y) <= r) return {kind: "win", win};
+  }
+  for (const wing of roof.wings.slice().reverse()){
+    const q = planToWing(wing, k, mw.x, mw.y);
+    if (Math.abs(q.u) <= wing.lenCm/200 && Math.abs(q.v) <= wing.widCm/200) return {kind: "wing", w: wing};
+  }
+  return null;
+}
+function roofPointerDown(mw, ms){
+  const f = activeFloor();
+  if (roofArm){
+    if (f.roof && roofAt(f, mw.x, mw.y)){
+      const t = ROOF_WINDOW_BY_KEY.get(roofArm), win = {id: newId(), type: roofArm, x: mw.x, y: mw.y, wCm: t.wCm, hCm: t.hCm};
+      (f.roof.windows = f.roof.windows || []).push(win);
+      roofSel = {kind: "win", id: win.id}; roofArm = null;
+      drag = {type: "roof-win", win, dx: 0, dy: 0};
+    }
+    renderRoofPanel(true); render();
+    return;
+  }
+  const hit = roofHitTest(mw, ms);
+  if (!hit){ roofSel = null; drag = null; renderRoofPanel(true); render(); return; }
+  if (hit.kind === "end"){
+    if (!hit.w.flat){ const e = hit.w.ends = (hit.w.ends || ["gable", "gable"]).slice(); e[hit.i] = {gable: "hip", hip: "half", half: "gable"}[e[hit.i]] || "hip"; }
+    scheduleAutosave(); renderRoofPanel(true); render(); return;
+  }
+  if (hit.kind === "win"){ roofSel = {kind: "win", id: hit.win.id}; drag = {type: "roof-win", win: hit.win, dx: hit.win.x - mw.x, dy: hit.win.y - mw.y}; renderRoofPanel(true); render(); return; }
+  roofSel = {kind: "wing", id: hit.w.id};
+  const w = hit.w;
+  if (hit.kind === "spine") drag = {type: "roof-spine", w};
+  else if (hit.kind === "edge") drag = {type: "roof-edge", w, side: hit.side, start: {cx: w.cx, cy: w.cy, lenCm: w.lenCm, widCm: w.widCm}};
+  else drag = {type: "roof-move", w, dx: w.cx - mw.x, dy: w.cy - mw.y, winStart: (f.roof.windows || []).filter(x => { const a = roofAt(f, x.x, x.y); return a && a.w === w; }).map(x => ({x, ox: x.x - w.cx, oy: x.y - w.cy}))};
+  renderRoofPanel(true); render();
+}
+function roofPointerMove(mw, shift){
+  const f = activeFloor(), k = metersPerWorldUnitForFloor(f), w = drag.w;
+  if (drag.type === "roof-win"){ drag.win.x = mw.x + drag.dx; drag.win.y = mw.y + drag.dy; }
+  else if (drag.type === "roof-move"){ w.cx = mw.x + drag.dx; w.cy = mw.y + drag.dy; drag.winStart.forEach(s => { s.x.x = w.cx + s.ox; s.x.y = w.cy + s.oy; }); }
+  else if (drag.type === "roof-spine"){
+    // where across the wing the pointer is: 0 at the A edge, 1 at the B edge — snapping to the edges and the middle
+    const q = planToWing(w, k, mw.x, mw.y), W = w.widCm/100;
+    let r = Math.max(0, Math.min(1, (q.v + W/2)/W));
+    if (!shift) [0, 0.5, 1].forEach(s => { if (Math.abs(r - s) < 0.05) r = s; });
+    // keep the steeper side's pitch sensible: the spine height stays, so moving it changes each side's pitch
+    w.ridge = Math.round(r*1000)/1000;
+  } else if (drag.type === "roof-edge"){
+    const s = drag.start, q = planToWing({...w, cx: s.cx, cy: s.cy}, k, mw.x, mw.y), side = drag.side;
+    let lo, hi;
+    if (side[0] === "u"){ lo = -s.lenCm/200; hi = s.lenCm/200; if (side === "u0") lo = Math.min(hi - 1, q.u); else hi = Math.max(lo + 1, q.u); w.lenCm = Math.round((hi - lo)*100); const c = wingToPlan({...w, cx: s.cx, cy: s.cy}, k, (lo + hi)/2, 0); w.cx = c.x; w.cy = c.y; }
+    else { lo = -s.widCm/200; hi = s.widCm/200; if (side === "vA") lo = Math.min(hi - 1, q.v); else hi = Math.max(lo + 1, q.v); w.widCm = Math.round((hi - lo)*100); const c = wingToPlan({...w, cx: s.cx, cy: s.cy}, k, 0, (lo + hi)/2); w.cx = c.x; w.cy = c.y; }
+  }
+  renderRoofPanel(); render();
+}
+// --- Build → Roof panel
+function applyRoofShape(w, shape){
+  const tan = d => Math.tan(d*Math.PI/180);
+  w.flat = shape === "flat";
+  if (shape === "flat") return;
+  if (shape === "lean"){ w.ridge = w.ridge === 1 ? 1 : 0; w.ends = ["gable", "gable"]; w.riseCm = Math.round(tan(ROOF_LEAN_DEG)*w.widCm); return; }
+  w.ridge = 0.5; w.ends = shape === "hip" ? ["hip", "hip"] : shape === "half" ? ["half", "half"] : ["gable", "gable"];
+  w.riseCm = Math.round(tan(ROOF_PITCH_DEG)*w.widCm/2);
+}
+function roofShapeOf(w){
+  if (w.flat) return "flat";
+  if (w.ridge <= 0.01 || w.ridge >= 0.99) return "lean";
+  const e = w.ends || [];
+  return e[0] === "hip" && e[1] === "hip" ? "hip" : e[0] === "half" && e[1] === "half" ? "half" : e[0] === "gable" && e[1] === "gable" ? "gable" : "mixed";
+}
+const ROOF_SHAPES = [["gable", "Gabled"], ["hip", "Hipped"], ["half", "Half-hipped"], ["lean", "Single slope"], ["flat", "Flat"]];
+let roofPanelSig = "";
+function renderRoofPanel(force){
+  const el = document.getElementById("roofPanel");
+  if (!el) return;
+  const f = activeFloor(), roof = f.roof, sig = JSON.stringify([f.id, roof, roofSel, roofEdit, roofArm, houseFloors().length]);
+  if (!force && sig === roofPanelSig) return;
+  if (!force && drag && el.contains(document.activeElement)) return;
+  roofPanelSig = sig;
+  if (v3 && view3dOpen) v3UpdateBar(); // its Roof button shows once there's a roof
+  el.innerHTML = "";
+  const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); kids.forEach(c => e.append(c)); return e; };
+  const note = t => h("p", {className: "roofNote", textContent: t});
+  const btn = (label, title, fn, cls = "") => { const b = h("button", {textContent: label, title, className: cls}); b.addEventListener("click", fn); return b; };
+  const edit = (fn) => { pushUndoSnapshotDebounced(); fn(); scheduleAutosave(); renderRoofPanel(true); render(); };
+  const chips = (items, active, pick) => { const row = h("div", {className: "roofChips"}); items.forEach(([key, label]) => { const b = btn(label, "", () => pick(key), key === active ? "active" : ""); row.append(b); }); return row; };
+  const num = (label, value, unit, set, min, max, step = 1) => {
+    const inp = h("input", {type: "number", value: Math.round(value), min, max, step});
+    inp.addEventListener("keydown", e => e.stopPropagation());
+    inp.addEventListener("change", () => { const v = +inp.value; if (isFinite(v)) edit(() => set(Math.max(min, Math.min(max, v)))); });
+    return h("label", {className: "roofNum"}, label, inp, unit);
+  };
+  if (!roof){
+    const others = houseFloors().some(g => g.roof);
+    el.append(note(others ? `"${f.name}" has no roof of its own — the floor above covers it. To roof part of it (an extension, a porch), add a section by hand.`
+      : `"${f.name}" has no roof yet. Build one for the whole house from its shape (the top floor's roof, plus any part of a lower floor that sticks out beyond the floor above) — then change it however you like.`));
+    el.append(btn(others ? "🏠 Rebuild every floor's roof from the house shape" : "🏠 Build roofs from the house shape", "Every floor: works out the roof sections from the walls", ()=>{ pushUndoSnapshot(); const n = autoRoofHouse(); roofEdit = true; roofSel = null; scheduleAutosave(); renderRoofPanel(true); render(); if (!n) el.prepend(note("Couldn't find a footprint to roof — draw the outside walls first.")); }, "wide"));
+    el.append(btn("＋ Add a roof section by hand", "A single section over the middle of this floor, to drag into place", ()=>{
+      pushUndoSnapshot();
+      const pts = f.walls.flatMap(w => [{x: w.x1, y: w.y1}, {x: w.x2, y: w.y2}]);
+      const cx = pts.length ? (Math.min(...pts.map(p => p.x)) + Math.max(...pts.map(p => p.x)))/2 : f.worldWidth/2, cy = pts.length ? (Math.min(...pts.map(p => p.y)) + Math.max(...pts.map(p => p.y)))/2 : f.worldHeight/2;
+      const w = {id: newId(), cx, cy, lenCm: 800, widCm: 600, rot: houseAxisOf(f), ridge: 0.5, ends: ["gable", "gable"], riseCm: 250};
+      f.roof = newRoof([w]); roofEdit = true; roofSel = {kind: "wing", id: w.id};
+      scheduleAutosave(); renderRoofPanel(true); render();
+    }, "wide"));
+    return;
+  }
+  el.append(btn(roofEdit ? "✓ Done editing the roof" : "✎ Edit the roof on the plan", "Shows the roof over the plan, with handles to reshape it", ()=>{ roofEdit = !roofEdit; roofArm = null; if (!roofEdit) roofSel = null; renderRoofPanel(true); render(); }, "wide" + (roofEdit ? " active" : "")));
+  if (roofEdit) el.append(note("Click a section to pick it. Drag its amber spine across (to an edge for a single slope), its square handles to resize, or inside it to move it. Click a round end marker to switch gable → hip → half-hip."));
+  // the whole roof
+  const shapes = new Set(roof.wings.map(roofShapeOf));
+  el.append(h("div", {className: "roofHead", textContent: "Whole roof"}));
+  el.append(chips(ROOF_SHAPES, shapes.size === 1 ? [...shapes][0] : null, s => edit(() => roof.wings.forEach(w => applyRoofShape(w, s)))));
+  const covers = (flat) => {
+    const row = h("div", {className: "roofCovers"}), cur = flat ? roof.flatCover : roof.cover;
+    ROOF_COVERS.filter(c => !!c.flat === flat).forEach(c=>{
+      const b = h("button", {title: c.label, className: c.key === cur ? "active" : ""}, h("img", {src: roofCoverThumb(c.key), alt: ""}));
+      b.addEventListener("click", () => edit(() => { if (flat) roof.flatCover = c.key; else roof.cover = c.key; }));
+      row.append(b);
+    });
+    return row;
+  };
+  if (roof.wings.some(w => !w.flat)){ el.append(h("div", {className: "roofSub", textContent: "Covering: " + (ROOF_COVER_BY_KEY.get(roof.cover) || {}).label})); el.append(covers(false)); }
+  if (roof.wings.some(w => w.flat)){ el.append(h("div", {className: "roofSub", textContent: "Flat roof: " + (ROOF_COVER_BY_KEY.get(roof.flatCover) || {}).label})); el.append(covers(true)); }
+  el.append(num("Overhang ", roof.overhangCm == null ? 30 : roof.overhangCm, " cm", v => roof.overhangCm = v, 0, 100));
+  // the picked section
+  const w = roofSelWing();
+  el.append(h("div", {className: "roofHead", textContent: w ? `Section ${roof.wings.indexOf(w) + 1} of ${roof.wings.length}` : `${roof.wings.length} section${roof.wings.length === 1 ? "" : "s"}`}));
+  if (!w) el.append(note(roofEdit ? "Click a section on the plan to change just that part." : "Edit the roof on the plan to change a single section."));
+  else {
+    el.append(chips(ROOF_SHAPES, roofShapeOf(w), s => edit(() => applyRoofShape(w, s))));
+    if (!w.flat){
+      const m = roofWingModel(w, roofOverhang(roof)), pa = roofPitchDeg(m, "A"), pb = roofPitchDeg(m, "B");
+      el.append(num("Spine height ", w.riseCm, " cm", v => w.riseCm = v, 20, 800, 5));
+      el.append(note(w.ridge <= 0.01 || w.ridge >= 0.99 ? `A single slope at ${w.ridge <= 0.01 ? pb : pa}°.` : pa === pb ? `Both sides pitched at ${pa}°.` : `Pitched ${pa}° one side, ${pb}° the other.`));
+      const sl = h("input", {type: "range", min: 0, max: 100, value: Math.round((w.ridge == null ? 0.5 : w.ridge)*100)});
+      sl.addEventListener("input", () => { pushUndoSnapshotDebounced(); let r = +sl.value/100; [0, 0.5, 1].forEach(s => { if (Math.abs(r - s) < 0.03) r = s; }); w.ridge = r; scheduleAutosave(); render(); });
+      sl.addEventListener("change", () => renderRoofPanel(true));
+      el.append(h("label", {className: "roofSlider"}, "Spine ", sl));
+      const endSel = i => { const s = h("select"); [["gable", "Gable"], ["hip", "Hip"], ["half", "Half-hip"]].forEach(([v, l]) => s.append(h("option", {value: v, textContent: l, selected: (w.ends || [])[i] === v}))); s.addEventListener("change", () => edit(() => { w.ends = (w.ends || ["gable", "gable"]).slice(); w.ends[i] = s.value; })); return s; };
+      el.append(h("div", {className: "roofEnds"}, "Ends: ", endSel(0), " and ", endSel(1)));
+    }
+    el.append(h("div", {className: "roofSize"}, num("Length ", w.lenCm, " cm", v => w.lenCm = v, 100, 3000, 5), num("Width ", w.widCm, " cm", v => w.widCm = v, 100, 2000, 5)));
+    const row = h("div", {className: "row"});
+    row.append(btn("↻ Turn 90°", "Turn this section so its spine runs the other way", () => edit(() => { w.rot = (w.rot || 0) + Math.PI/2; [w.lenCm, w.widCm] = [w.widCm, w.lenCm]; if (!w.flat && roofShapeOf(w) !== "lean") w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2); })));
+    row.append(btn("＋ Add a turn", "A new section at right angles off this one's end, for an L or T-shaped roof — then drag it into place", () => edit(()=>{
+      // square off this one's far end: from its spine, out past its side by about a room's depth
+      const k = metersPerWorldUnitForFloor(f), W = w.widCm/100, wid = Math.round(w.widCm*0.8), out = Math.max(3, W*0.8), vr = -W/2 + (w.ridge == null ? 0.5 : w.ridge)*W;
+      const c = wingToPlan(w, k, w.lenCm/200 - wid/200, (vr + W/2 + out)/2);
+      const nw = {id: newId(), cx: c.x, cy: c.y, rot: (w.rot || 0) + Math.PI/2, lenCm: 0, widCm: wid, ridge: 0.5, ends: ["gable", "gable"], flat: !!w.flat};
+      nw.lenCm = Math.round((W/2 + out - vr)*100);
+      nw.riseCm = Math.min((w.riseCm || 0) - 5, Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*wid/2));
+      roof.wings.push(nw); roofSel = {kind: "wing", id: nw.id};
+    })));
+    row.append(btn("🗑 Delete", "Delete this section", () => edit(() => { roof.wings = roof.wings.filter(x => x !== w); roofSel = null; if (!roof.wings.length){ delete f.roof; roofEdit = false; } })));
+    el.append(row);
+  }
+  // roof windows
+  el.append(h("div", {className: "roofHead", textContent: "Roof windows"}));
+  const pal = h("div", {className: "roofWins"});
+  ROOF_WINDOWS.forEach(t=>{
+    const b = btn(`${t.icon} ${t.label}`, t.flatOnly ? "For a flat roof — pick it, then click on the roof" : "Pick it, then click on the roof", ()=>{ roofArm = roofArm === t.key ? null : t.key; roofEdit = true; roofSel = null; renderRoofPanel(true); render(); }, roofArm === t.key ? "active" : "");
+    pal.append(b);
+  });
+  el.append(pal);
+  if (roofArm) el.append(note("Now click on the roof where it should go."));
+  const win = roofSelWin();
+  if (win){
+    const t = ROOF_WINDOW_BY_KEY.get(win.type) || ROOF_WINDOWS[0];
+    el.append(h("div", {className: "roofSub", textContent: t.label + " — drag it on the plan to move it"}));
+    el.append(h("div", {className: "roofSize"}, num("Width ", win.wCm || t.wCm, " cm", v => win.wCm = v, 30, 600, 1), num(t.kind === "dormer" ? "Window height " : "Height ", win.hCm || t.hCm, " cm", v => win.hCm = v, 30, 400, 1)));
+    el.append(btn("🗑 Remove this window", "", () => edit(() => { roof.windows = roof.windows.filter(x => x !== win); roofSel = null; }), "wide"));
+  }
+  el.append(h("div", {className: "roofHead", textContent: "Start again"}));
+  const again = h("div", {className: "row"});
+  again.append(btn("🏠 Rebuild from the house shape", "Replaces every floor's roof with one worked out from the walls (Undo brings yours back)", ()=>{ pushUndoSnapshot(); autoRoofHouse(); roofSel = null; scheduleAutosave(); renderRoofPanel(true); render(); }));
+  again.append(btn("🗑 Remove this roof", "", () => edit(() => { delete f.roof; roofSel = null; roofEdit = false; roofArm = null; })));
+  el.append(again);
+}
 
 // ---------------------------------------------------------------------------
 // Init

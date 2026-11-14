@@ -641,7 +641,35 @@ The 3D view is also an editor: without Space held, a press picks things rather t
   - On the upstairs plan the stairwell shows hatched, with "stairwell" written in it, even when the ghost of the floor below is off (`drawStairWells`).
   - A staircase also drawn on the upper floor (plans often show it "down") that sits over one coming up from below counts as the same staircase, and isn't built in 3D (`isStairTopFromBelow`).
   - Walking about, every floor in the house gets its ceiling, so looking up the stairwell shows the floor above.
-- **Next:** walking up the stairs between floors, and roofs.
+- **Walking up the stairs:** in walk mode your eye follows a staircase's slope (`v3StairLift`, using the same `stairProfile` the 3D stairs are built from), easing from the floor at the foot to the full height at the top.
+  - In Whole house, stepping off the top step (or striding past it) moves you onto the floor above at the same spot and facing the same way, and the plan switches floor with you. Walking well into a stairwell from above takes you back down (`v3StairHop`).
+  - The switch up happens within 5cm of the top and the switch down more than 15cm in, so you can't flicker between floors at the edge.
+  - With no floor above in the scene, the climb stops short of the ceiling.
+- **Next:** loft rooms inside the roof, chimneys, and gutters.
+
+## Roofs (2026-11-14)
+
+- **Where roofs live:** each floor can carry a roof (`floor.roof`) sitting on its wall tops: the top floor's main roof, or a lower floor's roof over whatever sticks out beyond the floor above.
+- **Sections (wings):** a roof is made of rectangular sections, each with its own spine: `{cx, cy, lenCm, widCm, rot, ridge 0..1, riseCm, ends [gable|hip|half, …], flat}`.
+  - `roofWingModel` turns a section into planes, and the surface is the lowest plane at each point: a slope each side of the spine, a hip at each hipped end (a half-hip starts at 60% of the height), and a flat cap at the spine height.
+  - Moving the spine off-centre gives uneven pitches with level eaves. At an edge it becomes a single slope, with a high wall on that side.
+  - `roofWingFacets` clips the rectangle by the planes into exact faces, which both the plan drawing and the 3D use.
+  - Sections overlap freely, and the 3D shows the highest at each point, so an L or T roof gets valleys where its sections meet.
+- **Building from the house shape:** `autoRoofWings` grids the floor's footprint square to the house (10cm cells, rooms grown out to the wall faces) and takes the biggest rectangles first. Each becomes a 40° gabled section with its spine along its length.
+  - A later section that runs into an earlier one is carried on to that one's spine, with a slightly lower ridge.
+  - On a floor with another above it, only the parts outside the floor above get a roof: a 15° single slope rising to the house wall, capped to stay under the upstairs window sills.
+- **3D:**
+  - Gables and high sides are in the floor's outside finish. Eaves get a white fascia and soffit, with a 30cm overhang that you can change.
+  - Roofs show in walk mode, and in the dollhouse when "⌂ Roof on" is set or while you're editing the roof.
+  - Walls only run up through the floor depth where the floor above actually sits on them, so they no longer poke through a single-storey roof.
+- **Coverings:** Welsh, dark and green slate; clay plain tiles (red, brindle); pantiles (red, black glazed); concrete tiles (brown, grey); cedar shingles; standing seam (zinc, anthracite); thatch. Flat roofs: felt, rubber (EPDM), fibreglass, lead, sedum, gravel. All are drawn procedurally at real size (`drawRoofCover`).
+- **Editing (Build → Roof):**
+  - Presets for the whole roof or one section: Gabled, Hipped, Half-hipped, Single slope, Flat.
+  - You can set the spine height (pitches shown), spine position (slider, or drag the amber spine on the plan; it snaps to the middle and the edges), each end's style (or click the round end markers), length and width (or drag the square handles), move, turn 90°, "＋ Add a turn" (a section at right angles off the end), delete, rebuild from the house shape, and remove.
+- **Roof windows:** small, medium and large centre-pivot roof windows; conservation rooflight; flat rooflight; dome; roof lantern; gable, hipped and box dormers.
+  - Each sits on whichever section is highest under it, square to that slope.
+  - Dormers face down the slope, are buried at the back and shrink to stay under the ridge.
+  - Pick one in the panel, click the roof to place it, then drag it. Delete removes it.
 
 ## Installable app and updates (2026-10-24)
 
