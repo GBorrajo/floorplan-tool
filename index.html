@@ -64,6 +64,14 @@
   section{display:flex; flex-direction:column; gap:6px;}
   section h2{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); margin:0 0 2px; font-weight:600;}
   .row{display:flex; gap:6px; flex-wrap:wrap;}
+  #stackList{display:flex; flex-direction:column; gap:3px; margin:2px 0 4px;}
+  .stackRow{display:flex; align-items:center; gap:4px; padding:2px; border-radius:6px;}
+  .stackRow.active{background:rgba(79,140,255,0.16);}
+  .stackRow .stackName{flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
+  .stackRow input{width:54px;}
+  .stackRow .stackUnit{font-size:10.5px; color:var(--text-dim); margin-right:2px;}
+  .stackRow button:not(.stackName){padding-left:7px; padding-right:7px;}
+  #stackNudge button{flex:1;}
   .paletteCategory{width:100%; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); opacity:.75; margin:6px 0 0;}
   .paletteCategory:first-child{margin-top:0;}
   button{
@@ -112,6 +120,9 @@
   #view3dBar{flex:0 0 auto; display:flex; gap:4px; align-items:center; padding:5px; background:var(--panel); border-bottom:1px solid var(--panel-border);}
   #view3dBar button{font-size:11.5px; padding:4px 8px;}
   #view3dBar .grow{flex:1;}
+  #v3FloorStep{display:inline-flex; align-items:center; gap:3px;}
+  #v3FloorStep[hidden]{display:none;}
+  #v3FloorName{font-size:11px; color:var(--text-dim); max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   #view3dCanvas{flex:1; min-height:0; width:100%; height:100%; outline:none; cursor:default; touch-action:none;}
   #view3dCanvas.cam{cursor:grab;}
   #view3dCanvas.cam:active{cursor:grabbing;}
@@ -300,6 +311,27 @@
       <h2>Outside of the house</h2>
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">What the outside walls of this floor are finished in — see it in the 🎥 3D view. To do one wall differently (or paint it), click its outside face in 3D.</p>
       <div id="extFinishes"></div>
+    </section>
+
+    <section data-modes="build">
+      <h2>Floors of the house</h2>
+      <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">How the floors stack, top floor first — the 🎥 3D view's 🏘 Whole house puts them together. Each floor lines up on the one below it: the floor below shows faintly in blue under this one, so you can check the walls sit on top of each other.</p>
+      <div id="stackList"></div>
+      <div id="stackAlign">
+        <label class="chk" style="font-size:11.5px;color:var(--text-dim);"><input type="checkbox" id="fldShowBelow" checked> Show the floor below</label>
+        <button class="wide" id="btnStackAuto" title="Slide this floor to where its walls best sit on the walls of the floor below — and if it was calibrated a little differently, resize it to match">🧲 Line up &amp; match size</button>
+        <button class="wide" id="btnStackPick" title="Click a corner of this floor, then the same corner on the floor below — twice. Sets this floor's size and position exactly">📐 Match two corners</button>
+        <button class="wide" id="btnStackSnap" title="Slide this floor's outside walls (or just the selected walls) onto the parallel walls below them, outside faces flush — anything within 30cm">⇥ Snap walls onto the floor below</button>
+        <button class="wide" id="btnStackDrag" title="Then drag anywhere on the plan to slide the floor below under this one — or use the arrow keys (Shift for 1cm)">✥ Line up by hand</button>
+        <div class="row" id="stackNudge">
+          <button data-nudge="-1,0" title="Move the floor below left 5cm">←</button>
+          <button data-nudge="0,-1" title="Move the floor below up 5cm">↑</button>
+          <button data-nudge="0,1" title="Move the floor below down 5cm">↓</button>
+          <button data-nudge="1,0" title="Move the floor below right 5cm">→</button>
+          <button id="btnStackTurn" title="Turn this floor a quarter turn on the floor below (if its image was drawn a different way round)">⟳ 90°</button>
+        </div>
+        <p id="stackStatus" style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;"></p>
+      </div>
     </section>
 
     <section data-modes="build">
@@ -539,6 +571,9 @@
         <button data-v3mode="walk" title="Look through the camera on the plan">🚶 Walk</button>
         <button data-v3mode="doll" title="Look down on the whole floor">🏠 Dollhouse</button>
         <button id="btnV3Walls" hidden></button>
+        <button id="btnV3House" hidden title="Every floor of the house, stacked — line them up in Build → Floors of the house">🏘 Whole house</button>
+        <span id="v3FloorStep" hidden><button id="btnV3FloorDown" title="Down a floor">▼</button><span id="v3FloorName"></span><button id="btnV3FloorUp" title="Up a floor">▲</button></span>
+        <button id="btnV3Above" hidden title="Show the floors above this one too (they lift off so you can see in)"></button>
         <label id="v3FovWrap" title="Field of view — or pinch on a trackpad" style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);margin-left:6px;">
           ↔ <input type="range" id="v3Fov" min="60" max="120" step="1" style="width:90px;"> <span id="v3FovLabel"></span></label>
         <span class="grow"></span>
@@ -1311,6 +1346,9 @@ function normalizeFloor(f){
     ...(f.camera ? {camera: f.camera} : {}), // the 3D view's walk camera — see ensurePlanCamera
     ...(f.paints ? {paints: f.paints} : {}), // wall colour per room — see paintAssignments
     ...(f.ceilings ? {ceilings: f.ceilings} : {}), // ceiling colour per room, same seed-point form
+    ...(f.exterior ? {exterior: f.exterior} : {}), // the outside walls' finish — see EXTERIOR_FINISHES
+    ...(f.stack ? {stack: f.stack} : {}), // where this floor sits in the house — see floorStack
+    ...(f.roomHM ? {roomHM: f.roomHM} : {}), // this floor's own room height (m) — see floorRoomH
   };
 }
 // data.versions is the current save shape; the other two branches migrate
@@ -1422,6 +1460,7 @@ function switchFloor(id){
   const v = activeVersion();
   if (id === v.activeFloorId) return;
   v.activeFloorId = id;
+  stackNote = ""; stackPick = null;
   selection = null;
   multiSelection = [];
   drag = null;
@@ -1485,7 +1524,282 @@ function renderFloorTabs(){
     tab.addEventListener("click", ()=>switchFloor(f.id));
     tab.addEventListener("dblclick", ()=>renameFloor(f.id));
     el.appendChild(tab);
+  });  renderStackPanel();
+}
+
+// --- Build → "Floors of the house": the stack order, each floor's room height, and lining a floor up on the one below
+let showFloorBelow = true, stackDragMode = false, stackNote = "";
+function renderStackPanel(){
+  const list = document.getElementById("stackList");
+  if (!list) return;
+  const fl = houseFloors(), cur = activeFloor(), base = Math.round(floorRoomH(null)*100);
+  list.innerHTML = "";
+  fl.slice().reverse().forEach(f=>{
+    const i = fl.indexOf(f), row = document.createElement("div");
+    row.className = "stackRow" + (f === cur ? " active" : "");
+    const name = document.createElement("button");
+    name.className = "stackName"; name.textContent = (i === 0 ? "⌂ " : "") + f.name;
+    name.title = i === 0 ? "The ground floor — click to switch to it" : "Click to switch to this floor";
+    name.addEventListener("click", ()=> switchFloor(f.id));
+    const h = document.createElement("input");
+    h.type = "number"; h.min = 200; h.max = 600; h.step = 1; h.placeholder = base; h.value = f.roomHM ? Math.round(f.roomHM*100) : "";
+    h.title = "Room height on this floor (cm) — blank uses the house's ceiling height from Costs (" + base + "cm)";
+    h.addEventListener("keydown", e => e.stopPropagation());
+    h.addEventListener("change", ()=>{
+      pushUndoSnapshot();
+      const v = +h.value;
+      if (v >= 200 && v <= 600) f.roomHM = v/100; else { delete f.roomHM; h.value = ""; }
+      scheduleAutosave(); render();
+    });
+    const cm = document.createElement("span"); cm.className = "stackUnit"; cm.textContent = "cm";
+    const mv = (d, label, tip)=>{
+      const b = document.createElement("button");
+      b.textContent = label; b.title = tip; b.disabled = !fl[i + d];
+      b.addEventListener("click", ()=>{
+        pushUndoSnapshot();
+        const j = i + d; [fl[i], fl[j]] = [fl[j], fl[i]];
+        scheduleAutosave(); renderFloorTabs(); render();
+      });
+      return b;
+    };
+    row.append(name, h, cm, mv(1, "▲", "Move this floor up the house"), mv(-1, "▼", "Move this floor down the house"));
+    list.appendChild(row);
   });
+  const below = floorBelow(cur);
+  document.getElementById("stackAlign").hidden = !below;
+  document.getElementById("fldShowBelow").checked = showFloorBelow;
+  document.getElementById("btnStackDrag").classList.toggle("active", stackDragMode);
+  document.getElementById("btnStackDrag").textContent = stackDragMode ? "✓ Done lining up" : "✥ Line up by hand";
+  document.getElementById("btnStackPick").classList.toggle("active", !!stackPick);
+  document.getElementById("btnStackPick").textContent = stackPick ? "✕ Cancel matching corners" : "📐 Match two corners";
+  try{ if (v3 && view3dOpen) v3UpdateBar(); }catch(e){ if (!(e instanceof ReferenceError)) throw e; } // the 3D bar's floor switcher (not before the 3D code has loaded)
+  document.getElementById("stackStatus").textContent = !below ? "" : stackNote || `"${cur.name}" sits on "${below.name}".` + (stackDragMode ? " Drag anywhere on the plan to slide the blue floor below into place, or use the arrow keys (hold Shift for 1cm steps)." : "");
+}
+// Slides this floor in the house so the floor below appears to move by (dx, dy) in this floor's plan units.
+function moveFloorBelowGhost(f, dx, dy, from = floorStack(f)){
+  const k = metersPerWorldUnitForFloor(f), d = rotate(dx*k, dy*k, from.rot);
+  f.stack = {x: from.x - d.x, z: from.z - d.y, rot: from.rot};
+}
+function nudgeFloorBelow(dx, dy, cm){
+  const f = activeFloor();
+  if (!floorBelow(f)) return;
+  ensureHouseStacked();
+  pushUndoSnapshotDebounced();
+  moveFloorBelowGhost(f, dx*cmToWorld(cm), dy*cmToWorld(cm));
+  stackNote = ""; scheduleAutosave(); render();
+}
+function autoStackActive(){
+  const f = activeFloor(), below = floorBelow(f);
+  if (!below) return;
+  stackPick = null;
+  pushUndoSnapshot();
+  const {cover, scale} = autoStackFloor(f, {scale: true});
+  const pct = Math.round(Math.abs(scale - 1)*1000)/10;
+  const size = Math.abs(scale - 1) < 1e-6 ? "" : ` "${f.name}" was ${pct}% too ${scale > 1 ? "small" : "big"} — likely calibrated at a different spot — so it's been resized to match (furniture keeps its real size).`;
+  stackNote = cover == null ? `Lined up on "${below.name}" as best it can — there aren't many walls to go on yet.`
+    : cover > 0.6 ? `Lined up: ${Math.round(cover*100)}% of this floor's outside walls sit on walls of "${below.name}".${size}`
+    : `Best fit found, but only ${Math.round(cover*100)}% of the outside walls land on walls below — check it by eye, and fine-tune with "Line up by hand" or "Match two corners".${size}`;
+  scheduleAutosave(); renderStackPanel(); render();
+}
+// --- Match two corners: click a corner of this floor, then the same corner on the blue floor below, twice.
+// That pins this floor's size, turn and position exactly (a correction to its calibration plus its place in the house).
+let stackPick = null; // {pts: [plan points, alternately this floor's and the ghost's]}
+function stackPickTargets(onGhost){
+  const f = activeFloor(), below = floorBelow(f), out = [];
+  const add = (w, map) => { if ((w.type||"wall") === "wall"){ out.push(map(w.x1, w.y1)); out.push(map(w.x2, w.y2)); } };
+  if (onGhost) below.walls.forEach(w => add(w, (x, y) => { const h = floorToHouse(below, x, y); return houseToFloor(f, h.x, h.z); }));
+  else f.walls.forEach(w => add(w, (x, y) => ({x, y})));
+  return out;
+}
+function stackPickSnap(mw){
+  const onGhost = stackPick.pts.length % 2 === 1, tol = 14/fitScale;
+  let best = null, bd = tol;
+  stackPickTargets(onGhost).forEach(p => { const d = Math.hypot(p.x - mw.x, p.y - mw.y); if (d < bd){ bd = d; best = p; } });
+  return best || mw;
+}
+function stackPickPrompt(){
+  const n = stackPick ? stackPick.pts.length : 0, below = floorBelow(activeFloor());
+  return ["Click a corner of this floor's outside walls (white).", `Now click the same corner on "${below ? below.name : "the floor below"}" (blue).`,
+    "Click a second corner of this floor — ideally far from the first, e.g. the opposite end of the house.", "And the same corner on the floor below."][n] || "";
+}
+function stackPickClick(mw){
+  stackPick.pts.push(stackPickSnap(mw));
+  if (stackPick.pts.length < 4){ stackNote = stackPickPrompt(); renderStackPanel(); render(); return; }
+  const f = activeFloor(), [p1, g1, p2, g2] = stackPick.pts;
+  stackPick = null;
+  const k = metersPerWorldUnitForFloor(f), H1 = floorToHouse(f, g1.x, g1.y), H2 = floorToHouse(f, g2.x, g2.y); // the ghost points, in the house
+  const dp = {x: (p2.x - p1.x)*k, y: (p2.y - p1.y)*k}, dH = {x: H2.x - H1.x, y: H2.z - H1.z}, Lp = Math.hypot(dp.x, dp.y), LH = Math.hypot(dH.x, dH.y);
+  if (Lp < 0.5 || LH < 0.5){ stackNote = "Those corners are too close together to measure from — pick two further apart."; renderStackPanel(); render(); return; }
+  const sg = LH/Lp;
+  if (sg < 0.8 || sg > 1.25){ stackNote = `That would resize this floor by ${Math.round((sg - 1)*100)}% — it looks like the corners didn't match up. Nothing changed; try again.`; renderStackPanel(); render(); return; }
+  pushUndoSnapshot();
+  const rot = Math.atan2(dH.y, dH.x) - Math.atan2(dp.y, dp.x), k2 = k*sg, o = rotate(p1.x*k2, p1.y*k2, rot);
+  f.calibration = {...(f.calibration || {}), metersPerWorldUnit: k2};
+  f.stack = {x: H1.x - o.x, z: H1.z - o.y, rot: Math.abs(rot) < 1e-4 ? 0 : rot};
+  const pct = Math.round(Math.abs(sg - 1)*1000)/10;
+  stackNote = `Matched on those two corners${pct >= 0.1 ? ` — this floor was ${pct}% too ${sg > 1 ? "small" : "big"}, now resized (furniture keeps its real size)` : ""}${Math.abs(rot) > 0.002 ? `, and turned ${Math.round(rot*1800/Math.PI)/10}°` : ""}.`;
+  scheduleAutosave(); renderStackPanel(); render();
+}
+function drawStackPick(){
+  if (!stackPick) return;
+  const onGhost = stackPick.pts.length % 2 === 1;
+  ctx.save();
+  ctx.fillStyle = onGhost ? "rgba(120,200,255,0.9)" : "rgba(255,255,255,0.85)";
+  stackPickTargets(onGhost).forEach(p => { const q = toScreen(p.x, p.y); ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI*2); ctx.fill(); });
+  stackPick.pts.forEach((p, i)=>{
+    const q = toScreen(p.x, p.y);
+    ctx.strokeStyle = i % 2 ? "#78c8ff" : "#ffffff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 8, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = "#ffcf5a"; ctx.font = "bold 11px system-ui"; ctx.fillText(String(Math.floor(i/2) + 1), q.x + 10, q.y - 8);
+  });
+  ctx.restore();
+}
+// --- Snap walls onto the floor below: each chosen wall (the selected ones, or else every outside wall) slides square
+// to itself onto a parallel wall below within 30cm, outside faces flush. Walls that meet it keep meeting it, and the
+// doors, windows and wall-backed furniture on it move with it.
+function snapWallsToBelow(){
+  const f = activeFloor(), below = floorBelow(f);
+  if (!below) return;
+  stackPick = null;
+  ensureHouseStacked();
+  const straight = w => (w.type||"wall") === "wall" && !w.bowCm;
+  const sel = (multiSelection.length ? multiSelection : selection ? [selection] : []).filter(x => x.kind === "wall").map(x => getWall(x.id)).filter(w => w && straight(w));
+  const chosen = sel.length ? sel : f.walls.filter(w => straight(w) && (w.thicknessCm || WALL_THICKNESS_CM) >= 18);
+  if (!chosen.length){ stackNote = "No straight walls to snap — select the walls you want, or draw this floor's outside walls (25cm) first."; renderStackPanel(); return; }
+  const kf = metersPerWorldUnitForFloor(f), kb = metersPerWorldUnitForFloor(below), U = cm => cm/100/kf; // cm → this floor's plan units
+  const aAreas = getRoomAreasForFloor(f), bAreas = getRoomAreasForFloor(below);
+  // which side of a wall is outside: +1/-1 along its left normal, or 0 if it can't tell (rooms both sides, or none)
+  const outSide = (areas, w, unit)=>{
+    const ux = w.x2 - w.x1, uy = w.y2 - w.y1, L = Math.hypot(ux, uy), nx = -uy/L, ny = ux/L, off = ((w.thicknessCm || WALL_THICKNESS_CM)/2 + 10)/100/unit;
+    // a vote along the wall, so one spot where another wall meets it (no room there) can't decide it
+    let vote = 0;
+    [0.15, 0.3, 0.45, 0.6, 0.75, 0.9].forEach(t=>{
+      const mx = w.x1 + (w.x2 - w.x1)*t, my = w.y1 + (w.y2 - w.y1)*t;
+      const a = !!roomAtWorld(areas, mx + nx*off, my + ny*off), b = !!roomAtWorld(areas, mx - nx*off, my - ny*off);
+      if (a !== b) vote += a ? -1 : 1;
+    });
+    return Math.sign(vote);
+  };
+  const mapB = (x, y) => { const h = floorToHouse(below, x, y); return houseToFloor(f, h.x, h.z); };
+  const lines = below.walls.filter(straight).map(w=>{
+    const a = mapB(w.x1, w.y1), b = mapB(w.x2, w.y2), L = Math.hypot(b.x - a.x, b.y - a.y);
+    return L > 1e-6 && {a, b, L, ux: (b.x - a.x)/L, uy: (b.y - a.y)/L, T: w.thicknessCm || WALL_THICKNESS_CM, out: outSide(bAreas, w, kb)};
+  }).filter(Boolean);
+  const before = snapshotState();
+  let moved = 0, most = 0, already = 0;
+  chosen.forEach(w=>{
+    const L = Math.hypot(w.x2 - w.x1, w.y2 - w.y1);
+    if (L < 1e-6) return;
+    const ux = (w.x2 - w.x1)/L, uy = (w.y2 - w.y1)/L, nx = -uy, ny = ux, T = w.thicknessCm || WALL_THICKNESS_CM;
+    let best = null;
+    lines.forEach(l=>{
+      if (Math.abs(ux*l.uy - uy*l.ux) > 0.05) return; // not parallel (within ~3°)
+      const d = (l.a.x - w.x1)*nx + (l.a.y - w.y1)*ny;
+      if (Math.abs(d) > U(30)) return;
+      const t0 = (l.a.x - w.x1)*ux + (l.a.y - w.y1)*uy, t1 = (l.b.x - w.x1)*ux + (l.b.y - w.y1)*uy;
+      const overlap = Math.min(L, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+      if (overlap < 0.3*Math.min(L, l.L)) return;
+      if (!best || Math.abs(d) < Math.abs(best.d)) best = {l, d};
+    });
+    if (!best) return;
+    // outside faces flush when both walls know which side is outside (and agree); otherwise centre on centre
+    let d = best.d;
+    const mine = outSide(aAreas, w, kf), theirs = best.l.out*Math.sign(nx*-best.l.uy + ny*best.l.ux);
+    if (mine && mine === theirs) d += mine*U(best.l.T - T)/2;
+    if (Math.abs(d) < U(0.2)){ already++; return; }
+    moveWallSideways(f, w, d*nx, d*ny, U(T/2 + 3));
+    moved++; most = Math.max(most, Math.abs(d)*kf*100);
+  });
+  const which = sel.length ? "selected" : "outside";
+  stackNote = (moved ? `Snapped ${moved} wall${moved > 1 ? "s" : ""} onto "${below.name}" (moved by up to ${Math.round(most)}cm).` : already ? `The ${which} walls already sit on the walls below.` : `Nothing to snap — no ${which} wall has a parallel wall within 30cm below it.`)
+    + (moved && already ? ` ${already} already sat on them.` : "") + (chosen.length > moved + already ? ` ${chosen.length - moved - already} had no wall below to snap to.` : "");
+  if (moved){ commitUndoSnapshot(before); scheduleAutosave(); updateSelPanel(); }
+  renderStackPanel(); render();
+}
+// Moves wall w by (vx, vy) (square to itself). Any other wall with an end touching it (within `reach` of its
+// line) slides that end along its own line so the two still meet; doors, windows and wall-backed furniture
+// on it go with it.
+function moveWallSideways(f, w, vx, vy, reach){
+  const L = Math.hypot(w.x2 - w.x1, w.y2 - w.y1), ux = (w.x2 - w.x1)/L, uy = (w.y2 - w.y1)/L;
+  const onIt = (x, y, r)=>{
+    const t = (x - w.x1)*ux + (y - w.y1)*uy, d = Math.abs((x - w.x1)*-uy + (y - w.y1)*ux);
+    return d <= r && t >= -r && t <= L + r;
+  };
+  const nx1 = w.x1 + vx, ny1 = w.y1 + vy; // a point on the wall's new line
+  f.walls.forEach(o=>{
+    if (o === w) return;
+    if ((o.type||"wall") === "window"){
+      if (o.wallId === w.id || (onIt(o.x1, o.y1, reach) && onIt(o.x2, o.y2, reach))){ o.x1 += vx; o.y1 += vy; o.x2 += vx; o.y2 += vy; }
+      return;
+    }
+    const ol = Math.hypot(o.x2 - o.x1, o.y2 - o.y1);
+    if (ol < 1e-6) return;
+    const ox = (o.x2 - o.x1)/ol, oy = (o.y2 - o.y1)/ol, cr = ox*uy - oy*ux;
+    [["x1", "y1"], ["x2", "y2"]].forEach(([kx, ky])=>{
+      if (!onIt(o[kx], o[ky], reach)) return;
+      if (Math.abs(cr) < 0.2){ o[kx] += vx; o[ky] += vy; return; } // running on in line with it: just carried along
+      const t = ((nx1 - o[kx])*uy - (ny1 - o[ky])*ux)/cr; // where its own line meets the wall's new line
+      o[kx] += ox*t; o[ky] += oy*t;
+    });
+  });
+  f.boxes.forEach(b=>{
+    if (b.kind === "door"){ if (b.wallId === w.id || (b.wallId == null && onIt(b.x, b.y, reach))){ b.x += vx; b.y += vy; } return; }
+    // furniture with its back to this wall (back within a few cm of the face, square to it)
+    const back = rotate(0, -1, b.rotation || 0);
+    if (Math.abs(back.x*-uy + back.y*ux) < 0.99) return;
+    if (onIt(b.x, b.y, reach + ((b.dCm || 0)/2 + 5)/100/metersPerWorldUnitForFloor(f))){ b.x += vx; b.y += vy; }
+  });
+  w.x1 += vx; w.y1 += vy; w.x2 += vx; w.y2 += vy;
+}
+function turnFloorOnBelow(){
+  const f = activeFloor();
+  if (!floorBelow(f)) return;
+  ensureHouseStacked();
+  pushUndoSnapshot();
+  // a quarter turn about the middle of its walls, so it stays roughly where it was
+  const pts = f.walls.flatMap(w => wallCenterlinePoints(w));
+  const cx = pts.length ? pts.reduce((a, p) => a + p.x, 0)/pts.length : f.worldWidth/2, cy = pts.length ? pts.reduce((a, p) => a + p.y, 0)/pts.length : f.worldHeight/2;
+  const before = floorToHouse(f, cx, cy), s = floorStack(f);
+  f.stack = {...s, rot: ((s.rot + Math.PI/2) % (2*Math.PI))};
+  const after = floorToHouse(f, cx, cy);
+  f.stack.x += before.x - after.x; f.stack.z += before.z - after.z;
+  stackNote = ""; scheduleAutosave(); render();
+}
+// The floor below, faintly in blue under this one: its walls and windows at their real thickness, and its stairs.
+function drawFloorBelowGhost(){
+  const f = activeFloor(), below = floorBelow(f);
+  if (!below || !showFloorBelow) return;
+  ensureHouseStacked();
+  const kf = metersPerWorldUnitForFloor(f);
+  const map = (x, y) => { const h = floorToHouse(below, x, y), p = houseToFloor(f, h.x, h.z); return toScreen(p.x, p.y); };
+  const px = cm => cm/100/kf*fitScale; // a length in cm, on screen
+  ctx.save();
+  ctx.lineCap = "square"; ctx.lineJoin = "miter";
+  below.walls.forEach(w=>{
+    const pts = wallCenterlinePoints(w), win = (w.type||"wall") === "window";
+    ctx.strokeStyle = win ? "rgba(120,200,255,0.30)" : "rgba(90,170,255,0.38)";
+    ctx.lineWidth = Math.max(2, px(w.thicknessCm || WALL_THICKNESS_CM));
+    ctx.beginPath();
+    pts.forEach((q, i) => { const p = map(q.x, q.y); if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
+    ctx.stroke();
+  });
+  // stairs: their footprint, and an arrow up the flight
+  below.boxes.forEach(b=>{
+    if (b.type !== "stairs") return;
+    withFloor(below, ()=>{
+      const geo = stairGeometry(b), W = stairWidth(b);
+      const at = q => { const o = rotate(cmToWorld(q.x), cmToWorld(q.y), b.rotation || 0); return map(b.x + o.x, b.y + o.y); };
+      ctx.strokeStyle = "rgba(90,170,255,0.22)"; ctx.lineWidth = Math.max(4, px(W)); ctx.lineCap = "butt";
+      ctx.beginPath(); geo.pts.forEach((q, i) => { const p = at(q); if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); }); ctx.stroke();
+      ctx.strokeStyle = "rgba(150,210,255,0.8)"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); geo.pts.forEach((q, i) => { const p = at(q); if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); }); ctx.stroke();
+      ctx.setLineDash([]);
+      const e = geo.pts.at(-1), e0 = geo.pts.at(-2) || e, a = at(e), a0 = at(e0), ang = Math.atan2(a.y - a0.y, a.x - a0.x);
+      ctx.fillStyle = "rgba(150,210,255,0.85)";
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x - 9*Math.cos(ang - 0.45), a.y - 9*Math.sin(ang - 0.45)); ctx.lineTo(a.x - 9*Math.cos(ang + 0.45), a.y - 9*Math.sin(ang + 0.45)); ctx.fill();
+    });
+  });
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -1790,6 +2104,8 @@ function render(){
 
   if (showOverlay){
     if (showFlooring) drawFlooring();
+    drawFloorBelowGhost();
+    drawStackPick();
     drawFloorHover();
     drawWalls();
     drawBoxes();
@@ -3765,6 +4081,154 @@ function metersPerWorldUnitForFloor(floor){
   // and whole-house totals need every floor, not just whichever is on screen.
   return floor.calibration ? floor.calibration.metersPerWorldUnit : 10/floor.worldWidth;
 }
+// --- Floors stacked into one house (Build → "Floors of the house", and the 3D view's 🏘 Whole house).
+// Each floor was traced from its own image, at its own scale and with its own origin, so each carries
+// where it sits in the house: floor.stack = {x, z, rot} — its plan, in metres, turned by rot and then
+// shifted by (x, z). That's an absolute place in one shared "house" frame, so reordering or deleting
+// floors never moves the others. The floor tabs run bottom to top: the first is the ground floor, and
+// a floor with no stack yet is lined up on the one below it (autoStackFloor) the first time it's needed.
+const FLOOR_DEPTH_M = 0.25; // joists and boards between one floor's ceiling and the next floor up
+function houseFloors(){ return activeVersion().floors; }
+function floorBelow(f){ const fl = houseFloors(), i = fl.indexOf(f); return i > 0 ? fl[i-1] : null; }
+// The outside finish of a floor: its own, or carried up from the floor below (a house is usually brick all the way up).
+function floorExterior(f){ return f.exterior || (floorBelow(f) ? floorExterior(floorBelow(f)) : null); }
+function floorStack(f){ return f.stack || {x: 0, z: 0, rot: 0}; }
+function floorRoomH(f){ return Math.max(2, Math.min(6, +(f && f.roomHM) || +costSettings().ceilingM || 2.4)); }
+// how high this floor's surface is above the ground floor's, in metres
+function floorElev(f){
+  let y = 0;
+  for (const g of houseFloors()){ if (g === f) break; y += floorRoomH(g) + FLOOR_DEPTH_M; }
+  return y;
+}
+function floorToHouse(f, px, py){
+  const k = metersPerWorldUnitForFloor(f), s = floorStack(f), p = rotate(px*k, py*k, s.rot);
+  return {x: s.x + p.x, z: s.z + p.y};
+}
+function houseToFloor(f, X, Z){
+  const k = metersPerWorldUnitForFloor(f), s = floorStack(f), p = rotate(X - s.x, Z - s.z, -s.rot);
+  return {x: p.x/k, y: p.y/k};
+}
+// Runs fn with `f` as the active floor, so everything that reads activeFloor() (cmToWorld, getWall,
+// nearestWallFace, v3Ceiling...) works in that floor's own units — how the 3D view builds the others.
+function withFloor(f, fn){
+  const v = activeVersion(), was = v.activeFloorId;
+  if (!f || f.id === was) return fn();
+  v.activeFloorId = f.id;
+  try{ return fn(); } finally { v.activeFloorId = was; }
+}
+// Points every ~10cm along a floor's walls and windows, in that floor's own metres (unrotated, unshifted), weighted
+// so the thick outside walls — the ones that reliably stack — count for more than the inside ones.
+function floorWallSamples(f, step = 0.1){
+  const k = metersPerWorldUnitForFloor(f), out = [];
+  f.walls.forEach(w=>{
+    const pts = wallCenterlinePoints(w), wt = (w.thicknessCm || WALL_THICKNESS_CM) >= 18 || (w.type||"wall") === "window" ? 2 : 1;
+    for (let i = 1; i < pts.length; i++){
+      const ax = pts[i-1].x*k, ay = pts[i-1].y*k, bx = pts[i].x*k, by = pts[i].y*k, L = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.round(L/step));
+      for (let j = 0; j <= n; j++) out.push({x: ax + (bx - ax)*j/n, y: ay + (by - ay)*j/n, w: wt});
+    }
+  });
+  return out;
+}
+// Lines floor `f` up on the floor below: slides it (keeping its turn) to where the most of its walls sit
+// on walls of the floor below — tried from each way of lining their outlines up (left/centre/right ×
+// front/middle/back), then nudged in ever-finer steps. Returns how much of its outside wall now sits on a wall.
+function autoStackFloor(f, opts = {}){
+  const below = floorBelow(f);
+  if (!below){ delete f.stack; return {cover: null, scale: 1}; }
+  if (!below.stack && floorBelow(below)) autoStackFloor(below);
+  const rot = floorStack(f).rot, mine = floorWallSamples(f).map(p => ({...rotate(p.x, p.y, rot), w: p.w}));
+  const sb = floorStack(below), kb = metersPerWorldUnitForFloor(below), toH = q => { const r = rotate(q.x*kb, q.y*kb, sb.rot); return {x: sb.x + r.x, y: sb.z + r.y}; };
+  const segs = []; // the walls below, as straight pieces in the house (a bay's curve in short ones)
+  below.walls.forEach(w => { const pts = wallCenterlinePoints(w).map(toH); for (let i = 1; i < pts.length; i++) segs.push([pts[i-1], pts[i]]); });
+  const theirs = segs.flat();
+  if (mine.length < 4 || segs.length < 2){ f.stack = {x: sb.x, z: sb.z, rot}; return {cover: null, scale: 1}; }
+  // every 5cm cell near a wall below remembers its two nearest wall pieces, so a distance is then measured exactly to the
+  // real wall line (a distance read off the grid itself would be out by up to half a cell, and pull the fit off by a cm or two)
+  const box = pts => pts.reduce((b, p) => ({x0: Math.min(b.x0, p.x), y0: Math.min(b.y0, p.y), x1: Math.max(b.x1, p.x), y1: Math.max(b.y1, p.y)}), {x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity});
+  const B = box(theirs), M = box(mine), C = 0.05, pad = 1, R = 0.4;
+  const gx0 = B.x0 - pad, gy0 = B.y0 - pad, nx = Math.ceil((B.x1 - B.x0 + 2*pad)/C) + 1, ny = Math.ceil((B.y1 - B.y0 + 2*pad)/C) + 1;
+  const segDist = (x, y, [a, b])=>{
+    const dx = b.x - a.x, dy = b.y - a.y, L2 = dx*dx + dy*dy, t = L2 ? Math.max(0, Math.min(1, ((x - a.x)*dx + (y - a.y)*dy)/L2)) : 0;
+    const ex = x - a.x - dx*t, ey = y - a.y - dy*t;
+    return Math.sqrt(ex*ex + ey*ey);
+  };
+  const S1 = new Int32Array(nx*ny).fill(-1), S2 = new Int32Array(nx*ny).fill(-1), D1 = new Float32Array(nx*ny).fill(R), D2 = new Float32Array(nx*ny).fill(R);
+  segs.forEach((sg, si)=>{
+    const x0 = Math.max(0, Math.floor((Math.min(sg[0].x, sg[1].x) - R - gx0)/C)), x1 = Math.min(nx - 1, Math.ceil((Math.max(sg[0].x, sg[1].x) + R - gx0)/C));
+    const y0 = Math.max(0, Math.floor((Math.min(sg[0].y, sg[1].y) - R - gy0)/C)), y1 = Math.min(ny - 1, Math.ceil((Math.max(sg[0].y, sg[1].y) + R - gy0)/C));
+    for (let gy = y0; gy <= y1; gy++) for (let gx = x0; gx <= x1; gx++){
+      const i = gy*nx + gx, d = segDist(gx0 + gx*C, gy0 + gy*C, sg);
+      if (d < D1[i]){ D2[i] = D1[i]; S2[i] = S1[i]; D1[i] = d; S1[i] = si; } else if (d < D2[i]){ D2[i] = d; S2[i] = si; }
+    }
+  });
+  const dist = (x, y)=>{
+    const gx = Math.round((x - gx0)/C), gy = Math.round((y - gy0)/C);
+    if (gx < 0 || gy < 0 || gx >= nx || gy >= ny) return 9;
+    const i = gy*nx + gx;
+    if (S1[i] < 0) return R;
+    const d = segDist(x, y, segs[S1[i]]);
+    return S2[i] < 0 ? d : Math.min(d, segDist(x, y, segs[S2[i]]));
+  };
+  // sg: a size factor for this floor (its plan scaled about its own origin) — a floor calibrated a little off is uniformly too big or small
+  const rough = mine.filter((p, i) => i % 3 === 0); // every third point is plenty for the broad search
+  const score = (tx, tz, sg, fall = 0.3, pts = mine) => { let s = 0; for (const p of pts){ const d = dist(p.x*sg + tx, p.y*sg + tz); if (d < fall) s += p.w*(1 - d/fall); } return s; };
+  const fitAt = sg=>{
+    const xs = [B.x0 - M.x0*sg, B.x1 - M.x1*sg, (B.x0 + B.x1 - (M.x0 + M.x1)*sg)/2], zs = [B.y0 - M.y0*sg, B.y1 - M.y1*sg, (B.y0 + B.y1 - (M.y0 + M.y1)*sg)/2];
+    let best = null;
+    xs.forEach(tx => zs.forEach(tz=>{
+      let c = {tx, tz, sg, s: score(tx, tz, sg, 0.3, rough)};
+      for (const step of [0.4, 0.2, 0.1, 0.05, 0.02, 0.01]){
+        for (let moved = true, n = 0; moved && n < 40; n++){
+          moved = false;
+          for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]){
+            const s = score(c.tx + dx*step, c.tz + dz*step, sg, 0.3, rough);
+            if (s > c.s + 1e-6){ c = {tx: c.tx + dx*step, tz: c.tz + dz*step, sg, s}; moved = true; }
+          }
+        }
+      }
+      if (!best || c.s > best.s) best = c;
+    }));
+    return best;
+  };
+  let best = fitAt(1);
+  if (opts.scale){
+    // sizes ±10% in 1% steps, then the best one's neighbourhood in 0.1% steps — kept only if it clearly fits better than as calibrated
+    let top = best;
+    for (let sg = 0.90; sg <= 1.1001; sg += 0.01) if (Math.abs(sg - 1) > 1e-6){ const c = fitAt(sg); if (c.s > top.s) top = c; }
+    const mid = top.sg;
+    for (let sg = mid - 0.009; sg <= mid + 0.0091; sg += 0.001){ const c = fitAt(sg); if (c.s > top.s) top = c; }
+    if (top.s > best.s*1.02 && Math.abs(top.sg - 1) >= 0.002) best = top;
+  }
+  // last, a sharper pass (walls must sit within a few cm to count) nudging position — and size, if it's being matched — in fine steps
+  {
+    let c = {...best, s: score(best.tx, best.tz, best.sg, 0.08)};
+    const dims = opts.scale && best.sg !== 1 ? 3 : 2;
+    for (const [st, ss] of [[0.01, 0.001], [0.005, 0.0005], [0.002, 0.0002], [0.001, 0.0001]]){
+      for (let moved = true, n = 0; moved && n < 60; n++){
+        moved = false;
+        for (const [dx, dz, dg] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]){
+          if (dg && dims < 3) continue;
+          const t = {tx: c.tx + dx*st, tz: c.tz + dz*st, sg: c.sg + dg*ss};
+          // a size change shifts everything away from the plan's origin, so the position follows the outline's middle
+          if (dg){ t.tx -= (M.x0 + M.x1)/2*dg*ss; t.tz -= (M.y0 + M.y1)/2*dg*ss; }
+          const sc = score(t.tx, t.tz, t.sg, 0.08);
+          if (sc > c.s + 1e-6){ c = {...t, s: sc}; moved = true; }
+        }
+      }
+    }
+    best = c;
+  }
+  if (best.sg !== 1) f.calibration = {...(f.calibration || {}), metersPerWorldUnit: metersPerWorldUnitForFloor(f)*best.sg};
+  f.stack = {x: Math.round(best.tx*1000)/1000, z: Math.round(best.tz*1000)/1000, rot};
+  const outside = mine.filter(p => p.w > 1), on = outside.filter(p => dist(p.x*best.sg + best.tx, p.y*best.sg + best.tz) < 0.1).length;
+  return {cover: outside.length ? on/outside.length : null, scale: best.sg};
+}
+// Every floor above the ground placed somewhere (each new one lined up on the one below it).
+function ensureHouseStacked(){
+  let changed = false;
+  houseFloors().forEach((f, i) => { if (i > 0 && !f.stack){ autoStackFloor(f); changed = true; } });
+  if (changed) scheduleAutosave();
+}
 // The raster covers the floor image AND every wall, plus a margin — not just
 // the image's own 0..worldWidth/worldHeight box. A wall traced right on (or
 // past) the image's edge, typical for the outermost wall of a tightly
@@ -5639,6 +6103,12 @@ cv.addEventListener("pointerdown", (e)=>{
   // pointerup comparison below just finds nothing changed and skips it.
   dragUndoSnapshot = snapshotState();
   if (view3dOpen && showOverlay && planCameraPointerDown(ms)) return;
+  if (stackPick && floorBelow(activeFloor()) && e.button === 0){ stackPickClick(mw); dragUndoSnapshot = null; return; }
+  if (stackDragMode && floorBelow(activeFloor()) && e.button === 0){ // lining up by hand: any drag slides the floor below
+    ensureHouseStacked();
+    drag = {type:"stack-align", sx: mw.x, sy: mw.y, from: {...floorStack(activeFloor())}};
+    return;
+  }
 
   if (activeTool === "stamp"){
     if (stampSpec) focusRoomAt(mw);
@@ -5834,6 +6304,7 @@ window.addEventListener("pointermove", (e)=>{
   const ms = getMouseScreen(e);
   const mw = toWorld(ms.x, ms.y);
   if (drag.type === "cam-move" || drag.type === "cam-aim"){ planCameraPointerMove(mw); return; }
+  if (drag.type === "stack-align"){ moveFloorBelowGhost(activeFloor(), mw.x - drag.sx, mw.y - drag.sy, drag.from); stackNote = ""; render(); return; }
 
   const isDrawSeg = drag.type === "draw-wall";
   if (isDrawSeg || drag.type === "calibrate" || drag.type === "pick-thickness"){
@@ -6086,6 +6557,7 @@ window.addEventListener("pointermove", (e)=>{
 window.addEventListener("pointerup", (e)=>{
   if (!drag) return;
   if (drag.type === "cam-move" || drag.type === "cam-aim"){ drag = null; dragUndoSnapshot = null; v3CameraMoved(); return; } // moving the camera isn't an edit to undo
+  if (drag.type === "stack-align"){ drag = null; if (snapshotState() !== dragUndoSnapshot) commitUndoSnapshot(dragUndoSnapshot); dragUndoSnapshot = null; scheduleAutosave(); renderStackPanel(); render(); return; }
   if (drag.type === "draw-wall"){
     const len = Math.hypot(drag.x2-drag.x1, drag.y2-drag.y1);
     if (len > 4){
@@ -6194,6 +6666,11 @@ window.addEventListener("keydown", (e)=>{
     deleteSelection();
     e.preventDefault();
   }
+  if (stackDragMode && e.key.startsWith("Arrow") && !(e.metaKey || e.ctrlKey)){
+    const d = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[e.key];
+    if (d){ nudgeFloorBelow(d[0], d[1], e.shiftKey ? 1 : 5); e.preventDefault(); return; }
+  }
+  if (e.key==="Escape" && (stackDragMode || stackPick)){ stackDragMode = false; stackPick = null; stackNote = ""; renderStackPanel(); render(); }
   if (e.key==="Escape"){
     if (placing){
       if (placing.kind==="door") activeFloor().boxes = activeFloor().boxes.filter(x=>x.id!==placing.id);
@@ -6794,6 +7271,16 @@ document.getElementById("btnWindowPlace").addEventListener("pointerdown", (e)=>{
 });
 document.getElementById("btnCustom").addEventListener("click", addCustomItem);
 document.getElementById("btnSelectAll").addEventListener("click", selectAll);
+document.getElementById("fldShowBelow").addEventListener("change", e=>{ showFloorBelow = e.target.checked; render(); });
+document.getElementById("btnStackAuto").addEventListener("click", e=>{ // takes a second or so: say so first
+  const b = e.currentTarget; b.textContent = "⏳ Matching…"; b.disabled = true;
+  setTimeout(()=>{ try{ autoStackActive(); } finally { b.disabled = false; b.innerHTML = "🧲 Line up &amp; match size"; } }, 30);
+});
+document.getElementById("btnStackPick").addEventListener("click", ()=>{ stackPick = stackPick ? null : {pts: []}; if (stackPick){ stackDragMode = false; showFloorBelow = true; setTool("select"); ensureHouseStacked(); } stackNote = stackPick ? stackPickPrompt() : ""; renderStackPanel(); render(); });
+document.getElementById("btnStackSnap").addEventListener("click", snapWallsToBelow);
+document.getElementById("btnStackDrag").addEventListener("click", ()=>{ stackDragMode = !stackDragMode; if (stackDragMode){ showFloorBelow = true; setTool("select"); } stackPick = null; stackNote = ""; renderStackPanel(); render(); });
+document.getElementById("btnStackTurn").addEventListener("click", turnFloorOnBelow);
+document.querySelectorAll("[data-nudge]").forEach(b => b.addEventListener("click", ()=>{ const [x, y] = b.dataset.nudge.split(",").map(Number); nudgeFloorBelow(x, y, 5); }));
 document.getElementById("btnCopy").addEventListener("click", copySelection);
 document.getElementById("btnPaste").addEventListener("click", pasteClipboard);
 
@@ -9301,7 +9788,7 @@ let v3 = null; // {renderer, scene, camera, root, mode, wallsDown, ...} once loa
 let view3dOpen = false;
 
 function v3Floor(){ return activeFloor(); }
-function v3Ceiling(){ return Math.max(2, Math.min(6, +costSettings().ceilingM || 2.4)); }
+function v3Ceiling(){ return floorRoomH(activeFloor()); } // while another floor is being built (withFloor), that floor's
 async function loadThree(){
   if (THREE) return THREE;
   try{ THREE = await import("./vendor/three.module.min.js"); }
@@ -10936,11 +11423,12 @@ function paintAssignments(floor, areas, list = floor.paints){
 }
 const CEILING_PLAIN = "#fbfaf7";
 // The ceilings (walk view only): one plane at ceiling height, textured with each room's ceiling colour.
-let v3CeilTex = null;
+const v3CeilTexes = new Map(); // floor id -> {key, tex}, one per floor so the whole house can show at once
 function v3CeilingPlane(group, floor, k, H){
   const areas = getRoomAreasForFloor(floor), ra = areas.raster;
   if (!ra) return;
   const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.ceilings || []);
+  let v3CeilTex = v3CeilTexes.get(floor.id);
   if (!v3CeilTex || v3CeilTex.key !== key){
     const scale = Math.min(1024/Math.max(ra.w, ra.h), 0.5*100*k), assign = paintAssignments(floor, areas, floor.ceilings);
     const c = document.createElement("canvas");
@@ -10957,7 +11445,7 @@ function v3CeilingPlane(group, floor, k, H){
     if (v3CeilTex) v3CeilTex.tex.dispose();
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
-    v3CeilTex = {key, tex};
+    v3CeilTexes.set(floor.id, v3CeilTex = {key, tex});
   }
   // laid out exactly like the floor plane (so the texture lines up), seen from below
   const m = new THREE.Mesh(new THREE.PlaneGeometry(ra.w*k, ra.h*k), new THREE.MeshStandardMaterial({map: v3CeilTex.tex, transparent: true, alphaTest: 0.5, roughness: 1, side: THREE.DoubleSide}));
@@ -10982,8 +11470,9 @@ function v3WallUVs(m, s0){
   for (let i = 0; i < 8; i++) uv.setXY(i, s0 + pos.getZ(i)*(i < 4 ? 1 : -1), m.position.y + pos.getY(i)); // the two ends, so brick doesn't smear round a corner
   uv.needsUpdate = true;
 }
-function v3BuildStructure(group, floor, k, H, cut){
-  const top = Math.min(H, cut), capMat = cut < H ? V3.cap() : null;
+function v3BuildStructure(group, floor, k, H, cut, over = 0){
+  // `over`: with a floor on top (the Whole house view), the walls carry on up through its depth to meet it
+  const top = cut < H ? cut : H + over, capMat = cut < H ? V3.cap() : null;
   const areas = getRoomAreasForFloor(floor), assign = paintAssignments(floor, areas), cutters = wallCutters(floor);
   floor.walls.forEach(w=>{
     const isWin = (w.type||"wall") === "window", pts = wallCenterlinePoints(w), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
@@ -11005,7 +11494,14 @@ function v3BuildStructure(group, floor, k, H, cut){
       const roomsAt = sM => [1, -1].map(sd => { const q = at(sM, sd), r = roomAtWorld(areas, q.x, q.y); return r ? r.label : 0; }).join(",");
       // where the rooms either side change along this piece (a wall shared by two rooms on one side) — slabs split there
       const breaks = [];
-      for (let sM = 0.15, prev = roomsAt(0.05); sM < L; sM += 0.1){ const r = roomsAt(sM); if (r !== prev){ breaks.push(sM - 0.05); prev = r; } }
+      for (let sM = 0.15, prev = roomsAt(0.05); sM < L; sM += 0.1){
+        const r = roomsAt(sM);
+        if (r === prev) continue;
+        let lo = sM - 0.1, hi = sM; // pin the change down to a few mm, so an outside finish doesn't creep round onto an inside wall where it meets an outside one
+        for (let n = 0; n < 7; n++){ const mid = (lo + hi)/2; if (roomsAt(mid) === prev) lo = mid; else hi = mid; }
+        const outs = v => v.split(",").filter(x => x === "0").length, lean = Math.sign(outs(r) - outs(prev))*0.03; // and lean it a little toward the outside, past the room outline's own roughness
+        breaks.push(Math.max(0, Math.min(L, (lo + hi)/2 + lean))); prev = r;
+      }
       const wallSlab = (s0, s1, y0, y1)=>{
         const cuts = [s0, ...breaks.filter(x => x > s0 + 0.01 && x < s1 - 0.01), s1];
         for (let j = 1; j < cuts.length; j++){
@@ -11013,7 +11509,7 @@ function v3BuildStructure(group, floor, k, H, cut){
           const rooms = {};
           const mats = [1, -1].map(sd=>{
             const q = at(sm, sd), r = rooms[sd] = roomAtWorld(areas, q.x, q.y);
-            const fin = wallOwnPaint(w, sd, r, areas) || (r ? assign.get(r) : floor.exterior); // outside: the floor's outside finish
+            const fin = wallOwnPaint(w, sd, r, areas) || (r ? assign.get(r) : floorExterior(floor)); // outside: the floor's outside finish (or the one below's)
             return !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : isPaper(fin) ? v3PaperMat(fin) : v3Mat(fin, {roughness: 0.95});
           });
           const m = v3Slab(group, ax, az, bx, bz, cuts[j-1], cuts[j], y0, y1, T, mats, capMat);
@@ -11051,11 +11547,12 @@ function v3BuildStructure(group, floor, k, H, cut){
   if (cut >= H) floor.boxes.forEach(b => { if (b.kind === "door") v3Door(group, b, k, H); }); // with the walls cut down, the doors go too
 }
 // Floor texture: every room in a neutral screed, its flooring (if any) on top; outside is transparent.
-let v3FloorTex = null; // {key, tex}
+const v3FloorTexes = new Map(); // floor id -> {key, tex}
 function v3FloorPlane(group, floor, k){
   const areas = getRoomAreasForFloor(floor), ra = areas.raster;
   if (!ra) return;
   const key = floor.id + "|" + areas.uid + "|" + JSON.stringify(floor.floorings || []);
+  let v3FloorTex = v3FloorTexes.get(floor.id);
   if (!v3FloorTex || v3FloorTex.key !== key){
     const scale = Math.min(4096/Math.max(ra.w, ra.h), 1.6*100*k); // ~1.6px per cm, capped at a 4K texture
     const c = document.createElement("canvas");
@@ -11074,7 +11571,7 @@ function v3FloorPlane(group, floor, k){
     if (v3FloorTex) v3FloorTex.tex.dispose();
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
-    v3FloorTex = {key, tex};
+    v3FloorTexes.set(floor.id, v3FloorTex = {key, tex});
   }
   const m = new THREE.Mesh(new THREE.PlaneGeometry(ra.w*k, ra.h*k), new THREE.MeshStandardMaterial({map: v3FloorTex.tex, transparent: true, alphaTest: 0.5, roughness: 0.8}));
   m.rotation.x = -Math.PI/2; m.position.set((ra.ox + ra.w/2)*k, 0.002, (ra.oy + ra.h/2)*k);
@@ -11088,6 +11585,43 @@ function v3Bounds(floor, k){
   if (!isFinite(x0)){ x0 = 0; z0 = 0; x1 = floor.worldWidth*k; z1 = floor.worldHeight*k; }
   return {x0, z0, x1, z1, cx: (x0 + x1)/2, cz: (z0 + z1)/2, r: Math.max(3, Math.hypot(x1 - x0, z1 - z0)/2)};
 }
+// Whole house: which floors are in the scene. Walking about, all of them (you're inside one, and see the rest
+// through the windows); from the dollhouse, the active floor and everything under it — the ones above lift off
+// so you can see in — unless "Floors above" is on.
+function v3HouseFloors(){
+  const fl = houseFloors(), cur = activeFloor();
+  if (!v3.house || fl.length < 2) return [cur];
+  const i = fl.indexOf(cur);
+  return v3.mode === "walk" || v3.showAbove ? fl : fl.slice(0, i + 1);
+}
+// A floor's place in the house as a 3D transform from its own plan metres: turned, shifted, and lifted to its level.
+function v3FloorMatrix(f){
+  const s = floorStack(f);
+  return new THREE.Matrix4().makeTranslation(s.x, floorElev(f), s.z).multiply(new THREE.Matrix4().makeRotationY(-s.rot));
+}
+// The scene is always laid out in the ACTIVE floor's own plan metres (so picking, dragging and placing work just
+// as they do with one floor); every other floor's group is placed relative to it.
+function v3RelMatrix(f){ return v3FloorMatrix(activeFloor()).invert().multiply(v3FloorMatrix(f)); }
+// One floor's furniture into `group`. With `live`, each piece is registered for picking, dragging and highlighting.
+function v3BuildFloorItems(group, floor, k, H, cut, live){
+  floor.boxes.forEach(b=>{
+    if (b.kind !== "furniture") return;
+    const g = v3Furniture(b, H, cut);
+    // its own height and lift as built, so b.hCm (stretch to this height) and b.elevCm (bottom this far off the floor) can override them
+    const bb = new THREE.Box3().setFromObject(g);
+    let y = 0;
+    if (isFinite(bb.min.y)){
+      const n = {y0: bb.min.y, h: bb.max.y - bb.min.y};
+      if (live) v3.natural.set(b.id, n);
+      const own = b.type === "wallunit" || b.type === "tallunit"; // these set their own heights (wallUnitSpan)
+      if (b.hCm > 0 && n.h > 0.01 && !own) g.scale.y = (b.hCm/100)/n.h;
+      if (b.elevCm != null && !own) y = b.elevCm/100 - n.y0*g.scale.y;
+    }
+    g.position.set(b.x*k, y, b.y*k); g.rotation.y = -b.rotation;
+    if (live){ g.userData.boxId = b.id; v3.groups.set(b.id, g); }
+    group.add(g);
+  });
+}
 function v3Rebuild(){
   const floor = v3Floor(), k = metersPerWorldUnitForFloor(floor), H = v3Ceiling();
   const cut = v3.mode === "doll" && v3.wallsDown ? V3_CUTAWAY_M : H;
@@ -11097,40 +11631,58 @@ function v3Rebuild(){
   }
   const root = v3.root = new THREE.Group();
   v3.scene.add(root);
+  if (v3.house) ensureHouseStacked();
+  const shown = v3HouseFloors(), top = shown.at(-1);
   v3FloorPlane(root, floor, k);
   v3.doorGroups = new Map(); // filled by v3Door, for the selection outline
-  v3BuildStructure(root, floor, k, H, cut);
+  v3BuildStructure(root, floor, k, H, cut, floor !== top ? FLOOR_DEPTH_M - 0.005 : 0);
   v3.groups = new Map(); v3.natural = new Map();
-  floor.boxes.forEach(b=>{
-    if (b.kind !== "furniture") return;
-    const g = v3Furniture(b, H, cut);
-    // its own height and lift as built, so b.hCm (stretch to this height) and b.elevCm (bottom this far off the floor) can override them
-    const bb = new THREE.Box3().setFromObject(g);
-    let y = 0;
-    if (isFinite(bb.min.y)){
-      const n = {y0: bb.min.y, h: bb.max.y - bb.min.y};
-      v3.natural.set(b.id, n);
-      const own = b.type === "wallunit" || b.type === "tallunit"; // these set their own heights (wallUnitSpan)
-      if (b.hCm > 0 && n.h > 0.01 && !own) g.scale.y = (b.hCm/100)/n.h;
-      if (b.elevCm != null && !own) y = b.elevCm/100 - n.y0*g.scale.y;
-    }
-    g.position.set(b.x*k, y, b.y*k); g.rotation.y = -b.rotation;
-    g.userData.boxId = b.id;
-    v3.groups.set(b.id, g);
-    root.add(g);
-  });
-  const bd = v3.bounds = v3Bounds(floor, k);
+  v3BuildFloorItems(root, floor, k, H, cut, true);
   // ceiling only when you're inside looking around
   if (v3.mode === "walk") v3CeilingPlane(root, floor, k, H);
-  v3.ground.position.set(bd.cx, -0.005, bd.cz);
-  const sun = v3.sun, sc = sun.shadow.camera, r = bd.r + 2;
-  sun.position.set(bd.cx - r*0.6, r*1.6, bd.cz - r*0.9); sun.target.position.set(bd.cx, 0, bd.cz);
+  // the rest of the house, each floor in its own group (clicking one switches to it)
+  const bd = v3Bounds(floor, k);
+  const grow = (x, z) => { bd.x0 = Math.min(bd.x0, x); bd.x1 = Math.max(bd.x1, x); bd.z0 = Math.min(bd.z0, z); bd.z1 = Math.max(bd.z1, z); };
+  shown.forEach(f=>{
+    if (f === floor) return;
+    const g = new THREE.Group();
+    g.userData.floorId = f.id;
+    g.matrixAutoUpdate = false; g.matrix.copy(v3RelMatrix(f));
+    withFloor(f, ()=>{
+      const fk = metersPerWorldUnitForFloor(f), fH = v3Ceiling(), doors = v3.doorGroups;
+      v3FloorPlane(g, f, fk);
+      v3.doorGroups = new Map(); // only the active floor's doors get selection outlines
+      v3BuildStructure(g, f, fk, fH, fH, f !== top ? FLOOR_DEPTH_M - 0.005 : 0);
+      v3.doorGroups = doors;
+      v3BuildFloorItems(g, f, fk, fH, fH, false);
+      if (houseFloors().indexOf(f) < houseFloors().indexOf(floor)) v3CeilingPlane(g, f, fk, fH); // a single-storey part's flat top
+      const fb = v3Bounds(f, fk);
+      [[fb.x0, fb.z0], [fb.x1, fb.z0], [fb.x0, fb.z1], [fb.x1, fb.z1]].forEach(([x, z]) => { const p = new THREE.Vector3(x, 0, z).applyMatrix4(g.matrix); grow(p.x, p.z); });
+    });
+    root.add(g);
+  });
+  bd.cx = (bd.x0 + bd.x1)/2; bd.cz = (bd.z0 + bd.z1)/2; bd.r = Math.max(3, Math.hypot(bd.x1 - bd.x0, bd.z1 - bd.z0)/2);
+  v3.bounds = bd;
+  const ground = v3.house ? -floorElev(floor) : 0, hTop = v3.house ? floorElev(top) - floorElev(floor) + floorRoomH(top) : H;
+  v3.ground.position.set(bd.cx, ground - 0.005, bd.cz);
+  const sun = v3.sun, sc = sun.shadow.camera, r = bd.r + 2 + Math.max(0, hTop - H)*0.5;
+  sun.position.set(bd.cx - r*0.6, ground + r*1.6, bd.cz - r*0.9); sun.target.position.set(bd.cx, ground, bd.cz);
   sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r; sc.near = 0.5; sc.far = r*5; sc.updateProjectionMatrix();
+  const o = v3.orbit;
+  if (o && o.floorId !== floor.id && v3.house){
+    // switching floor in the whole house: keep looking at the same spot (the scene is re-laid in this floor's frame)
+    const was = houseFloors().find(f => f.id === o.floorId);
+    if (was){
+      const p = new THREE.Vector3(o.tx, 0, o.tz).applyMatrix4(v3RelMatrix(was));
+      o.tx = p.x; o.tz = p.z; o.yaw += floorStack(was).rot - floorStack(floor).rot; o.floorId = floor.id;
+    }
+  }
   if (!v3.orbit || v3.orbit.floorId !== floor.id) v3.orbit = {floorId: floor.id, yaw: -Math.PI*0.65, pitch: 0.85, dist: bd.r*2.3, tx: bd.cx, tz: bd.cz};
 }
 function v3SceneSig(){
-  const f = v3Floor();
-  return JSON.stringify([f.id, f.walls, f.boxes, f.floorings, f.paints, f.ceilings, f.exterior, f.calibration, v3Ceiling(), v3.mode, v3.wallsDown, getRoomAreasForFloor(f).uid]);
+  const f = v3Floor(), floors = v3.house ? houseFloors() : [f];
+  return JSON.stringify([f.id, v3.mode, v3.wallsDown, v3.house, v3.showAbove, costSettings().ceilingM,
+    floors.map(g => [g.id, g.walls, g.boxes, g.floorings, g.paints, g.ceilings, floorExterior(g), g.calibration, g.stack, g.roomHM, getRoomAreasForFloor(g).uid])]);
 }
 function v3PlaceCamera(){
   const cam = v3.camera, el = v3.renderer.domElement, aspect = Math.max(0.2, el.clientWidth/Math.max(1, el.clientHeight));
@@ -11190,6 +11742,16 @@ function v3UpdateBar(){
   const walls = document.getElementById("btnV3Walls");
   walls.hidden = v3.mode !== "doll";
   walls.textContent = v3.wallsDown ? "▮ Walls up" : "▁ Walls down";
+  const fl = houseFloors(), multi = fl.length > 1, i = fl.indexOf(activeFloor());
+  const house = document.getElementById("btnV3House");
+  house.hidden = !multi; house.classList.toggle("active", !!v3.house);
+  document.getElementById("v3FloorStep").hidden = !multi;
+  document.getElementById("v3FloorName").textContent = activeFloor().name;
+  document.getElementById("btnV3FloorDown").disabled = i <= 0;
+  document.getElementById("btnV3FloorUp").disabled = i >= fl.length - 1;
+  const above = document.getElementById("btnV3Above");
+  above.hidden = !multi || !v3.house || v3.mode !== "doll" || i >= fl.length - 1;
+  above.textContent = v3.showAbove ? "⬆ Hide floors above" : "⬆ Show floors above";
   document.getElementById("v3FovWrap").hidden = v3.mode !== "walk";
   const fov = v3Fov(ensurePlanCamera(v3Floor()));
   document.getElementById("v3Fov").value = fov; document.getElementById("v3FovLabel").textContent = fov + "°";
@@ -11226,7 +11788,7 @@ async function openView3d(){
     const ground = new THREE.Mesh(new THREE.CircleGeometry(120, 48), new THREE.MeshStandardMaterial({color: "#9fb38a", roughness: 1}));
     ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
     v3 = {renderer, scene, sun, lamp, ground, camera: new THREE.PerspectiveCamera(60, 1, 0.05, 500), mode: "walk", wallsDown: false, pitch: 0, keys: new Set()};
-    try{ const s = JSON.parse(localStorage.getItem("floorplan.view3d") || "{}"); if (s.mode === "doll") v3.mode = "doll"; if (s.wallsDown) v3.wallsDown = true; if (s.size === "large") panel.classList.add("large"); }catch(e){}
+    try{ const s = JSON.parse(localStorage.getItem("floorplan.view3d") || "{}"); if (s.mode === "doll") v3.mode = "doll"; if (s.wallsDown) v3.wallsDown = true; if (s.house) v3.house = true; if (s.showAbove) v3.showAbove = true; if (s.size === "large") panel.classList.add("large"); }catch(e){}
     v3Wire(canvas);
     new ResizeObserver(() => v3Draw()).observe(canvas);
   }
@@ -11244,7 +11806,7 @@ function closeView3d(){
   render();
 }
 function v3SavePrefs(){
-  try{ localStorage.setItem("floorplan.view3d", JSON.stringify({mode: v3.mode, wallsDown: v3.wallsDown, size: document.getElementById("view3d").classList.contains("large") ? "large" : "small"})); }catch(e){}
+  try{ localStorage.setItem("floorplan.view3d", JSON.stringify({mode: v3.mode, wallsDown: v3.wallsDown, house: !!v3.house, showAbove: !!v3.showAbove, size: document.getElementById("view3d").classList.contains("large") ? "large" : "small"})); }catch(e){}
 }
 function v3SetMode(m){
   v3.mode = m; v3.pitch = 0;
@@ -11275,12 +11837,19 @@ function v3Ray(e){
   rc.setFromCamera(new THREE.Vector2(u, v), v3.camera);
   return rc;
 }
+// The id of the other floor (Whole house view) this mesh belongs to, or null if it's on the active floor.
+function v3OtherFloorOf(o){
+  for (; o && o !== v3.root; o = o.parent) if (o.userData.floorId != null) return o.userData.floorId;
+  return null;
+}
 // What's under the pointer: {kind:"box", id} for furniture, {kind:"wall", id, side, x, y} for a wall face, {kind:"none"} for floor/ceiling/doors.
 function v3Pick(e){
   if (!v3.root) return null;
   for (const h of v3Ray(e).intersectObject(v3.root, true)){
     const m = Array.isArray(h.object.material) ? h.object.material[h.face && h.face.materialIndex || 0] : h.object.material;
     if (!h.object.visible) continue;
+    const other = v3OtherFloorOf(h.object);
+    if (other){ if (m && m.transparent && m.opacity < 0.5) continue; return {kind: "floor", id: other, point: h.point}; } // another floor of the house: clicking it goes there
     let opening = null; // a door or window — glass and all, it's what you clicked
     for (let o = h.object; o && o !== v3.root && !opening; o = o.parent){
       if (o.userData.doorId != null) opening = {kind: "door", id: o.userData.doorId, point: h.point};
@@ -11310,7 +11879,7 @@ function v3Pick(e){
 // the nearest wall, into a corner, square to the room.
 function v3FloorPoint(e){
   const rc = v3Ray(e), k = metersPerWorldUnitForFloor(v3Floor());
-  const hit = v3.root && rc.intersectObject(v3.root, true).find(h => h.object.visible && !h.object.userData.ceiling && !(h.object.material && h.object.material.transparent && h.object.material.opacity < 0.5));
+  const hit = v3.root && rc.intersectObject(v3.root, true).find(h => h.object.visible && !h.object.userData.ceiling && !v3OtherFloorOf(h.object) && !(h.object.material && h.object.material.transparent && h.object.material.opacity < 0.5));
   let p = null;
   if (hit && hit.point.y > 0.01){ // a wall or a unit: stand back toward the eye a little, so it's this side of it
     const d = rc.ray.direction; p = new THREE.Vector3(hit.point.x - d.x*0.05, 0, hit.point.z - d.z*0.05);
@@ -11352,6 +11921,7 @@ function v3PlaceOne(spec, at){
 }
 function v3ClickPick(hit){
   if (hit && hit.kind === "box") return; // picked on press
+  if (hit && hit.kind === "floor"){ v3Paint = null; switchFloor(hit.id); return; }
   if (hit && (hit.kind === "door" || hit.kind === "window")){ v3Paint = null; select(hit.kind === "door" ? "box" : "wall", hit.id); return; }
   if (hit && hit.kind === "wall"){ v3Paint = {wallId: hit.id, side: hit.side, x: hit.x, y: hit.y}; select("wall", hit.id); return; }
   v3Paint = null;
@@ -11480,7 +12050,7 @@ function paintTarget(){
   const w = getWall(selection.id);
   if (!w) return null;
   const scope = !room ? extPaintScope : wallPaintScope;
-  const current = scope === "ceiling" ? ceiling : wallOwnPaint(w, v3Paint.side, room, areas) || (room ? paintAssignments(floor, areas).get(room) : floor.exterior) || null;
+  const current = scope === "ceiling" ? ceiling : wallOwnPaint(w, v3Paint.side, room, areas) || (room ? paintAssignments(floor, areas).get(room) : floorExterior(floor)) || null;
   return {w, side: v3Paint.side, room, areas, scope, current, outside: !room};
 }
 function applyWallPaint(hex){
@@ -11716,16 +12286,16 @@ function buildExteriorGrid(el, current, pick, withPlain = true){
 function refreshBuildExterior(){
   const el = document.getElementById("extFinishes");
   if (!el) return;
-  const cur = activeFloor().exterior || null;
-  if (el.dataset.cur === String(cur) && el.childNodes.length) return;
-  el.dataset.cur = String(cur);
+  const cur = floorExterior(activeFloor()) || null;
+  if (el.dataset.cur === String(cur) + !!activeFloor().exterior && el.childNodes.length) return;
+  el.dataset.cur = String(cur) + !!activeFloor().exterior;
   buildExteriorGrid(el, cur, id=>{
     pushUndoSnapshot();
     const f = activeFloor();
     if (id) f.exterior = id; else delete f.exterior;
     scheduleAutosave(); refreshBuildExterior(); updateV3Fields(); render();
   });
-  const nm = document.createElement("div"); nm.className = "paintRow"; nm.textContent = cur ? `This floor: ${cur.startsWith("ext:") ? extLabel(cur) : paintLabel(cur)}` : "This floor: plain";
+  const nm = document.createElement("div"); nm.className = "paintRow"; nm.textContent = cur ? `This floor: ${cur.startsWith("ext:") ? extLabel(cur) : paintLabel(cur)}${activeFloor().exterior ? "" : " (carried up from the floor below)"}` : "This floor: plain";
   el.prepend(nm);
 }
 // One material per wallpaper, shared by every wall that has it: a plain stand-in until the image arrives.
@@ -12069,7 +12639,7 @@ function v3Wire(canvas){
       if (!hoverRaf && !v3.space) hoverRaf = requestAnimationFrame(()=>{
         hoverRaf = 0;
         const h = v3.root && v3Pick(e);
-        canvas.style.cursor = h && h.kind === "box" ? "move" : h && (h.kind === "wall" || h.kind === "door" || h.kind === "window") ? "pointer" : "";
+        canvas.style.cursor = h && h.kind === "box" ? "move" : h && (h.kind === "wall" || h.kind === "door" || h.kind === "window" || h.kind === "floor") ? "pointer" : "";
       });
       return;
     }
@@ -12176,6 +12746,12 @@ document.getElementById("btnV3Close").addEventListener("click", closeView3d);
 document.getElementById("v3Fov").addEventListener("input", e => { if (v3) v3SetFov(+e.target.value); });
 document.querySelectorAll("[data-v3mode]").forEach(b => b.addEventListener("click", ()=> v3 && v3SetMode(b.dataset.v3mode)));
 document.getElementById("btnV3Walls").addEventListener("click", ()=>{ if (!v3) return; v3.wallsDown = !v3.wallsDown; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
+document.getElementById("btnV3House").addEventListener("click", ()=>{ if (!v3) return; v3.house = !v3.house; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
+document.getElementById("btnV3Above").addEventListener("click", ()=>{ if (!v3) return; v3.showAbove = !v3.showAbove; v3UpdateBar(); v3SavePrefs(); view3dSync(); });
+[["btnV3FloorDown", -1], ["btnV3FloorUp", 1]].forEach(([id, d]) => document.getElementById(id).addEventListener("click", ()=>{
+  const fl = houseFloors(), f = fl[fl.indexOf(activeFloor()) + d];
+  if (f){ v3Paint = null; switchFloor(f.id); }
+}));
 document.getElementById("btnV3Size").addEventListener("click", ()=>{
   const p = document.getElementById("view3d"); p.classList.toggle("large");
   if (p.classList.contains("large")) ["left","top","right","bottom","width","height"].forEach(k => p.style[k] = "");

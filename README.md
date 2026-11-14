@@ -616,6 +616,27 @@ The 3D view is also an editor: without Space held, a press picks things rather t
 - **Staircases** have styles (Classic, Victorian, Cottage, Open oak, Oak & glass, Floating, Industrial), a carpet runner or full carpet, and for each side going up a banister, a wall rail or nothing (`railL`/`railR`; "Auto" picks a wall rail where a wall runs alongside). Treads follow the turns: winders round a curve, a flat landing at a sharp corner.
 - **Outside of the house**: brick (several), render, pebbledash, stone, flint, weatherboard, cedar and tile hanging, drawn as real-size textures (`EXTERIOR_FINISHES`). Set the whole outside of a floor in Build → "Outside of the house" (`floor.exterior`), or click an outside face in 3D for "Whole outside" / "Just this wall", with paint as the other option.
 
+## Whole house: floors stacked in 3D (2026-11-14)
+
+- **Floor order:** the floor tabs run bottom to top, and the first tab is the ground floor. Build → **Floors of the house** lists them top first. ▲▼ reorders them, and each floor can have its own room height (left blank, it uses the Costs ceiling height). Floors are spaced by room height + 25cm of floor structure (`FLOOR_DEPTH_M`).
+- **Where each floor sits:** each floor was traced from its own image at its own scale, so `floor.stack = {x, z, rot}` places its plan (in metres) in one shared house frame. Because that frame is absolute, reordering or deleting floors never moves the others.
+  - A floor without a stack is lined up on the one below it the first time it's needed (`autoStackFloor`). It tries lining up the outlines' edges and centres, then nudges in finer steps to put as much wall as possible on walls below, with outside walls counting double.
+  - "🧲 Line up on the floor below" re-runs that and reports how much of the outside wall landed. "✥ Line up by hand" lets you drag the plan, or use the arrow keys (Shift for 1cm). There's also a ⟳ 90° turn.
+- **Matching sizes:** floors calibrated at different spots come out slightly different sizes.
+  - "🧲 Line up & match size" also tries sizes within ±10%, in 1% steps and then finer. It keeps a new size only if the walls fit clearly better. It corrects the floor's calibration (walls, doors and windows scale together; furniture keeps its real size, since it's stored in cm). A final sharp pass measures to the real wall lines rather than a grid, and lands within about 1mm in tests. It takes about a second.
+  - "📐 Match two corners": click a corner of this floor, then the same corner on the blue floor below, and repeat for a second corner. That sets size, turn and position exactly. Clicks snap to wall ends nearby.
+  - "⇥ Snap walls onto the floor below" slides each outside wall of this floor onto a parallel wall below it (within 3° and 30cm), so the outside faces are flush even if the walls differ in thickness. If walls are selected, it snaps only those. Walls that meet a snapped wall, at a corner or a T, slide their end along their own line so they still meet. Doors, windows and wall-backed furniture on it move with it (`moveWallSideways`).
+- **Ghost of the floor below:** the plan shows the floor below faintly in blue (walls, windows, and stairs with an arrow up the flight). Toggle it with "Show the floor below".
+- **3D:**
+  - 🏘 **Whole house** builds every floor. The scene stays in the active floor's own frame, so picking, dragging and placing work as before, and other floors get a relative matrix (`v3RelMatrix`).
+  - In the dollhouse, floors above the active one lift off unless "⬆ Show floors above" is on. Walk mode shows them all.
+  - ▼▲ steps between floors, and clicking another floor switches to it, keeping the camera on the same spot.
+  - Walls run up through the floor depth to meet the floor above. A lower floor's ceiling shows as the flat top of any single-storey part.
+- **Outside finish carries up:** a floor without its own outside finish uses the one below (`floorExterior`).
+- **Saving:** `exterior` (and `stack` and `roomHM`) are now kept by `normalizeFloor`. Before this, the outside finish was lost on reload.
+- **Fix:** where an inside wall meets an outside wall, the outside finish no longer creeps a few centimetres onto the inside face.
+- **Next:** stage 2, one staircase connecting floors (stair height from the floor-to-floor gap, a stairwell hole cut in the floor above, the stair outline on the upstairs plan, and stairs drawn on both floors treated as one). After that, walking up the stairs between floors, and roofs.
+
 ## Installable app and updates (2026-10-24)
 
 Served over https (GitHub Pages), the planner installs as an app from Edge
