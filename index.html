@@ -2415,6 +2415,25 @@ function closeRoomShells(src, res, ai){
     doorsOut.push({x: px + best.ux*mid, y: py + best.uy*mid, rot: best.th, lenM, tM, kind: d.kind === "opening" ? "opening" : d.kind, hinge: 1, side: 1});
   });
   walls = walls.concat(bridges);
+  // ...and each straight window Claude saw with nothing traced at its middle: bridged the same way, solid to solid,
+  // within a few degrees of Claude's own line, as a window
+  let winBridges = 0;
+  (ai.windows || []).filter(w => !w.bay || w.bay === "none").forEach(w=>{
+    const x1 = w.x1*IW, y1 = w.y1*IH, x2 = w.x2*IW, y2 = w.y2*IH, px = (x1 + x2)/2, py = (y1 + y2)/2, chord = Math.hypot(x2 - x1, y2 - y1);
+    if (chord*res.mPerPx < 0.3 || solid(px, py) || wins.some(o => distTo(px, py, o) <= geo(o).t/2 + 0.1/res.mPerPx)) return;
+    const reach = chord/2 + 0.9/res.mPerPx, step = 1/f, th0 = Math.atan2(y2 - y1, x2 - x1);
+    const march = (ux, uy) => { for (let s = step; s <= reach; s += step) if (solid(px + ux*s, py + uy*s)) return s; return null; };
+    let best = null;
+    for (let dd = -12; dd <= 12; dd += 2){
+      const th = th0 + dd*Math.PI/180, ux = Math.cos(th), uy = Math.sin(th), a = march(-ux, -uy); if (a == null) continue;
+      const b = march(ux, uy); if (b == null) continue;
+      const gap = a + b; if (gap < Math.max(0.3/res.mPerPx, 0.5*chord) || gap > chord + 0.9/res.mPerPx) continue;
+      if (!best || gap < best.gap) best = {gap, ux, uy, a, b};
+    }
+    if (!best) return;
+    wins.push({x1: px - best.ux*best.a, y1: py - best.uy*best.a, x2: px + best.ux*best.b, y2: py + best.uy*best.b, tM: tOut, bowM: 0, o: "h", closing: true});
+    winBridges++;
+  });
   // (7) a bay's cheeks: a canted bay's sides are often glass, too light to be found as wall, leaving the bay's end in
   // the air. An end of a bay window that no wall reaches is joined to the nearest wall end within a metre and a bit.
   const cheeks = [];
@@ -2426,7 +2445,7 @@ function closeRoomShells(src, res, ai){
     if (best) cheeks.push({x1: x, y1: y, x2: best.x, y2: best.y, tM: w.tM || tOut, outer: true, closing: true, src: "cheek"});
   }));
   walls = walls.concat(cheeks);
-  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length + blocks.length + bridges.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length, trimmed, blocks: blocks.length, bridges: bridges.length, cheeks: cheeks.length}};
+  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length + blocks.length + bridges.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length, trimmed, blocks: blocks.length, bridges: bridges.length, winBridges, cheeks: cheeks.length}};
 }
 
 // ---------------------------------------------------------------------------

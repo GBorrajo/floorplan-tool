@@ -1767,3 +1767,17 @@ Results:
 - The single-floor gain came with no plan getting worse.
 - Plan 13's ground floor now reads as 4 rooms instead of 6: its two cupboards fold into the kitchen.
 - Stack fits held or rose: plan 01 went from 0.93 to 0.97, and plan 11 from 0.85 / 0.47 to 0.87 / 0.60.
+- **Windows in their gaps.** A straight window Claude saw, with nothing traced at its middle, is bridged the same way
+  as a door: solid to solid, within 12° of Claude's own line. On plan 13 the slanted rear walls' windows sat between
+  two solid pieces with nothing across them.
+
+Results with that added:
+
+| Measure | Result |
+| --- | --- |
+| Rooms closed, single-floor batch | 204/241 |
+| Kitchens within 25% | 20/22 |
+| Plan 13 through Trace the house | 4/4, 3/3, 5/5 (every room closed) |
+| Plan 13 stack fits (first / second floor) | 0.42 / 0.63 (was 0.39 / 0.48) |
+| Plan 18 ground floor | 5/12 (was 2/12) |
+| Plan 20 second floor | 14/14 (was 8/12) |
