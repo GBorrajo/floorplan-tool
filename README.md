@@ -1647,3 +1647,24 @@ The app's rooms are the spaces the walls fully enclose. One missing stretch of w
   - The Foxtons-style plans (11, 13), whose walls are drawn skewed and broken by bays.
   - The guesthouse ground floor (18), where Claude's room labels sit in the wrong rooms.
   - A farmhouse window drawn in grey lines too faint to count.
+
+### Splitting shared spaces (2026-11-15)
+
+A room in the app is a space walls enclose, with one name. When two of Claude's rooms met with nothing drawn between them (a kitchen open to its dining room, a hall open to a family room), tracing kept only the bigger name. That room then showed the area of both: the farmhouse "Kitchen" read 28.8 m² against a printed 17.4.
+
+Now step 4 of `closeRoomShells` finds where two named traced rooms touch directly. That means at most 12 cm of unclaimed floor between them, and at least 50 cm of contact. Where no wall covers that line, it puts one in, at the typical inside-wall thickness, carrying an **opening** (the door type with no leaf) the whole way across. Each room keeps its own name and size, and in 3D it's a wide opening.
+
+- If a wall already runs within 50 cm of the line (a stub either side of the opening), the split goes on that wall's line.
+- An opening already on the line grows to take the new one in. A real door there keeps its place, and the opening is cut back beside it.
+- Splits are level or upright only.
+
+**Tested:**
+- On the 28-plan batch: kitchens/utilities within 25% of their printed size went from 13 of 16 to 17 of 18. Named rooms kept went from 214 to 235, and closed rooms from 146 to 177.
+- Through Trace the house on 10 plans: 131 of 168 → 150 of 188 closed.
+
+A tried-and-dropped idea: moving the line to the narrowest crossing (where the nibs are). The moved walls often no longer reached walls at both ends, and closed rooms fell from 177 to 167.
+
+**Remaining size misses** are mostly rooms too small by about a third:
+- Plan 11's front reception room: its bay window is traced straight across the room, cutting the bay off.
+- A few same-colour rooms where Claude's boxes put the boundary in the wrong place.
+- Two bathrooms only just over the 25% limit.

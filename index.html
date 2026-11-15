@@ -2222,7 +2222,75 @@ function closeRoomShells(src, res, ai){
     links.push({x1: e.p.x, y1: e.p.y, x2: best.q.x, y2: best.q.y, tM: e.w.tM, outer: !!e.w.outer, closing: true});
   });
   walls = walls.concat(links);
-  return {...res, walls, windows: wins, closed: added.length + links.length, closeInfo: {wallLum, cut, loose: loosePts.length, added: added.length, links: links.length}};
+  // (4) two of Claude's rooms that meet with nothing drawn between them — a kitchen open to its dining room — are
+  // still two rooms: a wall goes along the line where they meet, carrying an opening the whole way across, so each
+  // keeps its own name and size (the app's rooms are what walls enclose) and in 3D it's a wide opening
+  const doorsOut = res.doors.slice(), splits = [];
+  { const named = new Set(w0.rooms.filter(r => r.area && r.name && !outsideIds.has(r.id)).map(r => r.id));
+    const g = Math.max(1, Math.round(Mw(0.12))), pairs = new Map(); // "a|b|v" → [{c, s}]
+    const add = (A, B, vert, c, sAt) => { const k = Math.min(A, B) + "|" + Math.max(A, B) + "|" + (vert ? "v" : "h"); if (!pairs.has(k)) pairs.set(k, []); pairs.get(k).push({c, s: sAt}); };
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){
+      const A = L[y*W + x]; if (!named.has(A)) continue;
+      for (const vert of [true, false]){
+        for (let d = 1; d <= g + 1; d++){
+          const X = vert ? x + d : x, Y = vert ? y : y + d; if (X >= W || Y >= H) break;
+          const B = L[Y*W + X];
+          if (B === A) break;
+          if (B){ if (named.has(B)) add(A, B, vert, (vert ? x : y) + d/2, vert ? y : x); break; }
+        }
+      }
+    }
+    const tIn = (() => { const ts = res.walls.filter(w => !w.outer).map(w => w.tM).sort((p, q) => p - q); return Math.max(0.08, Math.min(0.2, ts[ts.length >> 1] || 0.1)); })();
+    pairs.forEach((pts, key)=>{
+      const vert = key.endsWith("v");
+      pts.sort((p, q) => p.c - q.c);
+      // the meeting lines: points within 4px across, then runs along with no gap over 30cm
+      for (let i0 = 0, i = 1; i <= pts.length; i++){
+        if (i < pts.length && pts[i].c - pts[i - 1].c <= 4) continue;
+        const grp = pts.slice(i0, i).sort((p, q) => p.s - q.s); i0 = i;
+        for (let j0 = 0, j = 1; j <= grp.length; j++){
+          if (j < grp.length && grp[j].s - grp[j - 1].s <= Mw(0.3)) continue;
+          const run = grp.slice(j0, j); j0 = j;
+          const s0 = run[0].s, s1 = run[run.length - 1].s;
+          if (s1 - s0 < Mw(0.5) || run.length < (s1 - s0)*0.6) continue;
+          const cs = run.map(p => p.c).sort((p, q) => p - q), S0 = s0, S1 = s1;
+          let c = cs[cs.length >> 1]/f;
+          // a wall already within 50cm of this line, reaching to within half a metre of where the rooms meet: the split
+          // goes on its line, not a few centimetres beside it
+          { let bestD = 0.5/res.mPerPx;
+            walls.forEach(w=>{
+              const isV = Math.abs(w.x1 - w.x2) < 1e-6, isH = Math.abs(w.y1 - w.y2) < 1e-6; if (vert ? !isV : !isH) return;
+              const wc = vert ? w.x1 : w.y1, lo = Math.min(vert ? w.y1 : w.x1, vert ? w.y2 : w.x2), hi = Math.max(vert ? w.y1 : w.x1, vert ? w.y2 : w.x2);
+              if (hi < s0/f - 0.5/res.mPerPx || lo > s1/f + 0.5/res.mPerPx) return;
+              const d = Math.abs(wc - c); if (d < bestD){ bestD = d; c = wc; }
+            }); }
+          const ext = tIn/2/res.mPerPx + 2/f, a0 = S0/f - ext, a1 = (S1 + 1)/f + ext;
+          const w = vert ? {x1: c, y1: a0, x2: c, y2: a1} : {x1: a0, y1: c, x2: a1, y2: c};
+          const mids = [0.25, 0.5, 0.75].map(u => vert ? {x: c, y: S0/f + (S1 - S0)/f*u} : {x: S0/f + (S1 - S0)/f*u, y: c});
+          if (mids.filter(q => covered(q.x, q.y)).length >= 2) continue; // a wall's there already
+          splits.push({...w, tM: tIn, outer: false, closing: true, split: true});
+          const lenM = (S1 + 1 - S0)/f*res.mPerPx, m = mids[1];
+          // on that line already: an opening there grows to take this one in; a real door keeps its place and the new
+          // opening is cut back to beside it
+          let n0 = vert ? m.y - lenM/res.mPerPx/2 : m.x - lenM/res.mPerPx/2, n1 = n0 + lenM/res.mPerPx, merged = false;
+          for (let di = 0; di < doorsOut.length; di++){
+            const d = doorsOut[di]; if (Math.abs(d.rot - (vert ? Math.PI/2 : 0)) > 0.01) continue;
+            if (Math.abs((vert ? d.x : d.y) - c) > Math.max(d.tM, tIn)/res.mPerPx) continue;
+            const half = d.lenM/res.mPerPx/2, dc = vert ? d.y : d.x, d0 = dc - half, d1 = dc + half;
+            if (d1 <= n0 || d0 >= n1) continue;
+            if (d.kind === "opening"){ const u0 = Math.min(d0, n0), u1 = Math.max(d1, n1), um = (u0 + u1)/2;
+              doorsOut[di] = {...d, x: vert ? c : um, y: vert ? um : c, lenM: (u1 - u0)*res.mPerPx}; merged = true; break; }
+            if (d0 - n0 >= n1 - d1) n1 = d0; else n0 = d1; // keep the bigger side
+          }
+          if (merged || (n1 - n0)*res.mPerPx < 0.4) continue;
+          const nm = (n0 + n1)/2;
+          doorsOut.push({x: vert ? c : nm, y: vert ? nm : c, rot: vert ? Math.PI/2 : 0, lenM: (n1 - n0)*res.mPerPx, tM: tIn, kind: "opening", hinge: 1, side: 1});
+        }
+      }
+    });
+  }
+  walls = walls.concat(splits);
+  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length}};
 }
 
 // ---------------------------------------------------------------------------
