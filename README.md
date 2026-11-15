@@ -1833,3 +1833,21 @@ Plan 18 results:
 
 About 26 of the 36 test floors are small enough to be enlarged, so each will be read afresh by Claude the first time
 it's traced.
+
+Re-reading every multi-floor test plan with enlarged crops (10 plans, about 22 fresh reads):
+
+| Plan | Rooms closed, before → after | Stack fit, before → after |
+| --- | --- | --- |
+| 01 | 6/6, 7/7 → 7/7, 7/7 | 0.97 → 0.95 |
+| 04 | unchanged | 0.86, 1.00, 0.80 → 0.89, 0.99, 0.81 |
+| 06 | all closed → all closed | unchanged |
+| 11 | second floor 5/5 → 7/7 | 0.87, 0.60 → 0.87, 0.74 |
+| 13 | unchanged | unchanged |
+| 19 | 9/10, 13/13, 4/4, 4/4 → 10/10, 13/13, 4/4, 5/5 | 0.61 → 0.51 |
+| 20 | 12/13, 8/12 → 12/14, 12/13, garage 0/1 | 0.43 → 0.31 |
+| 23 | unchanged | 0.65, 0.82, 0.56 → 0.65, 0.82, 0.69 |
+| 24 | unchanged | unchanged |
+| 29 | 6/6, 3/3, 6/6, 6/6 → 6/6, 3/3, 7/7, 7/7 | 0.77, 0.91, 0.75 → 0.80, 0.90, 0.86 |
+
+The two lower fits are not misplacements. In the overlays the outer walls coincide; the new readings trace more of
+the upper floors (plan 20's room over the garage, plan 19's upstairs partitions) with nothing below them to match.
