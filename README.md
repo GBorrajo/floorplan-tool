@@ -1509,3 +1509,37 @@ using the angle-lock/snapping/hover-cursor UX already built for that.
   cases and the bow-window math (sagitta formula, arc sampling, endpoint
   preservation) were also verified numerically in a standalone Node
   script before ever touching the browser.
+
+## Smart trace: whole floor from the image (2026-11-15)
+
+**✨ Trace this floor from its image** (Build → "Trace from the image") replaces the old detect buttons, which are kept under "Older detect tools".
+
+It works in two halves:
+
+1. **Claude reads the plan once** (`callSmartTrace`, default `claude-opus-5-5`, structured JSON output). It returns:
+   - every room's name, rough box and printed size;
+   - each door and opening, with the rooms either side, its hinge, and which way it swings;
+   - windows and bays;
+   - stairs, with the direction they go up;
+   - furniture, with the wall each piece backs onto.
+
+   This takes about a minute and costs a few pence.
+2. **The app measures the geometry from the pixels** (`smartTraceGeometry`). Claude's coordinates are only rough, so none of the geometry comes from them directly.
+   - Each room's coloured fill is flood-filled. Rooms grow at the same time, hop over thin lines, and must be flat colour that's nearest their own.
+   - Walls go in the gaps between rooms. Outside walls are measured outward from the room until paper is reached. Solid, hatched and double-line walls are all handled.
+   - The scale is the median of the printed room size against the measured room.
+   - Pieces of wall are joined. Walls are carried through doorways and over gaps that hold a window. Duplicate parallel copies are folded together, and corners are snapped.
+   - Doors and windows are snapped onto the wall between the rooms Claude named. A doorway between two rooms with no wall drawn (open plan) is left open rather than forced onto an outside wall.
+   - Bays are bowed out by the depth measured from the drawing.
+
+`applySmartTrace` then writes everything to the floor as one undo step: scale, walls, windows, doors, stairs, furniture and room names. The image itself is kept.
+
+Tested on two plans with different styles:
+- An Edwards terrace with solid walls, chimney breasts and a bay.
+- A detached house with hatched walls, a conservatory and a curved bay.
+
+Every room closes up on both, and the areas match the printed sizes. On the first plan the drawing isn't quite to scale, so the status line says so (the printed sizes disagree with each other by up to about 50%).
+
+The Model choice now lists Opus 5.5, Sonnet 5.5 and Haiku 5.5.
+
+**Debugging:** `test-plans/` is git-ignored and holds sample plans plus `dbg.js`. Running `__dbg(file)` on localhost draws the masks, walls, doors and windows over the image, using Claude's cached answer from `localStorage "smartTest:<file>"`.

@@ -382,25 +382,30 @@
     </section>
 
     <section data-modes="build">
-      <h2>AI Detect (beta)</h2>
-      <div class="field">
+      <h2>Trace from the image</h2>
+      <p style="font-size:11px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">Claude reads the plan — every room, its printed size, the doors, windows, stairs and furniture — and the walls are then measured exactly from the drawing itself. Takes about a minute, a few pence on your Anthropic account. One floor per image (use Split, below, on a listing picture showing several).</p>
+      <button class="wide" id="btnSmartTrace" style="font-weight:600;">✨ Trace this floor from its image</button>
+      <div id="smartStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;margin-top:4px;"></div>
+      <div class="field" style="margin-top:8px;">
         <label>Anthropic API key</label>
         <input type="password" id="fldApiKey" placeholder="sk-ant-...">
       </div>
       <div class="field">
         <label>Model</label>
         <select id="fldModel">
-          <option value="claude-opus-5">Claude Opus 5 (most accurate)</option>
-          <option value="claude-sonnet-5">Claude Sonnet 5 (cheaper)</option>
-          <option value="claude-haiku-4-5">Claude Haiku 4.5 (cheapest)</option>
+          <option value="claude-opus-5-5">Claude Opus 5.5 (most accurate)</option>
+          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (cheaper)</option>
+          <option value="claude-haiku-5-5">Claude Haiku 5.5 (cheapest)</option>
         </select>
       </div>
       <button class="wide" id="btnSplitFloors">🏢 Split multi-floor image into tabs</button>
+      <details style="margin-top:8px;"><summary style="font-size:11px;color:var(--text-dim);cursor:pointer;">Older detect tools</summary>
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:0;">If this floor's image still shows more than one level (e.g. a listing image with Ground/First/Cellar together), run Split first — the two buttons below detect only within whatever image is on this tab, and can't tell your intended floor apart from another one shown in the same picture.</p>
       <button class="wide" id="btnDetect">🤖 Detect walls, doors &amp; dimensions</button>
       <button class="wide" id="btnDetectTiled" title="Splits the image into 4 overlapping tiles and detects each at full resolution, then merges the results — more accurate on large/detailed plans, at roughly 2x the cost of a normal pass. Works best on an image that's already just one floor.">🔍 High-accuracy detect (tiled, ~2x cost)</button>
       <p style="font-size:10.5px;color:var(--text-dim);line-height:1.4;margin:8px 0 0;">Door-only alternative to the pixel-based detector above: reads each door's rough position plus hinge/swing off the printed arc symbol, then snaps that onto the nearest confirmed wall. Kept for comparison, but found to be inconsistent in practice — re-running on an unchanged image gave different placement/swing each time, even on Opus 5, with no setting available to fix that (temperature is rejected outright on Opus 5/Sonnet 5). Try the pixel-based detector first.</p>
       <button class="wide" id="btnDoorDetect">🚪 Auto-detect doors (AI, less consistent)</button>
+      </details>
       <div id="detectStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;"></div>
     </section>
 
@@ -852,6 +857,687 @@ const CLEARANCE_ZONES = {
 // AI wall/door/window/dimension detection and multi-floor splitting
 // (optional, calls the Anthropic API directly from the browser with a key
 // you provide — see README.md).
+// ---------------------------------------------------------------------------
+// Smart trace: Claude reads the plan the way a person would (which rooms, how big, what joins what, where the
+// doors, windows, stairs and furniture are) and the tool does the exact geometry itself from the image's own
+// pixels — each room's coloured fill traced out to its wall faces, walls built in the gaps between rooms,
+// scale from the printed room sizes. Coordinates from Claude are only ever used as "roughly here".
+// ---------------------------------------------------------------------------
+const SMART_FURNITURE_KEYS = ["sofa","armchair","coffee","tvunit","bookshelf","fireplace","dining","dininground","diningchair","kitchen","kitchencorner","island","sink","hob","range","cooker","fridge","dishwasher","washer","dryer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","bath","shower","basin","desk","radiator"];
+const SMART_PROMPT = `This image is a floor plan. Read it as an experienced surveyor would, and report what is on it so a drawing tool can rebuild it. The tool measures exact positions from the image's own pixels, so your positions only need to be roughly right — what matters most is that every room, door, window and staircase is found and correctly identified.
+
+Positions are fractions of the whole image: x from 0 (left edge) to 1 (right edge), y from 0 (top edge) to 1 (bottom edge).
+
+If the image shows more than one floor, report only the largest / main one, and say so in "notes".
+
+ROOMS — every enclosed space, including halls, landings, cupboards, stores, WCs, porches and conservatories:
+- name: as printed (e.g. "Kitchen / Breakfast"). If unnamed, describe it ("Cupboard").
+- labelX, labelY: the centre of its printed name.
+- box: the room's floor area, from the inside face of one wall to the inside face of the opposite wall (not the walls themselves). For an L-shaped room give the box around the whole L.
+- printed: the size text exactly as printed for this room, or "" if none (e.g. "2.41 x 4.30 m", or a lone "5.05" written along a dimension line inside it).
+- acrossM: the room's measurement running left–right on the image, in metres; downM: the one running top–bottom. Work these out from the printed sizes and dimension lines (convert feet and inches if that's all there is). When a room has two printed numbers but you can't tell which runs which way, give the larger to whichever side of the box is longer. 0 when not printed.
+- outside: true for a space that is outside the house's walls (a patio, a garden, a balcony) — usually false.
+
+OPENINGS between rooms or to the outside — every one, including open archways with no door:
+- x, y: the centre of the gap in the wall.
+- kind: "door" (one leaf with a swing arc), "double" (two leaves, e.g. French doors), "sliding", "bifold", "opening" (a gap/arch with no door).
+- widthM: the gap's width in metres, estimated against the room sizes.
+- rooms: the names of the two rooms it joins, using "Outside" for the outside.
+- hingeX, hingeY: for a "door", where its hinge is (the corner the arc is drawn from); otherwise the same as x, y.
+- swingIntoRoom: for a "door", the name of the room its leaf swings into.
+
+WINDOWS — every window in an outside wall (usually drawn as thin parallel lines, a white or pale box, or a break in a solid wall). For a bay, report ONE window covering the whole bay:
+- x1, y1, x2, y2: its two ends, along the wall.
+- room: the room it lights.
+- bay: "none", "curved" (a rounded bay), "canted" (angled sides) or "square" (box bay). bayDepthM: how far a bay sticks out from the main wall line, in metres (0 if none).
+
+STAIRS — each flight: box around it, and upTowards: which way you climb as seen on the image ("top", "bottom", "left", "right"), and "turns": true if it turns a corner.
+
+FURNITURE and fittings actually drawn on the plan (not ones you'd expect, only ones shown): item (choose the nearest from the list given), x, y (centre), widthM (its long side), depthM, and backTo: which side of it is against a wall as seen on the image ("top", "bottom", "left", "right", or "none"). A run of kitchen worktop is item "kitchen" covering the whole run; an L-shaped run is two "kitchen" items. Skip anything you are unsure of.
+
+WALL STYLE: "solid" (filled black/dark), "hatched" (diagonal lines between two outlines), "outline" (two thin lines, white between) or "mixed".
+
+Be thorough and literal. Measurements as printed beat estimates.`;
+const SMART_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    notes: {type: "string"},
+    wallStyle: {type: "string", enum: ["solid", "hatched", "outline", "mixed"]},
+    rooms: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      name: {type: "string"}, labelX: {type: "number"}, labelY: {type: "number"},
+      box: {type: "object", additionalProperties: false, properties: {x0: {type: "number"}, y0: {type: "number"}, x1: {type: "number"}, y1: {type: "number"}}, required: ["x0", "y0", "x1", "y1"]},
+      printed: {type: "string"}, acrossM: {type: "number"}, downM: {type: "number"}, outside: {type: "boolean"},
+    }, required: ["name", "labelX", "labelY", "box", "printed", "acrossM", "downM", "outside"]}},
+    openings: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      x: {type: "number"}, y: {type: "number"}, kind: {type: "string", enum: ["door", "double", "sliding", "bifold", "opening"]},
+      widthM: {type: "number"}, rooms: {type: "array", items: {type: "string"}},
+      hingeX: {type: "number"}, hingeY: {type: "number"}, swingIntoRoom: {type: "string"},
+    }, required: ["x", "y", "kind", "widthM", "rooms", "hingeX", "hingeY", "swingIntoRoom"]}},
+    windows: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      x1: {type: "number"}, y1: {type: "number"}, x2: {type: "number"}, y2: {type: "number"}, room: {type: "string"},
+      bay: {type: "string", enum: ["none", "curved", "canted", "square"]}, bayDepthM: {type: "number"},
+    }, required: ["x1", "y1", "x2", "y2", "room", "bay", "bayDepthM"]}},
+    stairs: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      box: {type: "object", additionalProperties: false, properties: {x0: {type: "number"}, y0: {type: "number"}, x1: {type: "number"}, y1: {type: "number"}}, required: ["x0", "y0", "x1", "y1"]},
+      upTowards: {type: "string", enum: ["top", "bottom", "left", "right"]}, turns: {type: "boolean"},
+    }, required: ["box", "upTowards", "turns"]}},
+    furniture: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      item: {type: "string", enum: SMART_FURNITURE_KEYS}, x: {type: "number"}, y: {type: "number"},
+      widthM: {type: "number"}, depthM: {type: "number"}, backTo: {type: "string", enum: ["top", "bottom", "left", "right", "none"]},
+    }, required: ["item", "x", "y", "widthM", "depthM", "backTo"]}},
+  },
+  required: ["notes", "wallStyle", "rooms", "openings", "windows", "stairs", "furniture"],
+};
+const SMART_MODEL = "claude-opus-5-5"; // the default; the Model choice below the key can pick another
+// One call: the image and the question, a JSON answer in SMART_SCHEMA's shape. Opus 5.5 always thinks a little
+// first (adaptive); "high" effort, since reading a whole plan carefully is the job. Falls back automatically
+// (server-side) if the request is ever declined.
+async function callSmartTrace(base64Data, mediaType, apiKey, model = SMART_MODEL){
+  if (!/^claude-/.test(model || "")) model = SMART_MODEL;
+  const fallback = model === "claude-opus-5-5" || model === "claude-sonnet-5-5"; // server-side fallback exists for these
+  let resp;
+  try{
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {"content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true", ...(fallback ? {"anthropic-beta": "server-side-fallback-2026-07-01"} : {})},
+      body: JSON.stringify({
+        model, max_tokens: 32000, ...(fallback ? {fallbacks: "default"} : {}),
+        thinking: {type: "adaptive"},
+        output_config: {effort: "high", format: {type: "json_schema", schema: SMART_SCHEMA}},
+        messages: [{role: "user", content: [
+          {type: "image", source: {type: "base64", media_type: mediaType, data: base64Data}},
+          {type: "text", text: SMART_PROMPT},
+        ]}],
+      }),
+    });
+  }catch(e){ throw new Error("Could not reach the Anthropic API (network error). Check the connection and try again."); }
+  const data = await resp.json();
+  if (!resp.ok) throw new Error((data && data.error && data.error.message) || `HTTP ${resp.status}`);
+  if (data.stop_reason === "refusal") throw new Error("Claude declined to read this image.");
+  if (data.stop_reason === "max_tokens") throw new Error("Claude's answer was cut off (too long). Try cropping the image to one floor.");
+  const text = (data.content || []).find(b => b.type === "text");
+  if (!text) throw new Error("No answer came back from Claude — try again.");
+  const out = JSON.parse(text.text);
+  out._usage = data.usage; out._model = data.model;
+  return out;
+}
+// --- the geometry, measured from the image. Everything here works in "work" pixels: the image scaled so its long
+// side is at most SMART_WORK_PX (plans are drawn far finer than walls need), converted back at the end.
+const SMART_WORK_PX = 1400;
+const SMART_INK_LUM = 150;   // darker than this is a drawn line (walls, hatching, outlines, text)
+const SMART_BG_TOL = 26;     // this close to the paper colour is paper
+const SMART_FILL_TOL = 24;   // this close to a room's own fill colour is that room (and closer to it than to any other room's)
+function smartTraceGeometry(src, ai){
+  // the work image
+  const f = Math.min(1, SMART_WORK_PX/Math.max(src.width, src.height));
+  const W = Math.max(1, Math.round(src.width*f)), H = Math.max(1, Math.round(src.height*f)), N = W*H;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const cx = cv.getContext("2d", {willReadFrequently: true});
+  cx.imageSmoothingQuality = "high"; cx.drawImage(src, 0, 0, W, H);
+  const px = cx.getImageData(0, 0, W, H).data;
+  const R = i => px[i*4], G = i => px[i*4 + 1], B = i => px[i*4 + 2];
+  const lum = new Uint8Array(N);
+  for (let i = 0; i < N; i++) lum[i] = (R(i)*299 + G(i)*587 + B(i)*114)/1000;
+  const ink = i => lum[i] < SMART_INK_LUM;
+  const dist2 = (i, c) => { const a = R(i) - c[0], b = G(i) - c[1], d = B(i) - c[2]; return a*a + b*b + d*d; };
+  // the paper: the commonest colour round the image's edge
+  const modeColour = idxs=>{
+    const counts = new Map();
+    idxs.forEach(i=>{ if (ink(i)) return; const k = (R(i) >> 4) << 8 | (G(i) >> 4) << 4 | (B(i) >> 4); counts.set(k, (counts.get(k) || 0) + 1); });
+    let best = -1, bk = 0; counts.forEach((n, k) => { if (n > best){ best = n; bk = k; } });
+    const sel = idxs.filter(i => !ink(i) && ((R(i) >> 4) << 8 | (G(i) >> 4) << 4 | (B(i) >> 4)) === bk);
+    if (!sel.length) return [255, 255, 255];
+    return [0, 1, 2].map(c => sel.reduce((s, i) => s + px[i*4 + c], 0)/sel.length);
+  };
+  const border = [];
+  for (let x = 0; x < W; x += 2){ border.push(x, (H - 1)*W + x); }
+  for (let y = 0; y < H; y += 2){ border.push(y*W, y*W + W - 1); }
+  const paper = modeColour(border);
+  const isBg = i => dist2(i, paper) <= SMART_BG_TOL*SMART_BG_TOL;
+
+  // rooms, in work pixels
+  const toPx = (v, n) => Math.max(0, Math.min(n - 1, Math.round(v*n)));
+  const rooms = (ai.rooms || []).filter(r => !r.outside && r.box).map((r, k)=>{
+    const x0 = toPx(Math.min(r.box.x0, r.box.x1), W), x1 = toPx(Math.max(r.box.x0, r.box.x1), W);
+    const y0 = toPx(Math.min(r.box.y0, r.box.y1), H), y1 = toPx(Math.max(r.box.y0, r.box.y1), H);
+    return {id: k + 1, name: (r.name || "").trim(), ai: r, x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0)};
+  }).filter(r => r.w > 3 && r.h > 3);
+  // a rough scale from Claude's boxes against the printed sizes, only to size the searches below
+  const roughRatios = [];
+  rooms.forEach(r=>{ if (r.ai.acrossM > 0.3) roughRatios.push(r.ai.acrossM/r.w); if (r.ai.downM > 0.3) roughRatios.push(r.ai.downM/r.h); });
+  const median = a => { if (!a.length) return 0; const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length/2)]; };
+  let mpp = median(roughRatios) || 10/Math.max(W, H); // metres per work pixel (a 10m-wide plan, failing all else)
+  const M = m => m/mpp; // metres → work pixels
+
+  // each room's fill colour: the commonest non-line colour in the middle of its box
+  rooms.forEach(r=>{
+    const idxs = [];
+    const ix0 = r.x0 + Math.round(r.w*0.25), ix1 = r.x1 - Math.round(r.w*0.25), iy0 = r.y0 + Math.round(r.h*0.25), iy1 = r.y1 - Math.round(r.h*0.25);
+    const step = Math.max(1, Math.round(Math.sqrt((ix1 - ix0)*(iy1 - iy0)/4000)));
+    for (let y = iy0; y <= iy1; y += step) for (let x = ix0; x <= ix1; x += step) idxs.push(y*W + x);
+    r.colour = modeColour(idxs);
+    r.white = Math.hypot(r.colour[0] - paper[0], r.colour[1] - paper[1], r.colour[2] - paper[2]) <= SMART_BG_TOL;
+    const pad = Math.round(Math.max(W, H)*0.03 + Math.max(r.w, r.h)*0.12);
+    r.ex0 = Math.max(0, r.x0 - pad); r.ex1 = Math.min(W - 1, r.x1 + pad); r.ey0 = Math.max(0, r.y0 - pad); r.ey1 = Math.min(H - 1, r.y1 + pad);
+  });
+  const byId = new Map(rooms.map(r => [r.id, r]));
+  // pale fills can sit close together (a grey store beside a pink hall): a pixel only goes to the room whose
+  // colour it is nearest of all the rooms that could reach it
+  // a room's fill is flat colour; the soft grey edge of a drawn line can match a grey fill but never is
+  const flat = (j, x, y)=>{
+    const c = [R(j), G(j), B(j)];
+    return (x <= 0 || dist2(j - 1, c) <= 144) + (x >= W - 1 || dist2(j + 1, c) <= 144) + (y <= 0 || dist2(j - W, c) <= 144) + (y >= H - 1 || dist2(j + W, c) <= 144) >= 3;
+  };
+  const ownColour = (j, r, x, y)=>{
+    const d = dist2(j, r.colour);
+    if (!r.white && !flat(j, x, y)) return false;
+    if (d > SMART_FILL_TOL*SMART_FILL_TOL) return false;
+    for (const q of rooms){
+      if (q === r || x < q.ex0 || x > q.ex1 || y < q.ey0 || y > q.ey1) continue;
+      if (dist2(j, q.colour) + 4 < d) return false;
+      // well inside another room's own box (and not this one's): that room's, however this one got there
+      if (x > q.x0 + q.w*0.12 && x < q.x1 - q.w*0.12 && y > q.y0 + q.h*0.12 && y < q.y1 - q.h*0.12 && !(x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) return false;
+    }
+    return true;
+  };
+
+  // 1) every room grows out from the middle of its box across its own colour, all at once, so two rooms of the
+  //    same colour meet half way across the doorway between them. A thin line (text, a dimension line, a
+  //    furniture outline) is hopped over; a wall is far too thick to hop.
+  const label = new Int16Array(N);
+  let queue = new Int32Array(N), qh = 0, qt = 0;
+  rooms.forEach(r=>{
+    const tol = SMART_FILL_TOL*SMART_FILL_TOL;
+    const ix0 = r.x0 + Math.round(r.w*0.3), ix1 = r.x1 - Math.round(r.w*0.3), iy0 = r.y0 + Math.round(r.h*0.3), iy1 = r.y1 - Math.round(r.h*0.3);
+    for (let y = iy0; y <= iy1; y++) for (let x = ix0; x <= ix1; x++){
+      const i = y*W + x;
+      if (!label[i] && ownColour(i, r, x, y)){ label[i] = r.id; queue[qt++] = i; }
+    }
+  });
+  const HOP = Math.max(2, Math.min(4, Math.round(M(0.04))));
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  while (qh < qt){
+    const i = queue[qh++], id = label[i], r = byId.get(id), x = i % W, y = (i - x)/W, tol = SMART_FILL_TOL*SMART_FILL_TOL;
+    for (const [dx, dy] of dirs){
+      for (let k = 1; k <= HOP; k++){
+        const nx = x + dx*k, ny = y + dy*k;
+        if (nx < r.ex0 || nx > r.ex1 || ny < r.ey0 || ny > r.ey1) break;
+        const j = ny*W + nx;
+        if (label[j]) break;
+        if (!(r.white && k > 1) && ownColour(j, r, nx, ny)){
+          for (let m = 1; m <= k; m++){ const jj = (y + dy*m)*W + x + dx*m; if (!label[jj]) label[jj] = id; }
+          queue[qt++] = j; break;
+        }
+      }
+    }
+  }
+  // 2) then it takes in whatever inside its box isn't a line or another room: stairs, white worktops, the
+  //    insides of letters — drawn on the floor, not walls
+  qh = 0; qt = 0;
+  for (let i = 0; i < N; i++) if (label[i]) queue[qt++] = i;
+  while (qh < qt){
+    const i = queue[qh++], id = label[i], r = byId.get(id), x = i % W, y = (i - x)/W;
+    for (const [dx, dy] of dirs){
+      const nx = x + dx, ny = y + dy;
+      if (nx < r.x0 || nx > r.x1 || ny < r.y0 || ny > r.y1) continue;
+      const j = ny*W + nx;
+      if (label[j] || ink(j)) continue;
+      label[j] = id; queue[qt++] = j;
+    }
+  }
+  queue = null;
+  // 3) a staircase drawn in a room is that room's floor, treads, lines and all (the wall behind it is then
+  //    found like any other): everything inside Claude's stair box goes to the room whose box holds most of it
+  (ai.stairs || []).forEach(st=>{
+    const b = st.box; if (!b) return;
+    const x0 = toPx(Math.min(b.x0, b.x1), W), x1 = toPx(Math.max(b.x0, b.x1), W), y0 = toPx(Math.min(b.y0, b.y1), H), y1 = toPx(Math.max(b.y0, b.y1), H);
+    let host = null, most = 0;
+    rooms.forEach(r=>{ const ov = Math.max(0, Math.min(x1, r.x1) - Math.max(x0, r.x0))*Math.max(0, Math.min(y1, r.y1) - Math.max(y0, r.y0)); if (ov > most){ most = ov; host = r; } });
+    if (!host || most < 0.4*(x1 - x0)*(y1 - y0)) return;
+    const m = Math.round(Math.max(W, H)*0.01);
+    for (let y = Math.max(y0, host.y0 - m); y <= Math.min(y1, host.y1 + m); y++) for (let x = Math.max(x0, host.x0 - m); x <= Math.min(x1, host.x1 + m); x++){
+      const i = y*W + x; if (!label[i]) label[i] = host.id;
+    }
+  });
+  // each room's measured extent (ignoring the thin tails that leak through doorways) and centre
+  rooms.forEach(r=>{
+    const cols = new Float64Array(W), rows = new Float64Array(H);
+    let n = 0, sx = 0, sy = 0;
+    for (let y = r.ey0; y <= r.ey1; y++) for (let x = r.ex0; x <= r.ex1; x++) if (label[y*W + x] === r.id){ cols[x]++; rows[y]++; n++; sx += x; sy += y; }
+    r.area = n;
+    if (!n) return;
+    r.cx = sx/n; r.cy = sy/n;
+    const span = (arr, a, b)=>{ let mx = 0; for (let k = a; k <= b; k++) mx = Math.max(mx, arr[k]); let lo = a, hi = b; while (lo < b && arr[lo] < mx*0.2) lo++; while (hi > a && arr[hi] < mx*0.2) hi--; return [lo, hi + 1]; };
+    [r.mx0, r.mx1] = span(cols, r.ex0, r.ex1); [r.my0, r.my1] = span(rows, r.ey0, r.ey1);
+  });
+  // the true scale: each printed size against the measured room (swapping a pair read the wrong way round)
+  const ratios = [];
+  rooms.forEach(r=>{
+    if (!r.area) return;
+    const mw = r.mx1 - r.mx0, mh = r.my1 - r.my0, a = r.ai.acrossM, d = r.ai.downM;
+    if (a > 0.3 && d > 0.3){
+      const s1 = [a/mw, d/mh], s2 = [d/mw, a/mh], sp = p => Math.abs(p[0] - p[1])/Math.max(p[0], p[1]);
+      (sp(s2) + 0.05 < sp(s1) ? s2 : s1).forEach(v => ratios.push(v));
+    } else if (a > 0.3) ratios.push(a/mw); else if (d > 0.3) ratios.push(d/mh);
+  });
+  if (ratios.length){
+    const m0 = median(ratios), good = ratios.filter(v => Math.abs(v - m0)/m0 < 0.12);
+    mpp = median(good.length ? good : ratios);
+  }
+  const scaleSpread = ratios.length > 1 ? (Math.max(...ratios) - Math.min(...ratios))/mpp : 0;
+
+  // 3) walls: wherever a room stops, look across. Another room close by = a wall between them, as thick as the
+  //    gap; nothing but drawing then paper = an outside wall, as thick as the drawing. Done along every row
+  //    (giving the upright walls) and every column (the level ones).
+  const TMAX = M(0.75), BGRUN = Math.max(2, Math.round(M(0.04)));
+  // Claude's bays: crossings inside one are skipped (the bay window is put in whole afterwards)
+  const bays = (ai.windows || []).filter(w => w.bay && w.bay !== "none").map(w => ({ax: w.x1*W, ay: w.y1*H, bx: w.x2*W, by: w.y2*H, depth: M(Math.max(0.3, w.bayDepthM || 0.6)), room: w.room}));
+  const inBay = (x, y) => bays.some(b=>{
+    const dx = b.bx - b.ax, dy = b.by - b.ay, L = Math.hypot(dx, dy) || 1, ux = dx/L, uy = dy/L;
+    const s = (x - b.ax)*ux + (y - b.ay)*uy, t = (x - b.ax)*-uy + (y - b.ay)*ux;
+    return s > -M(0.15) && s < L + M(0.15) && Math.abs(t) < b.depth + M(0.45);
+  });
+  const crossings = {v: [], h: []}, log = [];
+  const scan = (vert)=>{ // vert: rows → upright walls; else columns → level walls
+    const n = vert ? H : W, m = vert ? W : H, at = (a, s) => vert ? s*W + a : a*W + s;
+    const out = vert ? crossings.v : crossings.h;
+    // From the first non-room pixel at a, step outward and say how deep the wall's drawing goes, or null when
+    // there's no paper within reach (a chimney block, a solid area — not an outside wall). Walls come drawn
+    // three ways: solid (one deep block of ink), hatched (thin diagonal lines with paper showing between) and
+    // outline (two thin lines, paper between). A deep first block is a solid wall, and ends there — whatever
+    // lies past a short gap (a label's box drawn against the wall) isn't wall. A thin first block is hatching
+    // or an outline: the wall carries on across paper gaps narrower than a wall is thick.
+    const ext = (s, a, dir)=>{
+      const prof = [];
+      for (let k = 0; k <= TMAX; k++){
+        const p = a + dir*k;
+        if (p < 0 || p >= m) break;
+        const i = at(p, s);
+        if (label[i]) return null;
+        prof.push(isBg(i) ? 0 : 1);
+      }
+      const reachEnd = prof.length <= TMAX; // ran off the image: paper beyond
+      const blockEnd = (from, gapMax)=>{ // end of the drawing starting at `from`, bridging paper gaps < gapMax; -1 if it runs out of reach
+        let last = from - 1, run = 0;
+        for (let k = from; k < prof.length; k++){
+          if (prof[k]){ run = 0; last = k; } else if (++run >= gapMax) return last + 1;
+        }
+        return reachEnd ? last + 1 : -1;
+      };
+      let first = 0; while (first < prof.length && !prof[first]) first++;
+      if (first >= prof.length) return reachEnd ? 0 : null;
+      if (first > BGRUN) return first; // paper straight away: a wall drawn as nothing (just the room's edge)
+      const solid = blockEnd(first, BGRUN);
+      if (solid < 0) return null;
+      if (solid - first >= M(0.07)) return solid;
+      const hatched = blockEnd(first, Math.max(BGRUN, M(0.13)));
+      if (hatched > 0 && hatched - first >= M(0.07)) return hatched;
+      // an outline: a second thin line a wall's thickness further out, then paper
+      let k = (hatched > 0 ? hatched : solid); while (k < prof.length && !prof[k]) k++;
+      if (k < prof.length && k <= M(0.5)){ const e2 = blockEnd(k, BGRUN); if (e2 > 0 && e2 - k < M(0.07)) return e2; }
+      return solid;
+    };
+    for (let s = 0; s < n; s++){
+      let prevId = 0, prevEnd = -1;
+      for (let a = 0; a <= m; a++){
+        const id = a < m ? label[at(a, s)] : -1;
+        if (id === prevId && id > 0){ prevEnd = a; continue; }
+        if (id > 0){
+          const gap = a - prevEnd - 1;
+          if (prevId > 0 && gap > 0 && gap <= TMAX && prevId !== id){
+            out.push({s, f0: prevEnd + 1, f1: a, a: prevId, b: id}); // between two rooms: faces at f0 and f1 (pixel edges)
+          } else if (gap > 0 && (prevId <= 0 || gap > TMAX)){
+            if (prevId > 0){ const t = ext(s, prevEnd + 1, 1); if (t) out.push({s, f0: prevEnd + 1, f1: prevEnd + 1 + t, a: prevId, b: -1, inner: 0}); }
+            const t = ext(s, a - 1, -1); if (t) out.push({s, f0: a - t, f1: a, a: -1, b: id, inner: 1});
+          }
+          prevId = id; prevEnd = a;
+        } else if (id === -1 && prevId > 0){ // the line's end
+          const t = ext(s, prevEnd + 1, 1); if (t) out.push({s, f0: prevEnd + 1, f1: prevEnd + 1 + t, a: prevId, b: -1, inner: 0});
+        }
+      }
+    }
+  };
+  scan(true); scan(false);
+  // group runs of crossings that line up from one row to the next into wall pieces
+  const pieces = [];
+  ["v", "h"].forEach(o=>{
+    const list = crossings[o].filter(c => !inBay(o === "v" ? (c.f0 + c.f1)/2 : c.s, o === "v" ? c.s : (c.f0 + c.f1)/2));
+    list.sort((p, q) => p.s - q.s);
+    let open = [];
+    list.forEach(c=>{
+      const outer = c.b === -1 || c.a === -1, face = outer ? (c.b === -1 ? c.f0 : c.f1) : 0;
+      let g = null;
+      for (const q of open){
+        if (q.a !== c.a || q.b !== c.b || q.last < c.s - 2) continue;
+        if (outer ? Math.abs(q.face - face) <= 1 : Math.abs(q.f0 - c.f0) <= 1 && Math.abs(q.f1 - c.f1) <= 1){ g = q; break; }
+      }
+      if (!g){ g = {o, a: c.a, b: c.b, outer, face, f0: c.f0, f1: c.f1, first: c.s, last: c.s, list: []}; open.push(g); pieces.push(g); }
+      g.last = c.s; g.list.push(c);
+      if (open.length > 60) open = open.filter(q => q.last >= c.s - 2);
+    });
+  });
+  const pct = (a, p) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p*s.length))]; };
+  let segs = pieces.filter(g => g.last - g.first + 1 >= M(0.12)).map(g=>{
+    let c, t;
+    if (g.outer){
+      t = pct(g.list.map(c => c.f1 - c.f0), 0.75);
+      const face = pct(g.list.map(c => c.b === -1 ? c.f0 : c.f1), 0.5);
+      c = g.b === -1 ? face + t/2 : face - t/2;
+    } else {
+      const f0 = pct(g.list.map(c => c.f0), 0.5), f1 = pct(g.list.map(c => c.f1), 0.5);
+      c = (f0 + f1)/2; t = f1 - f0;
+    }
+    return {o: g.o, c, t: Math.max(1, t), s0: g.first, s1: g.last + 1, pairs: [[g.a, g.b]], outer: g.outer};
+  });
+
+  // what Claude saw sitting in walls: doors/openings, windows (bays included) — gaps across them get bridged
+  const marks = [];
+  (ai.openings || []).forEach(d => marks.push({x: d.x*W, y: d.y*H, w: M(Math.max(0.5, d.widthM || 0.8)), kind: "door"}));
+  (ai.windows || []).forEach(w => marks.push({x: (w.x1 + w.x2)/2*W, y: (w.y1 + w.y2)/2*H, w: Math.hypot((w.x2 - w.x1)*W, (w.y2 - w.y1)*H), kind: "window"}));
+  const along = (sg, x, y) => sg.o === "v" ? y : x, across = (sg, x, y) => sg.o === "v" ? x : y;
+
+  // 4) tidy: join pieces of one wall (across a door or window gap too), carry walls through doorways that
+  //    have no wall drawn either side, meet corners and T-junctions exactly
+  const mergeRuns = ()=>{
+    let changed = true;
+    while (changed){
+      changed = false;
+      segs.sort((p, q) => p.o < q.o ? -1 : p.o > q.o ? 1 : p.c - q.c || p.s0 - q.s0);
+      for (let i = 0; i < segs.length && !changed; i++) for (let j = i + 1; j < segs.length; j++){
+        const A = segs[i], Bq = segs[j];
+        if (A.o !== Bq.o) break;
+        if (Math.abs(A.c - Bq.c) > Math.max(1.5, 0.2*Math.min(A.t, Bq.t))) { if (Bq.c - A.c > TMAX) break; continue; }
+        if (Math.abs(A.t - Bq.t) > Math.max(2, 0.35*Math.max(A.t, Bq.t))) continue;
+        const lo = A.s1 <= Bq.s0 ? A : Bq, hi = lo === A ? Bq : A, gap = hi.s0 - lo.s1;
+        let ok = gap <= Math.max(2, M(0.12));
+        if (!ok && gap <= M(2.2)) ok = marks.some(mk => { const s = along(A, mk.x, mk.y), t = across(A, mk.x, mk.y); return s > lo.s1 - M(0.1) && s < hi.s0 + M(0.1) && Math.abs(t - A.c) < A.t/2 + M(0.35); });
+        if (!ok) continue;
+        const la = A.s1 - A.s0, lb = Bq.s1 - Bq.s0;
+        const m = {o: A.o, c: (A.c*la + Bq.c*lb)/(la + lb), t: (A.t*la + Bq.t*lb)/(la + lb), s0: Math.min(A.s0, Bq.s0), s1: Math.max(A.s1, Bq.s1), pairs: A.pairs.concat(Bq.pairs), outer: A.outer && Bq.outer};
+        segs.splice(j, 1); segs.splice(i, 1, m); changed = true; break;
+      }
+    }
+  };
+  mergeRuns();
+  // a door or window no wall reaches: carry the nearest wall that points at it on through, to the next wall
+  marks.forEach(mk=>{
+    const covered = segs.some(sg => { const s = along(sg, mk.x, mk.y), t = across(sg, mk.x, mk.y); return Math.abs(t - sg.c) < sg.t/2 + M(0.2) && s > sg.s0 - M(0.05) && s < sg.s1 + M(0.05); });
+    if (covered) return;
+    let best = null;
+    segs.forEach(sg=>{
+      const s = along(sg, mk.x, mk.y), t = across(sg, mk.x, mk.y);
+      if (Math.abs(t - sg.c) > sg.t/2 + M(0.3)) return;
+      const d = s > sg.s1 ? s - sg.s1 : sg.s0 - s;
+      if (d < 0 || d > M(2.2)) return;
+      if (!best || d < best.d) best = {sg, d, end: s > sg.s1 ? 1 : 0, s};
+    });
+    if (!best) return;
+    const sg = best.sg, dir = best.end ? 1 : -1, from = best.end ? sg.s1 : sg.s0;
+    let to = best.s + dir*(mk.w/2 + M(0.1)), stop = Infinity;
+    segs.forEach(p=>{ // the first wall across its path past the gap stops it there
+      if (p === sg) return;
+      let at = null;
+      if (p.o !== sg.o){ if (sg.c >= p.s0 - sg.t && sg.c <= p.s1 + sg.t) at = p.c; }
+      else if (Math.abs(p.c - sg.c) < Math.max(1.5, 0.2*Math.min(p.t, sg.t))) at = best.end ? p.s0 : p.s1;
+      if (at === null) return;
+      const dd = (at - from)*dir;
+      if (dd > 0 && dd <= M(2.6) && (at - best.s)*dir >= -M(0.05) && dd < stop){ stop = dd; to = at; }
+    });
+    log.push(["mark", mk.kind, Math.round(mk.x), Math.round(mk.y), sg.o, Math.round(sg.c), Math.round(sg.s0), Math.round(sg.s1), Math.round(to)]);
+    if (best.end) sg.s1 = Math.max(sg.s1, to); else sg.s0 = Math.min(sg.s0, to);
+  });
+  mergeRuns();
+  // the same wall found twice, side by side (a thick block read as two thinner bands): the shorter copy goes,
+  // the longer takes in its length
+  for (let changed = true; changed;){
+    changed = false;
+    for (const A of segs){ for (const Bq of segs){
+      if (A === Bq || A.o !== Bq.o || (Bq.s1 - Bq.s0) > (A.s1 - A.s0)) continue;
+      if (Math.abs(A.c - Bq.c) >= (A.t + Bq.t)/2) continue;
+      const ov = Math.min(A.s1, Bq.s1) - Math.max(A.s0, Bq.s0);
+      if (ov < 0.6*(Bq.s1 - Bq.s0)) continue;
+      A.s0 = Math.min(A.s0, Bq.s0); A.s1 = Math.max(A.s1, Bq.s1); A.pairs = A.pairs.concat(Bq.pairs);
+      segs.splice(segs.indexOf(Bq), 1); changed = true; break;
+    } if (changed) break; }
+  }
+  // corners and T-junctions: each end meets the centre line of the wall across it (scraps too small to be a
+  // wall — a stray mark under the plan — dropped first, so nothing reaches out to meet them)
+  segs = segs.filter(sg => sg.s1 - sg.s0 >= M(0.2));
+  for (let pass = 0; pass < 2; pass++) segs.forEach(sg => [0, 1].forEach(end=>{
+    const e = end ? sg.s1 : sg.s0;
+    let best = null;
+    segs.forEach(p=>{
+      if (p === sg || p.o === sg.o) return;
+      if (sg.c < p.s0 - sg.t - M(0.3) || sg.c > p.s1 + sg.t + M(0.3)) return;
+      const d = Math.abs(e - p.c);
+      if (d > p.t/2 + sg.t/2 + M(0.15)) return;
+      if (!best || d < best.d) best = {p, d};
+    });
+    if (!best) return;
+    const p = best.p;
+    log.push(["corner", sg.o, Math.round(sg.c), end, Math.round(e), Math.round(p.c), Math.round(p.s0), Math.round(p.s1)]);
+    if (end) sg.s1 = p.c; else sg.s0 = p.c;
+    if (sg.c < p.s0 && p.s0 - sg.c < sg.t + M(0.35)) p.s0 = sg.c; // an L corner: that wall reaches this one's centre line too
+    if (sg.c > p.s1 && sg.c - p.s1 < sg.t + M(0.35)) p.s1 = sg.c;
+  }));
+  segs = segs.filter(sg => sg.s1 - sg.s0 >= M(0.15));
+  const segEnds = sg => sg.o === "v" ? [{x: sg.c, y: sg.s0}, {x: sg.c, y: sg.s1}] : [{x: sg.s0, y: sg.c}, {x: sg.s1, y: sg.c}];
+
+  // 5) doors and windows, each on the wall it sits in, its exact span found where that wall's drawing breaks
+  const inkProfile = (sg)=>{ // per pixel along the wall, the share of its thickness that's drawn line
+    const len = Math.max(1, Math.round(sg.s1 - sg.s0)), out = new Float32Array(len), half = Math.max(1, sg.t*0.4);
+    for (let k = 0; k < len; k++){
+      const s = Math.round(sg.s0 + k);
+      let n = 0, inked = 0;
+      for (let t = Math.round(sg.c - half); t <= Math.round(sg.c + half); t++){
+        const x = sg.o === "v" ? t : s, y = sg.o === "v" ? s : t;
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        n++; if (ink(y*W + x)) inked++;
+      }
+      out[k] = n ? inked/n : 0;
+    }
+    return out;
+  };
+  const profiles = new Map();
+  const profileOf = sg => { if (!profiles.has(sg)) profiles.set(sg, inkProfile(sg)); return profiles.get(sg); };
+  // the stretch around s (along the wall) where the drawing thins out below `below`: [start, end] or null
+  const thinRun = (sg, s, below, minLen, maxLen)=>{
+    const pr = profileOf(sg), k0 = Math.round(s - sg.s0), sm = new Float32Array(pr.length);
+    for (let k = 0; k < pr.length; k++){ let a = 0, n = 0; for (let j = k - 1; j <= k + 1; j++) if (j >= 0 && j < pr.length){ a += pr[j]; n++; } sm[k] = a/n; }
+    let best = null;
+    for (let k = 0; k < sm.length;){
+      if (sm[k] >= below){ k++; continue; }
+      let e = k; while (e < sm.length && sm[e] < below) e++;
+      const len = e - k, mid = (k + e)/2;
+      if (len >= minLen && len <= maxLen){ const d = Math.abs(mid - k0); if (d < M(0.9) && (!best || d < best.d)) best = {d, a: sg.s0 + k, b: sg.s0 + e}; }
+      k = e;
+    }
+    return best;
+  };
+  const roomByName = new Map(rooms.map(r => [r.name.toLowerCase(), r]));
+  const findRoom = n => roomByName.get((n || "").trim().toLowerCase()) || null;
+  const nearestSeg = (x, y, prefer)=>{
+    let best = null;
+    segs.forEach(sg=>{
+      const s = along(sg, x, y), t = across(sg, x, y);
+      const ds = s < sg.s0 ? sg.s0 - s : s > sg.s1 ? s - sg.s1 : 0, d = Math.hypot(ds, Math.max(0, Math.abs(t - sg.c) - sg.t/2));
+      const pref = !prefer || prefer(sg);
+      if (d > (pref ? M(0.9) : M(0.6))) return;
+      const score = d + (pref ? 0 : M(0.4));
+      if (!best || score < best.score) best = {sg, score, s: Math.max(sg.s0, Math.min(sg.s1, s))};
+    });
+    return best;
+  };
+  const doors = [];
+  (ai.openings || []).forEach(d=>{
+    const ra = findRoom((d.rooms || [])[0]), rb = findRoom((d.rooms || [])[1]);
+    const ids = [ra && ra.id, rb && rb.id].map(v => v || -1);
+    const hit = nearestSeg(d.x*W, d.y*H, sg => sg.pairs.some(([a, b]) => (a === ids[0] && b === ids[1]) || (a === ids[1] && b === ids[0])));
+    if (!hit) return;
+    // between two rooms inside, never on an outside wall: with no wall between them they're simply open to each
+    // other (the drawing shows one space), and there's nothing to put the opening in
+    const inside = ra && rb && !/^outside$/i.test(d.rooms[0]) && !/^outside$/i.test(d.rooms[1]);
+    if (inside && hit.sg.outer && !hit.sg.pairs.some(([a, b]) => a > 0 && b > 0)) return;
+    const sg = hit.sg, want = M(Math.max(0.5, d.widthM || 0.8));
+    // a door just past the end of the wall it belongs to (a short nib beside a doorway): that wall runs on
+    // through the doorway to the next wall across
+    const ds = along(sg, d.x*W, d.y*H);
+    [[ds - want/2 < sg.s0, 0], [ds + want/2 > sg.s1, 1]].forEach(([short, end])=>{
+      if (!short) return;
+      const need = end ? ds + want/2 : ds - want/2, dir = end ? 1 : -1;
+      let to = need;
+      segs.forEach(p=>{ if (p.o !== sg.o && sg.c >= p.s0 - sg.t && sg.c <= p.s1 + sg.t && (p.c - need)*dir >= -M(0.05) && (p.c - need)*dir < M(0.35) && (to === need || (p.c - to)*dir < 0)) to = p.c; });
+      log.push(["door", sg.o, Math.round(sg.c), end, Math.round(to)]);
+      if (end) sg.s1 = Math.max(sg.s1, to); else sg.s0 = Math.min(sg.s0, to);
+      profiles.delete(sg);
+    });
+    const pr = profileOf(sg), wallInk = pct(Array.from(pr), 0.6) || 0.5;
+    const run = thinRun(sg, hit.s, Math.min(0.1, wallInk*0.3), M(0.45), Math.max(want*1.8, M(1)));
+    let a, b;
+    if (run){ a = run.a; b = run.b; } else { a = hit.s - want/2; b = hit.s + want/2; }
+    a = Math.max(sg.s0, a); b = Math.min(sg.s1, b);
+    if (b - a < M(0.4)) return;
+    const mid = (a + b)/2, cxp = sg.o === "v" ? sg.c : mid, cyp = sg.o === "v" ? mid : sg.c;
+    // hinge: the end Claude put it at; swing: into the room Claude said, which side of the wall that room lies
+    const hs = along(sg, d.hingeX*W, d.hingeY*H), hinge = hs >= mid ? 1 : -1;
+    const into = findRoom(d.swingIntoRoom), other = [ra, rb].find(r => r && r !== into);
+    const sideOf = r => r && r.area ? Math.sign(across(sg, r.cx, r.cy) - sg.c) : 0;
+    let side = into ? sideOf(into) : 0;
+    if (!side && other) side = -sideOf(other);
+    doors.push({x: cxp, y: cyp, o: sg.o, len: b - a, t: sg.t, kind: d.kind, hinge, side: side || 1});
+  });
+  const windows = [];
+  (ai.windows || []).forEach(w=>{
+    const ax = w.x1*W, ay = w.y1*H, bx = w.x2*W, by = w.y2*H, mx = (ax + bx)/2, my = (ay + by)/2;
+    const hit = nearestSeg(mx, my, sg => sg.outer);
+    if (!hit) return;
+    const sg = hit.sg, sa = along(sg, ax, ay), sb = along(sg, bx, by);
+    let a = Math.min(sa, sb), b = Math.max(sa, sb);
+    const bay = w.bay && w.bay !== "none";
+    if (!bay){
+      const pr = profileOf(sg), wallInk = pct(Array.from(pr), 0.6) || 0.5;
+      const run = thinRun(sg, (a + b)/2, wallInk*0.6, Math.max(M(0.3), (b - a)*0.5), Math.max(M(0.6), (b - a)*1.8));
+      if (run){ a = run.a; b = run.b; }
+    }
+    a = Math.max(sg.s0, a); b = Math.min(sg.s1, b);
+    if (b - a < M(0.25)) return;
+    if (doors.some(dr => dr.o === sg.o && Math.abs(across(sg, dr.x, dr.y) - sg.c) < 2 && Math.abs(along(sg, dr.x, dr.y) - (a + b)/2) < (dr.len + b - a)/2 - M(0.05))) return; // that's a door
+    let bow = 0;
+    if (bay){ // how far the bay stands out: from the wall's centre line out to the last of its drawing before paper
+      const r = findRoom(w.room), out = r && r.area ? -Math.sign(across(sg, r.cx, r.cy) - sg.c) || 1 : 1, mid = (a + b)/2;
+      let last = 0, run = 0;
+      for (let k = 0; k < M(2.5); k++){
+        const t = Math.round(sg.c + out*k), x = sg.o === "v" ? t : Math.round(mid), y = sg.o === "v" ? Math.round(mid) : t;
+        if (x < 0 || y < 0 || x >= W || y >= H) break;
+        if (isBg(y*W + x)){ if (++run > BGRUN*3) break; } else { run = 0; last = k; }
+      }
+      bow = out*Math.max(M(0.2), last - sg.t/2);
+    }
+    windows.push({o: sg.o, c: sg.c, a, b, t: sg.t, bow, bay: w.bay});
+  });
+
+  // 6) back to the plan's own units (the image's full-size pixels)
+  const k = 1/f;
+  const segOut = segs.map(sg => ({...(sg.o === "v" ? {x1: sg.c*k, y1: sg.s0*k, x2: sg.c*k, y2: sg.s1*k} : {x1: sg.s0*k, y1: sg.c*k, x2: sg.s1*k, y2: sg.c*k}), tM: sg.t*mpp, outer: sg.outer}));
+  return {
+    mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, work: {W, H, f, label, rooms, segs, crossings, log},
+    walls: segOut,
+    doors: doors.map(d => ({x: d.x*k, y: d.y*k, rot: d.o === "v" ? Math.PI/2 : 0, lenM: d.len*mpp, tM: d.t*mpp, kind: d.kind, hinge: d.hinge, side: d.side})),
+    windows: windows.map(w => ({...(w.o === "v" ? {x1: w.c*k, y1: w.a*k, x2: w.c*k, y2: w.b*k} : {x1: w.a*k, y1: w.c*k, x2: w.b*k, y2: w.c*k}), tM: w.t*mpp, bowM: w.bow*mpp, o: w.o})),
+    rooms: rooms.filter(r => r.area).map(r => ({name: r.name, x: r.cx*k, y: r.cy*k, inside: label[Math.round(r.cy)*W + Math.round(r.cx)] === r.id, id: r.id})),
+    findPointIn: (id)=>{ // a point that's surely inside room id (its centre if that is, else its pixel nearest the centre)
+      const r = byId.get(id); if (!r || !r.area) return null;
+      let best = null;
+      for (let y = r.ey0; y <= r.ey1; y += 2) for (let x = r.ex0; x <= r.ex1; x += 2) if (label[y*W + x] === id){ const d = (x - r.cx)**2 + (y - r.cy)**2; if (!best || d < best.d) best = {d, x, y}; }
+      return best && {x: best.x*k, y: best.y*k};
+    },
+  };
+}
+// Put a measured result onto a floor: scale, walls, windows (bays bent out), doors, stairs, furniture and the
+// rooms' names. Replaces whatever was traced on the floor (the image stays). One undo step.
+function applySmartTrace(floor, res, ai){
+  pushUndoSnapshot();
+  const was = suppressHistory; suppressHistory = true;
+  try{
+    floor.calibration = {metersPerWorldUnit: res.mPerPx};
+    floor.walls = []; floor.boxes = []; floor.labels = []; delete floor.roomNames;
+    const cm = m => Math.round(m*100);
+    res.walls.forEach(w => floor.walls.push({id: newId(), type: "wall", x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, thicknessCm: clampNum(cm(w.tM), 5, 60, WALL_THICKNESS_CM)}));
+    res.windows.forEach(w=>{
+      const o = {id: newId(), type: "window", x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, thicknessCm: clampNum(cm(w.tM), 5, 60, WALL_THICKNESS_CM)};
+      if (w.bowM) o.bowCm = cm(w.o === "v" ? -w.bowM : w.bowM); // a window bows out along its left normal (see windowCenterlinePoints)
+      floor.walls.push(o);
+    });
+    const kinds = {door: "single", double: "double", sliding: "sliding", bifold: "bifold", opening: "opening"};
+    res.doors.forEach(d=>{
+      const t = DOOR_TYPE_BY_KEY[kinds[d.kind] || "single"];
+      floor.boxes.push({id: newId(), kind: "door", type: "door", label: t.label, doorType: t.key, x: d.x, y: d.y,
+        wCm: Math.max(DOOR_MIN_CM, cm(d.lenM)), dCm: DOOR_DEFAULT.dCm, rotation: d.rot, color: DOOR_DEFAULT.color,
+        hinge: d.hinge, swing: d.rot ? -d.side : d.side}); // swing is measured across the door's own left normal
+    });
+    const W = floor.worldWidth, H = floor.worldHeight, k = res.mPerPx*100; // cm per plan unit
+    // stairs: climbing towards local −y; turned so that points the way Claude read them going up
+    const turn = {top: 0, bottom: Math.PI, left: -Math.PI/2, right: Math.PI/2};
+    (ai.stairs || []).forEach(st=>{
+      const b = st.box, x0 = Math.min(b.x0, b.x1)*W, x1 = Math.max(b.x0, b.x1)*W, y0 = Math.min(b.y0, b.y1)*H, y1 = Math.max(b.y0, b.y1)*H;
+      const across = (x1 - x0)*k, down = (y1 - y0)*k, vertical = st.upTowards === "top" || st.upTowards === "bottom";
+      const spec = {...furnitureSpec("stairs"), wCm: Math.round(vertical ? across : down), dCm: Math.round(vertical ? down : across)};
+      if (spec.wCm < 50 || spec.dCm < 80) return;
+      addBoxAt(spec, {x: (x0 + x1)/2, y: (y0 + y1)/2}, turn[st.upTowards] || 0);
+    });
+    // furniture: the size Claude read, backed onto the wall it's against (placementPose squares it up there)
+    const back = {top: 0, bottom: Math.PI, left: -Math.PI/2, right: Math.PI/2};
+    (ai.furniture || []).forEach(it=>{
+      const base = furnitureSpec(it.item);
+      if (!base) return;
+      const spec = {...base, key: it.item};
+      if (it.widthM > 0.2) spec.wCm = Math.round(it.widthM*100);
+      if (it.depthM > 0.2 && it.item !== "kitchen") spec.dCm = Math.round(it.depthM*100);
+      const at = {x: it.x*W, y: it.y*H};
+      let pos = at, rot = back[it.backTo] ?? 0;
+      if (it.backTo !== "none" && WALL_BACKED_TYPES.has(spec.type)){ const p = placementPose(spec, at); if (p && Math.hypot(p.pos.x - at.x, p.pos.y - at.y)*k < 60){ pos = p.pos; rot = p.rot; } }
+      addBoxAt(spec, pos, rot);
+    });
+    // names, each on a point surely inside its room
+    floor.roomNames = [];
+    res.rooms.forEach(r=>{ const p = res.findPointIn(r.id); if (p && r.name) floor.roomNames.push({x: p.x, y: p.y, name: r.name}); });
+    if (!floor.roomNames.length) delete floor.roomNames;
+  } finally { suppressHistory = was; }
+  scheduleAutosave();
+}
+async function runSmartTrace(){
+  const floor = activeFloor(), statusEl = document.getElementById("smartStatus");
+  if (!floor.image){ alert("Open the floorplan image on this floor first (Image, above)."); return; }
+  const apiKey = document.getElementById("fldApiKey").value.trim();
+  if (!apiKey){ alert("Paste your Anthropic API key into the box below first (from console.anthropic.com). It's kept only in this browser."); document.getElementById("fldApiKey").focus(); return; }
+  if ((floor.walls.length || floor.boxes.length) && !confirm(`Trace "${floor.name}" from its image? This replaces the walls, doors, windows and furniture already on this floor (Undo brings them back).`)) return;
+  const btn = document.getElementById("btnSmartTrace");
+  btn.disabled = true; setAIButtonsDisabled(true);
+  const t0 = Date.now(), tick = setInterval(()=>{ statusEl.textContent = `Claude is reading the plan… ${Math.round((Date.now() - t0)/1000)}s (usually under a minute)`; }, 1000);
+  try{
+    const {mediaType, base64Data} = readImageDataUrl(floor);
+    const ai = await callSmartTrace(base64Data, mediaType, apiKey, document.getElementById("fldModel").value);
+    clearInterval(tick);
+    statusEl.textContent = "Measuring the walls from the image…";
+    await new Promise(r => setTimeout(r, 20));
+    const img = await loadImageEl(floor.image.dataURL);
+    const res = smartTraceGeometry(img, ai);
+    if (!res.walls.length) throw new Error("Couldn't find any walls to trace — is this a floor plan with the rooms coloured or outlined?");
+    applySmartTrace(floor, res, ai);
+    updateScaleStatus(); render();
+    const n = (a, w) => `${a} ${w}${a === 1 ? "" : "s"}`;
+    const scaleNote = res.ratioCount ? `Scale set from ${n(res.ratioCount, "printed room size")}` + (res.scaleSpread > 0.15 ? ` — they didn't all agree (the drawing isn't exactly to scale), so measure a wall or two against the plan.` : ".") : "No room sizes were printed, so the scale is a guess — use Calibrate scale on a wall you know.";
+    statusEl.textContent = `Traced ${n(res.rooms.length, "room")}, ${n(res.walls.length, "wall")}, ${n(res.windows.length, "window")}, ${n(res.doors.length, "door")}` +
+      ((ai.furniture || []).length ? ` and ${n(ai.furniture.length, "piece")} of furniture` : "") + ` in ${Math.round((Date.now() - t0)/1000)}s. ${scaleNote} Check it over and fix anything with Select — Undo puts it all back.`;
+  }catch(err){
+    clearInterval(tick); console.error(err);
+    statusEl.textContent = "";
+    alert("Tracing didn't work: " + err.message);
+  }finally{
+    btn.disabled = false; setAIButtonsDisabled(false);
+  }
+}
 const DETECT_PROMPT = `You are analyzing ONE FLOOR of a floorplan image to help trace it in an editor. Assume this image shows a single floor only.
 
 Identify these categories separately — walls, windows and doors are drawn very differently on a floorplan and must not be confused with each other:
@@ -5181,7 +5867,7 @@ async function callClaudeStructured(base64Data, mediaType, apiKey, model, prompt
         // like this, keep thinking shallow so there's always room left for
         // the actual JSON output (a low max_tokens here previously produced
         // "no response text": all the budget spent thinking, none writing).
-        output_config: (model==="claude-opus-5" || model==="claude-sonnet-5")
+        output_config: /^claude-(opus|sonnet|haiku)-5/.test(model)
           ? {format: {type:"json_schema", schema}, effort: "low"}
           : {format: {type:"json_schema", schema}},
         messages: [{
@@ -7450,6 +8136,7 @@ document.getElementById("btnZoomReset").addEventListener("click", ()=>{
 });
 
 document.getElementById("btnDetect").addEventListener("click", runAIDetect);
+document.getElementById("btnSmartTrace").addEventListener("click", runSmartTrace);
 document.getElementById("btnDetectTiled").addEventListener("click", runTiledDetect);
 document.getElementById("btnSplitFloors").addEventListener("click", runSplitFloors);
 function initAISettings(){
@@ -7461,7 +8148,7 @@ function initAISettings(){
     localStorage.setItem(AI_API_KEY_STORAGE, keyField.value.trim());
   });
   const savedModel = localStorage.getItem(AI_MODEL_STORAGE);
-  if (savedModel) modelField.value = savedModel;
+  if (savedModel && [...modelField.options].some(o => o.value === savedModel)) modelField.value = savedModel; // (older saved models fall back to Opus 5.5)
   modelField.addEventListener("change", ()=>{
     localStorage.setItem(AI_MODEL_STORAGE, modelField.value);
   });
