@@ -384,7 +384,7 @@
     <section data-modes="build">
       <h2>Trace from the image</h2>
       <p style="font-size:11px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">Claude reads the plan — every room, its printed size, the doors, windows, stairs and furniture — and the walls are then measured exactly from the drawing itself. Takes about a minute, a few pence on your Anthropic account. One floor per image (use Split, below, on a listing picture showing several).</p>
-      <button class="wide" id="btnSmartTrace" style="font-weight:600;">✨ Trace this floor from its image</button>
+      <button class="wide" id="btnSmartTrace" style="font-weight:600;">✨ Trace the house from its image</button>
       <div id="smartStatus" style="font-size:11px;color:var(--text-dim);line-height:1.4;margin-top:4px;"></div>
       <div class="field" style="margin-top:8px;">
         <label>Anthropic API key</label>
@@ -968,7 +968,7 @@ const SMART_WORK_PX = 1400;
 const SMART_INK_LUM = 150;   // darker than this is a drawn line (walls, hatching, outlines, text)
 const SMART_BG_TOL = 26;     // this close to the paper colour is paper
 const SMART_FILL_TOL = 24;   // this close to a room's own fill colour is that room (and closer to it than to any other room's)
-function smartTraceGeometry(src, ai){
+function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already known (metres per image pixel) — e.g. pooled over every floor of one image
   // the work image
   const f = Math.min(1, SMART_WORK_PX/Math.max(src.width, src.height));
   const W = Math.max(1, Math.round(src.width*f)), H = Math.max(1, Math.round(src.height*f)), N = W*H;
@@ -1123,7 +1123,8 @@ function smartTraceGeometry(src, ai){
       (sp(s2) + 0.05 < sp(s1) ? s2 : s1).forEach(v => ratios.push(v));
     } else if (a > 0.3) ratios.push(a/mw); else if (d > 0.3) ratios.push(d/mh);
   });
-  if (ratios.length){
+  if (opts.mPerPx > 0) mpp = opts.mPerPx/f;
+  else if (ratios.length){
     const m0 = median(ratios), good = ratios.filter(v => Math.abs(v - m0)/m0 < 0.12);
     mpp = median(good.length ? good : ratios);
   }
@@ -1585,7 +1586,7 @@ function smartTraceGeometry(src, ai){
   const segOut = segs.map(sg => ({...(sg.o === "v" ? {x1: sg.c*k, y1: sg.s0*k, x2: sg.c*k, y2: sg.s1*k} : {x1: sg.s0*k, y1: sg.c*k, x2: sg.s1*k, y2: sg.c*k}), tM: sg.t*mpp, outer: sg.outer}))
     .concat(diags.map(d => ({x1: d.x1*k, y1: d.y1*k, x2: d.x2*k, y2: d.y2*k, tM: d.t*mpp, outer: false})));
   return {
-    mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, work: {W, H, f, label, rooms, segs, crossings, log},
+    mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, ratiosPx: ratios.map(v => v*f), work: {W, H, f, label, rooms, segs, crossings, log},
     walls: segOut,
     doors: doors.map(d => ({x: d.x*k, y: d.y*k, rot: d.o === "v" ? Math.PI/2 : 0, lenM: d.len*mpp, tM: d.t*mpp, kind: d.kind, hinge: d.hinge, side: d.side})),
     windows: windows.map(w => ({...(w.o === "v" ? {x1: w.c*k, y1: w.a*k, x2: w.c*k, y2: w.b*k} : {x1: w.a*k, y1: w.c*k, x2: w.b*k, y2: w.c*k}), tM: w.t*mpp, bowM: w.bow*mpp, o: w.o})),
@@ -1609,8 +1610,8 @@ function smartTraceGeometry(src, ai){
 }
 // Put a measured result onto a floor: scale, walls, windows (bays bent out), doors, stairs, furniture and the
 // rooms' names. Replaces whatever was traced on the floor (the image stays). One undo step.
-function applySmartTrace(floor, res, ai){
-  pushUndoSnapshot();
+function applySmartTrace(floor, res, ai, opts = {}){
+  if (!opts.noUndo) pushUndoSnapshot();
   const was = suppressHistory; suppressHistory = true;
   try{
     floor.calibration = {metersPerWorldUnit: res.mPerPx};
@@ -1672,6 +1673,207 @@ function applySmartTrace(floor, res, ai){
     if (!floor.roomNames.length) delete floor.roomNames;
   } finally { suppressHistory = was; }
   scheduleAutosave();
+}
+
+// ---------------------------------------------------------------------------
+// The whole house from one image: estate-agent plans almost always show every floor side by side.
+// Claude first says where each floor is drawn and which storey it is; each floor is cropped out (snapped to
+// its actual drawing), read and traced on its own; the printed sizes on every floor together give one scale
+// (they're all drawn at the same scale on one sheet); and the floors go bottom to top into the floor tabs,
+// each lined up on the one below (autoStackFloor), so the 3D view's Whole house shows the building.
+// ---------------------------------------------------------------------------
+const HOUSE_SPLIT_PROMPT = `This image is an estate agent's floor plan. It may show several floors of one property side by side or stacked (each normally labelled "Ground Floor", "First Floor", "Basement", "Lower Ground Floor", "Loft", "Floor 1", "House Floor 2" and so on), and sometimes separate buildings too (a detached garage, an annex, an outbuilding, a summer house).
+
+List every separate floor drawing. For each:
+- label: its printed name, exactly as printed (if none, describe it, e.g. "Floor 1").
+- level: which storey it is, as a whole number: 0 = ground floor (the floor with the front door), 1 = first floor, 2 = second floor, 3 = third / loft above a second floor, -1 = basement, cellar or lower ground floor. "Floor 1" with no other clue is the ground floor (0), "Floor 2" the first floor (1). A loft or attic room is the storey above the top full floor. An upper floor of an annex or garage gets that building's own count (its ground floor 0, its upper floor 1).
+- building: "main" for the house itself (including an attached garage drawn as part of the house's ground floor), or "separate" for a drawing of a different building — a detached garage, annex, outbuilding, barn, studio or summer house, or any part labelled as one.
+- box: a tight box around that floor's drawing only (walls, bays, steps — not its printed title or the area figures), in normalized image coordinates: 0,0 = top-left of the whole image, 1,1 = bottom-right. Boxes of different floors must not overlap.
+
+Ignore site plans, location maps, garden-only drawings, logos, compass roses, keys and notes. If the image shows only one floor, list just that one.`;
+const HOUSE_SPLIT_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    floors: {type: "array", items: {type: "object", additionalProperties: false, properties: {
+      label: {type: "string"}, level: {type: "integer"}, building: {type: "string", enum: ["main", "separate"]},
+      box: {type: "object", additionalProperties: false, properties: {x0: {type: "number"}, y0: {type: "number"}, x1: {type: "number"}, y1: {type: "number"}}, required: ["x0", "y0", "x1", "y1"]},
+    }, required: ["label", "level", "building", "box"]}},
+  },
+  required: ["floors"],
+};
+async function housePlanRead(dataURL, apiKey, model, fresh){
+  const key = "floorplanTool.houseSplit:" + hashString(dataURL) + ":" + dataURL.length;
+  if (!fresh) try { const c = JSON.parse(localStorage.getItem(key) || "null"); if (c) return c; } catch(e){}
+  const {mediaType, base64Data} = parseDataUrl(dataURL);
+  const out = await callClaudeStructured(base64Data, mediaType, apiKey, model, HOUSE_SPLIT_PROMPT, HOUSE_SPLIT_SCHEMA);
+  try { localStorage.setItem(key, JSON.stringify(out)); } catch(e){}
+  return out;
+}
+// Claude's boxes are approximate: snap each to the drawing it covers. The ink (anything not white paper) is split into
+// connected pieces; a piece mostly inside one floor's box belongs to that floor, and the floor's crop is the box around
+// its pieces. Pieces of other floors that reach into a crop are painted out. Pieces spanning several boxes (a page
+// border, a watermark) belong to none.
+function refineFloorBoxes(img, regions){
+  const IW = img.naturalWidth || img.width, IH = img.naturalHeight || img.height;
+  const f = Math.min(1, 900/Math.max(IW, IH)), W = Math.max(1, Math.round(IW*f)), H = Math.max(1, Math.round(IH*f));
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d", {willReadFrequently: true}); g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.drawImage(img, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, ink = new Uint8Array(W*H);
+  for (let i = 0; i < W*H; i++){
+    const r = d[i*4], gg = d[i*4 + 1], b = d[i*4 + 2], mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    ink[i] = (0.3*r + 0.59*gg + 0.11*b < 205 || mx - mn > 40) ? 1 : 0;
+  }
+  const grown = new Uint8Array(W*H); // close small gaps (hatching, door gaps) so a floor holds together
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (ink[y*W + x])
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++){ const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < W && Y < H) grown[Y*W + X] = 1; }
+  const comp = new Int32Array(W*H), comps = [], stack = [];
+  for (let s0 = 0; s0 < W*H; s0++){
+    if (!grown[s0] || comp[s0]) continue;
+    const id = comps.length + 1, cc = {id, x0: W, y0: H, x1: 0, y1: 0, n: 0}; comps.push(cc);
+    comp[s0] = id; stack.push(s0);
+    while (stack.length){
+      const i = stack.pop(), x = i % W, y = (i - x)/W;
+      cc.n++; if (x < cc.x0) cc.x0 = x; if (x > cc.x1) cc.x1 = x; if (y < cc.y0) cc.y0 = y; if (y > cc.y1) cc.y1 = y;
+      if (x > 0 && grown[i - 1] && !comp[i - 1]){ comp[i - 1] = id; stack.push(i - 1); }
+      if (x < W - 1 && grown[i + 1] && !comp[i + 1]){ comp[i + 1] = id; stack.push(i + 1); }
+      if (y > 0 && grown[i - W] && !comp[i - W]){ comp[i - W] = id; stack.push(i - W); }
+      if (y < H - 1 && grown[i + W] && !comp[i + W]){ comp[i + W] = id; stack.push(i + W); }
+    }
+  }
+  const boxes = regions.map(r => ({x0: Math.min(r.box.x0, r.box.x1)*W, y0: Math.min(r.box.y0, r.box.y1)*H, x1: Math.max(r.box.x0, r.box.x1)*W, y1: Math.max(r.box.y0, r.box.y1)*H}));
+  const owner = new Int32Array(comps.length + 1).fill(-1);
+  comps.forEach(cc=>{
+    if (cc.n < 4) return;
+    const a = (cc.x1 - cc.x0 + 1)*(cc.y1 - cc.y0 + 1);
+    let best = -1, most = 0;
+    boxes.forEach((b, k)=>{ const ov = Math.max(0, Math.min(cc.x1 + 1, b.x1) - Math.max(cc.x0, b.x0))*Math.max(0, Math.min(cc.y1 + 1, b.y1) - Math.max(cc.y0, b.y0)); if (ov > most){ most = ov; best = k; } });
+    if (best >= 0 && most >= 0.5*a) owner[cc.id] = best;
+  });
+  return regions.map((r, k)=>{
+    const mine = comps.filter(cc => owner[cc.id] === k && cc.n >= 4);
+    // only pieces of any size count towards the box: a stray dot of text shouldn't stretch the crop
+    const big = mine.filter(cc => (cc.x1 - cc.x0) + (cc.y1 - cc.y0) > 0.02*(W + H));
+    const use = big.length ? big : mine;
+    // the ink inside Claude's box that isn't another floor's (a piece running across two boxes still counts here,
+    // so a floor whose walls touch a neighbour's label isn't cut short), widened to take in its own pieces whole
+    const bk = boxes[k]; let b = {x0: W, y0: H, x1: 0, y1: 0};
+    for (let y = Math.max(0, Math.floor(bk.y0)); y < Math.min(H, Math.ceil(bk.y1)); y++) for (let x = Math.max(0, Math.floor(bk.x0)); x < Math.min(W, Math.ceil(bk.x1)); x++){
+      const i = y*W + x; if (!ink[i]) continue;
+      const o = owner[comp[i]]; if (o >= 0 && o !== k) continue;
+      if (o < 0 && comps[comp[i] - 1].n < 4) continue;
+      if (x < b.x0) b.x0 = x; if (x + 1 > b.x1) b.x1 = x + 1; if (y < b.y0) b.y0 = y; if (y + 1 > b.y1) b.y1 = y + 1;
+    }
+    use.forEach(cc => { b = {x0: Math.min(b.x0, cc.x0), y0: Math.min(b.y0, cc.y0), x1: Math.max(b.x1, cc.x1 + 1), y1: Math.max(b.y1, cc.y1 + 1)}; });
+    if (b.x1 <= b.x0) b = bk;
+    const pad = 0.01*Math.max(W, H);
+    const px = {x0: Math.max(0, Math.floor((b.x0 - pad)/f)), y0: Math.max(0, Math.floor((b.y0 - pad)/f)), x1: Math.min(IW, Math.ceil((b.x1 + pad)/f)), y1: Math.min(IH, Math.ceil((b.y1 + pad)/f))};
+    // crop at full resolution, painting out any other floor's drawing that reaches in
+    const w = Math.max(1, px.x1 - px.x0), h = Math.max(1, px.y1 - px.y0), cv2 = document.createElement("canvas"); cv2.width = w; cv2.height = h;
+    const g2 = cv2.getContext("2d"); g2.fillStyle = "#fff"; g2.fillRect(0, 0, w, h); g2.drawImage(img, px.x0, px.y0, w, h, 0, 0, w, h);
+    const cell = 1/f; g2.fillStyle = "#fff";
+    for (let y = Math.floor(px.y0*f); y < Math.min(H, Math.ceil(px.y1*f)); y++) for (let x = Math.floor(px.x0*f); x < Math.min(W, Math.ceil(px.x1*f)); x++){
+      const o = owner[comp[y*W + x]]; if (o >= 0 && o !== k) g2.fillRect(x*cell - px.x0 - 1, y*cell - px.y0 - 1, cell + 2, cell + 2);
+    }
+    let dataURL = cv2.toDataURL("image/png");
+    if (dataURL.length > 4.5e6) dataURL = cv2.toDataURL("image/jpeg", 0.92); // the API takes up to 5MB an image
+    return {...r, crop: px, dataURL, w, h};
+  });
+}
+// a reading of one image (cached like the single-floor trace)
+async function smartReadCached(dataURL, apiKey, model, fresh){
+  const key = smartCacheKey(dataURL);
+  if (!fresh) try { const c = JSON.parse(localStorage.getItem(key) || "null"); if (c) return {ai: c, reused: true}; } catch(e){}
+  const {mediaType, base64Data} = parseDataUrl(dataURL);
+  const ai = await callSmartTrace(base64Data, mediaType, apiKey, model);
+  try { localStorage.setItem(key, JSON.stringify(ai)); } catch(e){}
+  return {ai, reused: false};
+}
+// One scale for every floor of a sheet: the median of all the printed-size ratios, after dropping the stray ones
+function pooledScale(list){
+  const all = list.flat().filter(v => v > 0).sort((a, b) => a - b);
+  if (!all.length) return 0;
+  const m0 = all[Math.floor(all.length/2)], good = all.filter(v => Math.abs(v - m0)/m0 < 0.12);
+  const use = good.length ? good : all;
+  return use[Math.floor(use.length/2)];
+}
+// The whole pipeline, with no UI: returns the storeys (bottom to top) and anything left out, each traced.
+async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus = () => {}} = {}){
+  onStatus("Finding the floors in the image…");
+  const split = await housePlanRead(dataURL, apiKey, model, fresh);
+  const regions = (split.floors || []).filter(r => r.box && Math.abs(r.box.x1 - r.box.x0) > 0.02 && Math.abs(r.box.y1 - r.box.y0) > 0.02);
+  if (!regions.length) throw new Error("Couldn't find any floor drawings in this image.");
+  const img = await loadImageEl(dataURL);
+  const parts = regions.length === 1 && regions[0].building === "main"
+    ? [{...regions[0], dataURL, w: img.naturalWidth, h: img.naturalHeight, crop: {x0: 0, y0: 0, x1: img.naturalWidth, y1: img.naturalHeight}}] // one floor: the image as it is
+    : refineFloorBoxes(img, regions);
+  let n = 0;
+  onStatus(`Claude is reading ${parts.length === 1 ? "the floor" : `${parts.length} floors`}…`);
+  const reads = await Promise.all(parts.map(p => smartReadCached(p.dataURL, apiKey, model, fresh).then(r => { onStatus(`Claude is reading the floors… ${++n} of ${parts.length} done`); return r; })));
+  onStatus("Measuring the walls…");
+  await new Promise(r => setTimeout(r, 20));
+  const imgs = await Promise.all(parts.map(p => p.dataURL === dataURL ? img : loadImageEl(p.dataURL)));
+  // pass 1 per floor for its printed sizes; then one scale for the sheet (the main house's floors), and pass 2 at it
+  const first = parts.map((p, i) => smartTraceGeometry(imgs[i], reads[i].ai));
+  const main = parts.map((p, i) => i).filter(i => parts[i].building !== "separate");
+  const mpp = pooledScale(main.map(i => first[i].ratiosPx)) || pooledScale(first.map(r => r.ratiosPx));
+  // a floor whose own sizes clearly disagree (an annex drawn at another scale on the same sheet) keeps its own
+  const agrees = r => !r.ratioCount || Math.abs(r.mPerPx - mpp)/mpp < 0.08;
+  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: mpp && agrees(first[i]) ? smartTraceGeometry(imgs[i], reads[i].ai, {mPerPx: mpp}) : first[i]}));
+  const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
+  return {storeys: traced.filter(t => t.building !== "separate").sort(byLevel), separate: traced.filter(t => t.building === "separate").sort(byLevel), mPerPx: mpp,
+    ratioCount: first.reduce((a, r) => a + r.ratioCount, 0)};
+}
+// Puts a traced house into version v: its floors become v's floor tabs, bottom to top (`floor` becomes the lowest,
+// keeping its id), each traced and lined up on the one below. Returns the floors (with .fits: autoStackFloor's results).
+function applyHousePlan(v, floor, house){
+  const was = suppressHistory; suppressHistory = true;
+  try{
+    const floors = house.storeys.map((s, i)=>{
+      const f = i === 0 ? floor : makeFloor(s.label);
+      f.name = s.label || f.name;
+      f.image = {dataURL: s.dataURL, naturalWidth: s.w, naturalHeight: s.h};
+      f.worldWidth = s.w; f.worldHeight = s.h;
+      delete f.stack;
+      return f;
+    });
+    v.floors = floors; v.activeFloorId = floor.id;
+    floors.forEach((f, i) => withFloor(f, () => applySmartTrace(f, house.storeys[i].res, house.storeys[i].ai, {noUndo: true})));
+    floors.fits = floors.map((f, i) => i ? autoStackFloor(f) : null); // how well each sits on the one below
+    return floors;
+  } finally { suppressHistory = was; }
+}
+async function runTraceHouse(ev){
+  const floor = activeFloor(), v = activeVersion(), statusEl = document.getElementById("smartStatus");
+  if (!floor.image){ alert("Open the floorplan image on this floor first (Image, above)."); return; }
+  const apiKey = document.getElementById("fldApiKey").value.trim();
+  if (!apiKey){ alert("Paste your Anthropic API key into the box below first (from console.anthropic.com). It's kept only in this browser."); document.getElementById("fldApiKey").focus(); return; }
+  const others = v.floors.filter(f => f !== floor && (f.walls.length || f.boxes.length || f.image));
+  if ((floor.walls.length || floor.boxes.length || others.length) && !confirm(`Trace the house from this image? Every floor in it becomes a floor tab of "${v.name}", replacing ${others.length ? "the floors already there" : `what's on "${floor.name}"`} (Undo brings them back).`)) return;
+  const btn = document.getElementById("btnSmartTrace");
+  btn.disabled = true; setAIButtonsDisabled(true);
+  const t0 = Date.now();
+  try{
+    const house = await traceHousePlan(floor.image.dataURL, apiKey, document.getElementById("fldModel").value, {fresh: !!(ev && ev.shiftKey), onStatus: t => { statusEl.textContent = `${t} ${Math.round((Date.now() - t0)/1000)}s`; }});
+    if (!house.storeys.length) throw new Error("Only separate buildings were found in this image — no floors of the house itself.");
+    pushUndoSnapshot();
+    const floors = applyHousePlan(v, floor, house);
+    switchFloor(floors[0].id);
+    renderFloorTabs(); updateScaleStatus(); render(); scheduleAutosave();
+    const n = (a, w) => `${a} ${w}${a === 1 ? "" : "s"}`;
+    const sum = k => house.storeys.reduce((a, s) => a + s.res[k].length, 0);
+    const reused = house.storeys.every(s => s.reused);
+    statusEl.textContent = `Traced ${n(floors.length, "floor")} (${floors.map(f => f.name).join(", ")}): ${n(sum("walls"), "wall")}, ${n(sum("windows"), "window")}, ${n(sum("doors"), "door")}, in ${Math.round((Date.now() - t0)/1000)}s` +
+      (reused ? " (using Claude's earlier reading, so free — Shift-click to have it read again)" : "") + ". " +
+      (floors.length > 1 ? "Each floor is lined up on the one below — see it in 3D with 🏘 Whole house, and fine-tune with the arrows under Floors of the house. " : "") +
+      (house.separate.length ? `Left out, as separate buildings: ${house.separate.map(s => s.label).join(", ")}. ` : "") +
+      (house.ratioCount ? `Scale set from ${n(house.ratioCount, "printed room size")}.` : "No room sizes were printed, so the scale is a guess — use Calibrate scale on a wall you know.") + " Undo puts it all back.";
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "";
+    alert("Tracing didn't work: " + err.message);
+  }finally{
+    btn.disabled = false; setAIButtonsDisabled(false);
+  }
 }
 // Claude's reading of an image is kept (in this browser, per image), so tracing the same image again — after
 // fixing something, or to start over — costs nothing. Shift-click the button to have Claude read it afresh.
@@ -8315,7 +8517,7 @@ document.getElementById("btnZoomReset").addEventListener("click", ()=>{
 });
 
 document.getElementById("btnDetect").addEventListener("click", runAIDetect);
-document.getElementById("btnSmartTrace").addEventListener("click", runSmartTrace);
+document.getElementById("btnSmartTrace").addEventListener("click", runTraceHouse);
 document.getElementById("btnDetectTiled").addEventListener("click", runTiledDetect);
 document.getElementById("btnSplitFloors").addEventListener("click", runSplitFloors);
 function initAISettings(){

@@ -1512,7 +1512,7 @@ using the angle-lock/snapping/hover-cursor UX already built for that.
 
 ## Smart trace: whole floor from the image (2026-11-15)
 
-**✨ Trace this floor from its image** (Build → "Trace from the image") replaces the old detect buttons, which are kept under "Older detect tools".
+**✨ Trace the house from its image** (was "Trace this floor"; Build → "Trace from the image") replaces the old detect buttons, which are kept under "Older detect tools".
 
 It works in two halves:
 
@@ -1575,3 +1575,20 @@ Fixes from a terraced plan with solid black walls, chimney breasts, an open-plan
 - A corner joins across up to 70 cm of solid drawing (a corner cut off at an angle). A wall end left loose near another wall, with drawing rather than floor between and no opening Claude saw there, is joined by a short angled wall.
 - Two of Claude's rooms that turn out to be one open space keep one name: the bigger room's.
 - Plans saved as PNG with a transparent background (Foxtons, for one) are put on white paper before measuring, and shown on white in the 2D view. They used to read as solid black, so the whole page counted as wall.
+
+### Smart trace: the whole house from one image (2026-11-15)
+
+Estate-agent plans almost always show every floor on one sheet, so **✨ Trace the house from its image** now does the whole house in one go:
+
+1. **Find the floors.** Claude lists each floor drawing on the sheet: its printed name, which storey it is (−1 basement or lower ground, 0 ground, 1 first, and so on), whether it's the house or a separate building (a detached garage, annex or outbuilding), and a rough box around it. This call is cheap (about 5s) and cached.
+2. **Crop each floor cleanly** (`refineFloorBoxes`). Each box is snapped to the actual drawing:
+   - The ink is split into connected pieces, and each floor keeps the ink inside its own box plus its own pieces whole.
+   - Another floor's drawing reaching into a crop is painted out.
+   - A floor whose walls touch a neighbour's label isn't cut short. Plan 18 was cut short before this fix; its ground floor went from 1/3 to 6/6 rooms.
+3. **Read and trace every floor.** The floors are read in parallel, one smart-trace reading each, cached per crop.
+4. **One shared scale.** Floors on one sheet are drawn at the same scale, so the printed room sizes from every floor of the house are pooled into one scale (`pooledScale`). A floor whose own sizes disagree by more than 8% keeps its own scale; plan 19's annex is drawn at a different scale from the house.
+5. **Stack.** The house's floors become the version's floor tabs, bottom to top. Each one is lined up on the floor below (`autoStackFloor`), so 🏘 Whole house shows the building straight away. Separate buildings are left out and named in the status line.
+
+It's all one undo step. Shift-click makes Claude read the image again instead of using the cached readings. `traceHousePlan` is the pipeline with no UI; `applyHousePlan` puts a result into a version.
+
+Tested on 9 multi-floor sheets (2 to 4 floors, with annexes, a detached garage, a lower ground floor and eaves). All split, traced and stacked. Room accuracy at the shared scale matches each floor's own scale. The remaining misses are kitchens and bathrooms, where fitted units shrink the measured room.
