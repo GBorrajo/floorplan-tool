@@ -671,6 +671,16 @@ The 3D view is also an editor: without Space held, a press picks things rather t
   - Dormers face down the slope, are buried at the back and shrink to stay under the ridge.
   - Pick one in the panel, click the roof to place it, then drag it. Delete removes it.
 
+## Fixes from the real plan: brick indoors, floor joins, roof turns and bays (2026-11-15)
+
+- **Brick showing indoors:** a wall slab's ends and top used to take the +1 side's finish, so an outside wall could show brick on a window or door reveal, or at a corner, from inside. `v3Slab` now takes separate end and top materials. A reveal gets the room side's finish. A corner end gets the finish of the side the corner sticks out on: the outside round the house, or the room where the house steps in. The strip through the floor's depth is outside finish all round.
+- **Which side is a room:** the sample point in front of a face could land inside another wall at a corner or T, or in the rounded-off corner of a room's outline, and get read as outside. `sideRoom` in `v3BuildStructure` looks along the face past the other wall (`pointInWallOf`), then a little further out from the face, before calling it outside.
+- **Corners:** `wallEndExtM` works out how far each piece runs past its end. At a right angle that's half the other wall's thickness, as before. At a bay's shallow turn it's less, so the inside face no longer pokes out through the corner. Running straight on into a window it's nothing, and into the side of another wall (a T) it's nothing.
+- **Gaps between floors:** the strip through the floor depth now also counts as under the floor above where the point lands in one of that floor's walls, not only in a room. Separately traced floors' outside walls rarely sit exactly on each other.
+- **Auto-roof:** after the main section, small parts count (0.5m across and 1m² is enough), so a shallow L-turn or a bay gets roofed. A part built onto an earlier section along one side gets its spine at right angles to it, a cross gable carried on into the main roof, whichever way is longer. A lower floor has no main roof, so its bays and porches aren't held to the main roof's size threshold. Lean-tos up to 4m long are hipped round their ends at 30°.
+- **Adding a section by hand:** "＋ Add another section" in the roof panel is always there once a floor has a roof. It drops a section in the middle of the view. On a floor the one above covers, "Add a roof section by hand" now makes a small hipped lean-to where you're looking, not an 8m roof over the whole floor.
+- Tested on a synthetic two-floor house (slight L, splayed bay, side window, upstairs traced 6cm off) on localhost, not on the user's real plan.
+
 ## Installable app and updates (2026-10-24)
 
 Served over https (GitHub Pages), the planner installs as an app from Edge

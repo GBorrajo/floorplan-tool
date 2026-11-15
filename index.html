@@ -11347,14 +11347,17 @@ function matchStyleToAll(src, all){
 }
 
 // --- walls, windows and doors
-function v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, thick, mat, cap){
+function v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, thick, mat, cap, edgeMat = null){
   const L = s1 - s0;
   if (L <= 0.002 || y1 - y0 <= 0.002) return;
   const len = Math.hypot(bx-ax, bz-az), ux = (bx-ax)/len, uz = (bz-az)/len, sm = (s0 + s1)/2;
   // a [side +1, side -1] pair paints the two faces differently (BoxGeometry's +z / -z faces; +z is the plan's (-uy, ux) side)
   const [mp, mn] = Array.isArray(mat) ? mat : [mat, mat];
-  const edge = mp.userData.paper ? V3.wall() : mp; // a wallpaper stays on the faces; the top and the ends are plain plaster
-  const m = new THREE.Mesh(new THREE.BoxGeometry(L, y1 - y0, thick), (cap || mp !== mn || edge !== mp) ? [edge, edge, cap || edge, edge, mp, mn] : mp);
+  // the top and the ends: `edgeMat` if given — one material, or {s0, s1, top} — else the +1 side's; a wallpaper
+  // stays on the faces, its edges plain plaster
+  const plain = e => e.userData.paper ? V3.wall() : e, em = edgeMat && !edgeMat.isMaterial ? edgeMat : {s0: edgeMat || mp, s1: edgeMat || mp, top: edgeMat || mp};
+  const eS0 = plain(em.s0 || mp), eS1 = plain(em.s1 || mp), eTop = plain(em.top || mp);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(L, y1 - y0, thick), (cap || mp !== mn || eS0 !== mp || eS1 !== mp || eTop !== mp) ? [eS1, eS0, cap || eTop, eTop, mp, mn] : mp);
   m.position.set(ax + ux*sm, (y0 + y1)/2, az + uz*sm);
   m.rotation.y = -Math.atan2(uz, ux);
   m.castShadow = m.receiveShadow = true;
@@ -11642,12 +11645,68 @@ function v3WallUVs(m, s0){
   for (let i = 0; i < 8; i++) uv.setXY(i, s0 + pos.getZ(i)*(i < 4 ? 1 : -1), m.position.y + pos.getY(i)); // the two ends, so brick doesn't smear round a corner
   uv.needsUpdate = true;
 }
+// Is plan point (x, y) of `floor` inside one of its walls (or within marginM of a face)? `skip`: a wall to leave out.
+function pointInWallOf(floor, x, y, marginM = 0, skip = null){
+  const k = metersPerWorldUnitForFloor(floor);
+  for (const w of floor.walls){
+    if (w === skip) continue;
+    const pts = wallCenterlinePoints(w), hw = ((w.thicknessCm || WALL_THICKNESS_CM)/200 + marginM)/k;
+    for (let i = 1; i < pts.length; i++){
+      const a = pts[i-1], b = pts[i], dx = b.x - a.x, dy = b.y - a.y, L2 = dx*dx + dy*dy;
+      const t = L2 ? Math.max(0, Math.min(1, ((x - a.x)*dx + (y - a.y)*dy)/L2)) : 0;
+      if (Math.hypot(x - a.x - dx*t, y - a.y - dy*t) <= hw) return true;
+    }
+  }
+  return false;
+}
+// How far (metres) a wall piece's square end runs on past its end point (pts[i-1] for end 0, pts[i] for end 1), so
+// the corner closes on the outside without the end poking through anywhere else. Where it turns into another wall
+// (the next piece of its own curve, or another wall ending there), just far enough to meet that wall's outside face
+// — half its thickness at a right angle, less at a bay's shallow turn, none at all running straight on into a
+// window. Ending against the side of another wall, not at all (it's already in there). A free end: half its thickness.
+// Returns {e, convex}: convex is the side (+1 / -1, as in the piece's own normal) the corner sticks out on — the side
+// its end face shows on — or 0 where it doesn't turn a corner.
+function wallEndExtM(floor, w, pts, i, end){
+  const k = metersPerWorldUnitForFloor(floor), TA = (w.thicknessCm || WALL_THICKNESS_CM)/100;
+  const J = end ? pts[i] : pts[i-1], F = end ? pts[i-1] : pts[i];
+  const lenA = Math.hypot(J.x - F.x, J.y - F.y) || 1, ua = {x: (J.x - F.x)/lenA, y: (J.y - F.y)/lenA}; // into the joint
+  const extFor = (B, TB)=>{
+    const lb = Math.hypot(B.x - J.x, B.y - J.y);
+    if (lb < 1e-6) return null;
+    const ub = {x: (B.x - J.x)/lb, y: (B.y - J.y)/lb}; // out of the joint, along the other wall
+    const cos = ua.x*ub.x + ua.y*ub.y, cross = ua.x*ub.y - ua.y*ub.x, sin = Math.abs(cross);
+    if (sin < 0.05) return {e: cos > 0 ? 0 : TA/2, convex: 0}; // straight on: nothing; doubling back: as a free end
+    // turning toward one side leaves the corner sticking out on the other (the piece's normal is (-uy, ux), and at
+    // its start end ua runs backwards along it)
+    const convex = (cross > 0 ? -1 : 1)*(end ? 1 : -1);
+    return {e: Math.max(0, Math.min(Math.max(TA, TB), TB/2/sin - TA/2*cos/sin)), convex};
+  };
+  // its own curve carrying on
+  const inner = end ? (i + 1 < pts.length ? pts[i+1] : null) : (i - 2 >= 0 ? pts[i-2] : null);
+  if (inner) return extFor(inner, TA) || {e: TA/2, convex: 0};
+  // another wall ending here
+  const tol = 0.04/k;
+  let best = null;
+  floor.walls.forEach(o=>{
+    if (o === w) return;
+    const op = wallCenterlinePoints(o), TB = (o.thicknessCm || WALL_THICKNESS_CM)/100;
+    [[op[0], op[1]], [op.at(-1), op.at(-2)]].forEach(([p, q])=>{
+      if (!p || !q || Math.hypot(p.x - J.x, p.y - J.y) > tol) return;
+      const e = extFor(q, TB);
+      if (e && (!best || e.e > best.e)) best = e;
+    });
+  });
+  if (best) return best;
+  if (pointInWallOf(floor, J.x, J.y, 0, w)) return {e: 0, convex: 0}; // a T: into the side of another wall
+  return {e: TA/2, convex: 0};
+}
 function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
   // `over`: with a floor on top (the Whole house view), the walls carry on up through its depth to meet it — but only
   // where that floor actually sits on them (not under a single-storey part's roof)
   const top = cut < H ? cut : H, capMat = cut < H ? V3.cap() : null;
   const aboveAreas = above && over > 0 ? getRoomAreasForFloor(above) : null;
-  const underAbove = q => { const h = floorToHouse(floor, q.x, q.y), p = houseToFloor(above, h.x, h.z); return !!roomAtWorld(aboveAreas, p.x, p.y); };
+  // (a room up there, or one of its walls — the floors are traced separately, so its outside walls needn't sit exactly on these)
+  const underAbove = q => { const h = floorToHouse(floor, q.x, q.y), p = houseToFloor(above, h.x, h.z); return !!roomAtWorld(aboveAreas, p.x, p.y) || pointInWallOf(above, p.x, p.y, 0.03); };
   const areas = getRoomAreasForFloor(floor), assign = paintAssignments(floor, areas), cutters = wallCutters(floor);
   floor.walls.forEach(w=>{
     const isWin = (w.type||"wall") === "window", pts = wallCenterlinePoints(w), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
@@ -11666,7 +11725,26 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
       if (L < 0.01) continue;
       const ux = (b.x - a.x)/(L/k), uy = (b.y - a.y)/(L/k), nx = -uy, ny = ux;
       const at = (sM, side) => ({x: a.x + ux*sM/k + nx*side*off, y: a.y + uy*sM/k + ny*side*off});
-      const roomsAt = sM => [1, -1].map(sd => { const q = at(sM, sd), r = roomAtWorld(areas, q.x, q.y); return r ? r.label : 0; }).join(",");
+      // the room in front of one face at sM. A point that lands inside another wall (where this one meets it at a
+      // corner or a T) isn't outside the house — look along the face to either side of that wall for the room.
+      // And the rooms' outlines round off a little at their corners, so a point just off a corner can miss its room
+      // without being in a wall either: look a little further out from the face before calling it outside.
+      const further = (sM, sd)=>{
+        for (let d = 0.05; d <= 0.2; d += 0.05){ const p = at(sM, sd), r = roomAtWorld(areas, p.x + nx*sd*d/k, p.y + ny*sd*d/k); if (r) return r; }
+        return null;
+      };
+      const sideRoom = (sM, sd)=>{
+        const q = at(sM, sd), r = roomAtWorld(areas, q.x, q.y);
+        if (r) return r;
+        if (!pointInWallOf(floor, q.x, q.y, 0.01, w)) return further(sM, sd);
+        for (let d = 0.05; d <= 0.6; d += 0.05) for (const s of [sM + d, sM - d]){
+          if (s < -T || s > L + T) continue;
+          const p = at(s, sd);
+          if (!pointInWallOf(floor, p.x, p.y, 0.01, w)) return roomAtWorld(areas, p.x, p.y) || further(s, sd);
+        }
+        return null;
+      };
+      const roomsAt = sM => [1, -1].map(sd => { const r = sideRoom(sM, sd); return r ? r.label : 0; }).join(",");
       // where the rooms either side change along this piece (a wall shared by two rooms on one side) — slabs split there
       const breaks = [];
       for (let sM = 0.15, prev = roomsAt(0.05); sM < L; sM += 0.1){
@@ -11683,21 +11761,31 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
           const sm = Math.max(0.02, Math.min(L - 0.02, (cuts[j-1] + cuts[j])/2));
           const rooms = {};
           const mats = [1, -1].map(sd=>{
-            const q = at(sm, sd), r = rooms[sd] = roomAtWorld(areas, q.x, q.y);
+            const r = rooms[sd] = sideRoom(sm, sd);
             const fin = wallOwnPaint(w, sd, r, areas) || (r ? assign.get(r) : floorExterior(floor)); // outside: the floor's outside finish (or the one below's)
             return !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : isPaper(fin) ? v3PaperMat(fin) : v3Mat(fin, {roughness: 0.95});
           });
-          const m = v3Slab(group, ax, az, bx, bz, cuts[j-1], cuts[j], y0, y1, T, mats, capMat);
+          // an outside wall's ends and top: the room side's finish at a window or door's reveal (so no brick shows
+          // indoors); where it turns a corner its end is part of that corner's face, so it takes the finish of the side
+          // the corner sticks out on (outside round the house, the room's where the house steps in). The strip
+          // through the floor's depth shows only outside, so it's the outside finish all round.
+          const inside = rooms[1] && !rooms[-1] ? mats[0] : !rooms[1] && rooms[-1] ? mats[1] : null;
+          const outside = inside ? (inside === mats[0] ? mats[1] : mats[0]) : null, band = y0 >= H - 1e-6;
+          const s0 = cuts[j-1], s1 = cuts[j], sideMat = sd => sd > 0 ? mats[0] : mats[1];
+          const endMat = (end, atEnd) => atEnd && end.e > 0.005 ? (end.convex ? sideMat(end.convex) : outside) : inside;
+          const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6), s1: endMat(end1, s1 >= L + e1 - 1e-6), top: inside};
+          const m = v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, T, mats, capMat, edges);
           if (m){ m.userData.wall = {id: w.id, ax: a.x, ay: a.y, nx, ny, off, rooms}; v3WallUVs(m, along + cuts[j-1]); }
         }
       };
+      const end0 = isWin ? {e: 0, convex: 0} : wallEndExtM(floor, w, pts, i, 0), end1 = isWin ? {e: 0, convex: 0} : wallEndExtM(floor, w, pts, i, 1), e0 = end0.e, e1 = end1.e;
       if (aboveAreas && cut >= H){ // up through the floor's depth, along the stretches with the floor above over them
-        const ext = isWin ? 0 : T/2, step = 0.2, cov = sM => underAbove(at(sM, 1)) || underAbove(at(sM, -1));
+        const step = 0.2, cov = sM => underAbove(at(sM, 1)) || underAbove(at(sM, -1));
         let run = null;
-        for (let sM = -ext; sM <= L + ext + 1e-6; sM += step){
+        for (let sM = -e0; sM <= L + e1 + 1e-6; sM += step){
           const c = cov(Math.max(0, Math.min(L, sM)));
           if (c && run == null) run = sM;
-          if ((!c || sM + step > L + ext + 1e-6) && run != null){ wallSlab(run, c ? L + ext : sM, H, H + over); run = null; }
+          if ((!c || sM + step > L + e1 + 1e-6) && run != null){ wallSlab(run, c ? L + e1 : sM, H, H + over); run = null; }
         }
       }
       if (isWin){
@@ -11715,17 +11803,17 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
         }
         continue;
       }
-      // a straight piece runs past its ends by half its thickness so corners close, like the plan's square cap
-      const ext = T/2, ops = wallOpens.map(o => ({s0: o.a0*k - along, s1: o.a1*k - along, kind: o.kind})).filter(o => o.s1 > -ext && o.s0 < L + ext);
-      let cursor = -ext;
+      // a straight piece runs on past its ends (see wallEndExtM) so its corners close
+      const ops = wallOpens.map(o => ({s0: o.a0*k - along, s1: o.a1*k - along, kind: o.kind})).filter(o => o.s1 > -e0 && o.s0 < L + e1);
+      let cursor = -e0;
       ops.forEach(o=>{
-        const s0 = Math.max(o.s0, -ext), s1 = Math.min(o.s1, L + ext);
+        const s0 = Math.max(o.s0, -e0), s1 = Math.min(o.s1, L + e1);
         if (s1 <= s0) return;
         if (s0 > cursor) wallSlab(cursor, s0, 0, top);
         if (o.kind === "door") wallSlab(s0, s1, Math.min(V3_DOOR_M, H - 0.05), top);
         cursor = Math.max(cursor, s1);
       });
-      if (cursor < L + ext) wallSlab(cursor, L + ext, 0, top);
+      if (cursor < L + e1) wallSlab(cursor, L + e1, 0, top);
     }
   });
   if (cut >= H) floor.boxes.forEach(b => { if (b.kind === "door") v3Door(group, b, k, H); }); // with the walls cut down, the doors go too
@@ -13317,27 +13405,43 @@ function autoRoofWings(f){
   const fl = houseFloors(), above = fl[fl.indexOf(f) + 1] || null, axis = houseAxisOf(f), G = roofFootprintGrid(f, axis, above);
   if (!G) return [];
   const {grid, nx, ny, a0, b0, cu, k} = G, cellM = ROOF_CELL_M, wings = [], rects = [];
-  for (let n = 0; n < 8; n++){
+  // owner: which section (1-based) took each cell, so a later, smaller one knows what it's built onto
+  const owner = new Int16Array(nx*ny);
+  for (let n = 0; n < 40 && rects.length < 14; n++){
     const r = largestRect(grid, nx, ny);
     if (!r) break;
     const wM = (r.i1 - r.i0 + 1)*cellM, hM = (r.j1 - r.j0 + 1)*cellM;
-    if (Math.min(wM, hM) < 1.2 || wM*hM < 2.5) break;
-    for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) grid[j*nx + i] = 0;
-    rects.push(r);
+    // the first is the main roof; after it, small parts count too (a bay, a shallow step out of the walls) —
+    // only slivers along the walls' edges are left
+    const main = !rects.length && !above; // a lower floor has no main roof — only its parts that stick out
+    const keep = main ? Math.min(wM, hM) >= 1.2 && wM*hM >= 2.5 : Math.min(wM, hM) >= 0.5 && wM*hM >= 1.0;
+    if (!keep && main) break;
+    for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++){ grid[j*nx + i] = 0; if (keep) owner[j*nx + i] = rects.length + 1; }
+    if (keep) rects.push(r);
   }
   const cellAt = (i, j, g) => i >= 0 && j >= 0 && i < nx && j < ny && g[j*nx + i];
+  // how many cells along each side of rect r are next to cells where test(i, j) holds
+  const touches = (r, test) => ({
+    i0: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => test(r.i0 - 1, r.j0 + t)).filter(Boolean).length,
+    i1: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => test(r.i1 + 1, r.j0 + t)).filter(Boolean).length,
+    j0: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => test(r.i0 + t, r.j0 - 1)).filter(Boolean).length,
+    j1: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => test(r.i0 + t, r.j1 + 1)).filter(Boolean).length,
+  });
   rects.forEach((r, idx)=>{
-    const wM = (r.i1 - r.i0 + 1)*cellM, hM = (r.j1 - r.j0 + 1)*cellM, alongA = wM >= hM;
+    const wM = (r.i1 - r.i0 + 1)*cellM, hM = (r.j1 - r.j0 + 1)*cellM;
+    let alongA = wM >= hM;
+    if (idx > 0){
+      // built onto an earlier section along one side (the leg of an L, a step out): its spine runs out from that
+      // section at right angles — a cross gable, carried on into the main roof below — however short the leg is
+      const t = touches(r, (i, j) => { const o = cellAt(i, j, owner); return o && o <= idx; }), side = Object.keys(t).reduce((a, b) => t[b] > t[a] ? b : a);
+      const sideLen = side[0] === "i" ? r.j1 - r.j0 + 1 : r.i1 - r.i0 + 1;
+      if (t[side] >= 5 && t[side] >= sideLen*0.5) alongA = side[0] === "i";
+    }
     const cA = a0 + (r.i0 + r.i1 + 1)/2*cu, cB = b0 + (r.j0 + r.j1 + 1)/2*cu, c = rotate(cA, cB, axis);
     const w = {id: newId(), cx: c.x, cy: c.y, lenCm: Math.round((alongA ? wM : hM)*100), widCm: Math.round((alongA ? hM : wM)*100), rot: alongA ? axis : axis + Math.PI/2, ridge: 0.5, ends: ["gable", "gable"], riseCm: 0};
     if (above && G.above){
       // a part sticking out below the floor above: a single slope rising to the side that meets the house
-      const touch = {
-        i0: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => cellAt(r.i0 - 1, r.j0 + t, G.above)).filter(Boolean).length,
-        i1: Array.from({length: r.j1 - r.j0 + 1}, (_, t) => cellAt(r.i1 + 1, r.j0 + t, G.above)).filter(Boolean).length,
-        j0: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => cellAt(r.i0 + t, r.j0 - 1, G.above)).filter(Boolean).length,
-        j1: Array.from({length: r.i1 - r.i0 + 1}, (_, t) => cellAt(r.i0 + t, r.j1 + 1, G.above)).filter(Boolean).length,
-      };
+      const touch = touches(r, (i, j) => cellAt(i, j, G.above));
       const side = Object.keys(touch).reduce((a, b) => touch[b] > touch[a] ? b : a);
       if (touch[side] > 3){
         // spine along the house wall, on the slope's high side (v-), falling away from it
@@ -13348,6 +13452,7 @@ function autoRoofWings(f){
         w.rot = axis + away - Math.PI/2;
         w.ridge = 0;
         w.riseCm = Math.round(Math.min(Math.tan(ROOF_LEAN_DEG*Math.PI/180)*w.widCm, FLOOR_DEPTH_M*100 + 70));
+        if (w.lenCm <= 400){ w.ends = ["hip", "hip"]; w.riseCm = Math.round(Math.min(Math.tan(30*Math.PI/180)*w.widCm, FLOOR_DEPTH_M*100 + 70)); } // a bay or a porch: hipped round its ends, and steeper
         wings.push(w);
         return;
       }
@@ -13706,14 +13811,17 @@ function renderRoofPanel(force){
   };
   if (!roof){
     const others = houseFloors().some(g => g.roof);
-    el.append(note(others ? `"${f.name}" has no roof of its own — the floor above covers it. To roof part of it (an extension, a porch), add a section by hand.`
+    el.append(note(others ? `"${f.name}" has no roof of its own — the floor above covers it. To roof part of it (an extension, a porch, a bay window), add a section by hand.`
       : `"${f.name}" has no roof yet. Build one for the whole house from its shape (the top floor's roof, plus any part of a lower floor that sticks out beyond the floor above) — then change it however you like.`));
     el.append(btn(others ? "🏠 Rebuild every floor's roof from the house shape" : "🏠 Build roofs from the house shape", "Every floor: works out the roof sections from the walls", ()=>{ pushUndoSnapshot(); const n = autoRoofHouse(); roofEdit = true; roofSel = null; scheduleAutosave(); renderRoofPanel(true); render(); if (!n) el.prepend(note("Couldn't find a footprint to roof — draw the outside walls first.")); }, "wide"));
     el.append(btn("＋ Add a roof section by hand", "A single section over the middle of this floor, to drag into place", ()=>{
       pushUndoSnapshot();
+      const others = houseFloors().some(g => g.roof), c = toWorld(wrap.scrollLeft + baseCanvasW/2, wrap.scrollTop + baseCanvasH/2);
       const pts = f.walls.flatMap(w => [{x: w.x1, y: w.y1}, {x: w.x2, y: w.y2}]);
-      const cx = pts.length ? (Math.min(...pts.map(p => p.x)) + Math.max(...pts.map(p => p.x)))/2 : f.worldWidth/2, cy = pts.length ? (Math.min(...pts.map(p => p.y)) + Math.max(...pts.map(p => p.y)))/2 : f.worldHeight/2;
-      const w = {id: newId(), cx, cy, lenCm: 800, widCm: 600, rot: houseAxisOf(f), ridge: 0.5, ends: ["gable", "gable"], riseCm: 250};
+      // a lower floor's part (a bay, a porch): a small section where you're looking; otherwise one over the whole floor
+      const cx = others ? c.x : pts.length ? (Math.min(...pts.map(p => p.x)) + Math.max(...pts.map(p => p.x)))/2 : f.worldWidth/2, cy = others ? c.y : pts.length ? (Math.min(...pts.map(p => p.y)) + Math.max(...pts.map(p => p.y)))/2 : f.worldHeight/2;
+      const w = others ? {id: newId(), cx, cy, lenCm: 300, widCm: 150, rot: houseAxisOf(f), ridge: 0, ends: ["hip", "hip"], riseCm: 60}
+        : {id: newId(), cx, cy, lenCm: 800, widCm: 600, rot: houseAxisOf(f), ridge: 0.5, ends: ["gable", "gable"], riseCm: 250};
       f.roof = newRoof([w]); roofEdit = true; roofSel = {kind: "wing", id: w.id};
       scheduleAutosave(); renderRoofPanel(true); render();
     }, "wide"));
@@ -13769,6 +13877,11 @@ function renderRoofPanel(force){
     row.append(btn("🗑 Delete", "Delete this section", () => edit(() => { roof.wings = roof.wings.filter(x => x !== w); roofSel = null; if (!roof.wings.length){ delete f.roof; roofEdit = false; } })));
     el.append(row);
   }
+  el.append(btn("＋ Add another section", "A new roof section in the middle of the view — for a bay, a porch or any part the roof missed. Drag it into place, then pick its shape", () => edit(()=>{
+    const c = toWorld(wrap.scrollLeft + baseCanvasW/2, wrap.scrollTop + baseCanvasH/2);
+    const nw = {id: newId(), cx: c.x, cy: c.y, lenCm: 300, widCm: 200, rot: houseAxisOf(f), ridge: 0.5, ends: ["gable", "gable"], riseCm: Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*100)};
+    roof.wings.push(nw); roofSel = {kind: "wing", id: nw.id}; roofEdit = true; roofArm = null;
+  }), "wide"));
   // roof windows
   el.append(h("div", {className: "roofHead", textContent: "Roof windows"}));
   const pal = h("div", {className: "roofWins"});
