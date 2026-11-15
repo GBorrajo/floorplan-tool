@@ -1372,6 +1372,7 @@ function normalizeFloor(f){
     ...(f.stack ? {stack: f.stack} : {}), // where this floor sits in the house — see floorStack
     ...(f.roomHM ? {roomHM: f.roomHM} : {}), // this floor's own room height (m) — see floorRoomH
     ...(f.roof ? {roof: f.roof} : {}), // its roof — see roofWingModel
+    ...(f.bayCaps === false ? {bayCaps: false} : {}), // no lead tops on its curved bay windows — see bayCapOutlines
   };
 }
 // data.versions is the current save shape; the other two branches migrate
@@ -11692,7 +11693,9 @@ function wallEndExtM(floor, w, pts, i, end){
     const op = wallCenterlinePoints(o), TB = (o.thicknessCm || WALL_THICKNESS_CM)/100;
     [[op[0], op[1]], [op.at(-1), op.at(-2)]].forEach(([p, q])=>{
       if (!p || !q || Math.hypot(p.x - J.x, p.y - J.y) > tol) return;
-      const e = extFor(q, TB);
+      let e = extFor(q, TB);
+      // into a window (a bay's side): this end is the window's jamb, seen from indoors through the glass
+      if (e && (o.type||"wall") === "window") e = {...e, reveal: true};
       if (e && (!best || e.e > best.e)) best = e;
     });
   });
@@ -11772,7 +11775,7 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
           const inside = rooms[1] && !rooms[-1] ? mats[0] : !rooms[1] && rooms[-1] ? mats[1] : null;
           const outside = inside ? (inside === mats[0] ? mats[1] : mats[0]) : null, band = y0 >= H - 1e-6;
           const s0 = cuts[j-1], s1 = cuts[j], sideMat = sd => sd > 0 ? mats[0] : mats[1];
-          const endMat = (end, atEnd) => atEnd && end.e > 0.005 ? (end.convex ? sideMat(end.convex) : outside) : inside;
+          const endMat = (end, atEnd) => atEnd && end.e > 0.005 && !end.reveal ? (end.convex ? sideMat(end.convex) : outside) : inside;
           const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6), s1: endMat(end1, s1 >= L + e1 - 1e-6), top: inside};
           const m = v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, T, mats, capMat, edges);
           if (m){ m.userData.wall = {id: w.id, ax: a.x, ay: a.y, nx, ny, off, rooms}; v3WallUVs(m, along + cuts[j-1]); }
@@ -11968,7 +11971,7 @@ function v3Rebuild(){
 function v3SceneSig(){
   const f = v3Floor(), floors = v3.house ? houseFloors() : [f];
   return JSON.stringify([f.id, v3.mode, v3.wallsDown, v3.house, v3.showAbove, v3RoofsOn(), costSettings().ceilingM,
-    floors.map(g => [g.id, g.walls, g.boxes, g.floorings, g.paints, g.ceilings, floorExterior(g), g.calibration, g.stack, g.roomHM, g.roof, getRoomAreasForFloor(g).uid])]);
+    floors.map(g => [g.id, g.walls, g.boxes, g.floorings, g.paints, g.ceilings, floorExterior(g), g.calibration, g.stack, g.roomHM, g.roof, g.bayCaps, getRoomAreasForFloor(g).uid])]);
 }
 function v3PlaceCamera(){
   const cam = v3.camera, el = v3.renderer.domElement, aspect = Math.max(0.2, el.clientWidth/Math.max(1, el.clientHeight));
@@ -13592,7 +13595,57 @@ function v3DormerRoof(g, span, rise, y0, zf, zb, hipRun, cover, gableMat){
   faces([[EL, ER, RF]], hipRun > 0 ? cover : gableMat); // the front: hipped back, or an upright gable
 }
 // One floor's roof into `group` (that floor's own frame), sitting on its wall tops at height H.
+// --- Curved bay windows: a flat lead top. A bowed window that bulges out of the house, with no floor above over it,
+// gets a thin flat roof on its wall tops: the outline between its curve (out past the outside face a little, as a
+// drip) and its chord (tucked back into the main wall). Too small and too curved for the roof's rectangular
+// sections, so it's its own thing, on unless the floor's bayCaps is false.
+const BAY_CAP_M = 0.08, BAY_CAP_LIP_M = 0.05;
+function bayCapOutlines(floor){
+  if (floor.bayCaps === false) return [];
+  const k = metersPerWorldUnitForFloor(floor), areas = getRoomAreasForFloor(floor), fl = houseFloors(), above = fl[fl.indexOf(floor) + 1] || null;
+  const aboveAreas = above ? getRoomAreasForFloor(above) : null;
+  const covered = q => { if (!above) return false; const h = floorToHouse(floor, q.x, q.y), p = houseToFloor(above, h.x, h.z); return !!roomAtWorld(aboveAreas, p.x, p.y) || pointInWallOf(above, p.x, p.y, 0); };
+  const out = [];
+  floor.walls.forEach(w=>{
+    if ((w.type||"wall") !== "window" || !w.bowCm) return;
+    const pts = wallCenterlinePoints(w), A = pts[0], B = pts.at(-1), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
+    const cl = Math.hypot(B.x - A.x, B.y - A.y);
+    if (pts.length < 3 || !cl) return;
+    // which way it bulges: from the chord's middle toward the curve's middle
+    const mid = pts[Math.floor(pts.length/2)], cm = {x: (A.x + B.x)/2, y: (A.y + B.y)/2}, bl = Math.hypot(mid.x - cm.x, mid.y - cm.y);
+    if (bl < 1e-6) return;
+    const bx = (mid.x - cm.x)/bl, by = (mid.y - cm.y)/bl, step = (T/2 + 0.15)/k;
+    const apexOut = {x: mid.x + bx*step, y: mid.y + by*step};
+    if (roomAtWorld(areas, apexOut.x, apexOut.y) || covered(apexOut)) return; // bulging into a room, or under the floor above
+    // the curve offset outward (each point along its own normal, away from the chord side), then back along the chord
+    const o = (T/2 + BAY_CAP_LIP_M)/k, poly = [];
+    pts.forEach((p, i)=>{
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)], dl = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      let nx = -(b.y - a.y)/dl, ny = (b.x - a.x)/dl;
+      if (nx*bx + ny*by < 0){ nx = -nx; ny = -ny; }
+      poly.push({x: p.x + nx*o, y: p.y + ny*o});
+    });
+    const back = (T/2)/k; // the chord, pushed back into the main wall's line
+    poly.push({x: B.x - bx*back, y: B.y - by*back}, {x: A.x - bx*back, y: A.y - by*back});
+    out.push({w, poly});
+  });
+  return out;
+}
+function v3BuildBayCaps(group, floor, k, H){
+  const caps = bayCapOutlines(floor);
+  if (!caps.length) return;
+  const mat = v3RoofMat("lead");
+  caps.forEach(({w, poly})=>{
+    const shape = new THREE.Shape(poly.map(p => new THREE.Vector2(p.x*k, -p.y*k)));
+    const geo = new THREE.ExtrudeGeometry(shape, {depth: BAY_CAP_M, bevelEnabled: false, curveSegments: 1});
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI/2; m.position.y = H - 0.02; // shape (x, -z) laid flat, the depth rising from just under the wall tops
+    m.castShadow = m.receiveShadow = true; m.userData.roof = "bay" + w.id;
+    group.add(m);
+  });
+}
 function v3BuildRoof(group, floor, k, H){
+  v3BuildBayCaps(group, floor, k, H);
   const roof = floor.roof;
   if (!roof || !roof.wings.length) return;
   const ov = (roof.overhangCm == null ? 30 : roof.overhangCm)/100, trim = M3.paint(roof.trim || "#f3f1ec");
@@ -13792,7 +13845,7 @@ let roofPanelSig = "";
 function renderRoofPanel(force){
   const el = document.getElementById("roofPanel");
   if (!el) return;
-  const f = activeFloor(), roof = f.roof, sig = JSON.stringify([f.id, roof, roofSel, roofEdit, roofArm, houseFloors().length]);
+  const f = activeFloor(), roof = f.roof, sig = JSON.stringify([f.id, roof, roofSel, roofEdit, roofArm, houseFloors().length, f.bayCaps]);
   if (!force && sig === roofPanelSig) return;
   if (!force && drag && el.contains(document.activeElement)) return;
   roofPanelSig = sig;
@@ -13809,6 +13862,13 @@ function renderRoofPanel(force){
     inp.addEventListener("change", () => { const v = +inp.value; if (isFinite(v)) edit(() => set(Math.max(min, Math.min(max, v)))); });
     return h("label", {className: "roofNum"}, label, inp, unit);
   };
+  // curved bay windows' lead tops (see bayCapOutlines) — whether or not this floor has a roof of its own
+  if (f.walls.some(w => (w.type||"wall") === "window" && w.bowCm)){
+    const cb = h("input", {type: "checkbox", checked: f.bayCaps !== false});
+    cb.addEventListener("change", () => edit(() => { if (cb.checked) delete f.bayCaps; else f.bayCaps = false; }));
+    const n = f.bayCaps === false ? -1 : bayCapOutlines(f).length;
+    el.append(h("label", {className: "roofSub", title: "A thin flat lead roof over each curved bay window that sticks out with no floor above it"}, cb, ` Lead tops on curved bay windows${n > 0 ? ` (${n})` : n === 0 ? " (none stick out)" : ""}`));
+  }
   if (!roof){
     const others = houseFloors().some(g => g.roof);
     el.append(note(others ? `"${f.name}" has no roof of its own — the floor above covers it. To roof part of it (an extension, a porch, a bay window), add a section by hand.`
