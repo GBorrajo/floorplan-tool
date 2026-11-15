@@ -2336,7 +2336,97 @@ function closeRoomShells(src, res, ai){
     });
   }
   walls = walls.concat(splits);
-  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length}};
+  // (5) solid drawing: a chimney pier, a nib, a block of wall drawn solid black. A thick wall put in at (1) is cut back to
+  // the solid black it stands on (a wall found off a small block runs on past it, a cross of junk); then any solid black
+  // no wall covers yet becomes a wall of its own, as long and thick as it's drawn.
+  const rc = Math.max(1, Math.round(Mw(0.05))), core = new Uint8Array(W*H);
+  { const I = new Int32Array((W + 1)*(H + 1));
+    for (let y = 0; y < H; y++){ let a = 0; for (let x = 0; x < W; x++){ a += ink[y*W + x]; I[(y + 1)*(W + 1) + x + 1] = I[y*(W + 1) + x + 1] + a; } }
+    const n = (2*rc + 1)*(2*rc + 1);
+    for (let y = rc; y < H - rc; y++) for (let x = rc; x < W - rc; x++)
+      if (I[(y + rc + 1)*(W + 1) + x + rc + 1] - I[(y - rc)*(W + 1) + x + rc + 1] - I[(y + rc + 1)*(W + 1) + x - rc] + I[(y - rc)*(W + 1) + x - rc] === n) core[y*W + x] = 1; }
+  const solidInk = (x, y) => { let X = Math.round(x*f), Y = Math.round(y*f); if (X < 0 || Y < 0 || X >= W || Y >= H) return false;
+    for (let dy = -rc; dy <= rc; dy++) for (let dx = -rc; dx <= rc; dx++){ const xx = X + dx, yy = Y + dy; if (xx >= 0 && yy >= 0 && xx < W && yy < H && core[yy*W + xx]) return true; } return false; };
+  let trimmed = 0;
+  walls = walls.map(w=>{
+    if (!w.closing || w.split || w.tM < 0.35) return w;
+    const g = geo(w), step = 1/f, on = s => solidInk(w.x1 + g.ux*s, w.y1 + g.uy*s);
+    let s0 = 0, s1 = g.L; while (s0 < s1 && !on(s0)) s0 += step; while (s1 > s0 && !on(s1)) s1 -= step;
+    if (s1 - s0 < 0.15/res.mPerPx) return null;
+    if (s0 < step && s1 > g.L - step) return w;
+    trimmed++;
+    return {...w, x1: w.x1 + g.ux*s0, y1: w.y1 + g.uy*s0, x2: w.x1 + g.ux*s1, y2: w.y1 + g.uy*s1};
+  }).filter(Boolean);
+  const blocks = [];
+  { const cov = new Uint8Array(W*H);
+    walls.concat(wins).forEach(w=>{ const g = geo(w), r = g.t/2*f + 2;
+      const x0 = Math.max(0, Math.floor(Math.min(w.x1, w.x2)*f - r)), x1 = Math.min(W - 1, Math.ceil(Math.max(w.x1, w.x2)*f + r)), y0 = Math.max(0, Math.floor(Math.min(w.y1, w.y2)*f - r)), y1 = Math.min(H - 1, Math.ceil(Math.max(w.y1, w.y2)*f + r));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (!cov[y*W + x] && distTo(x/f, y/f, w)*f <= r) cov[y*W + x] = 1; });
+    const seen = new Uint8Array(W*H);
+    for (let s0 = 0; s0 < W*H; s0++){
+      if (!core[s0] || cov[s0] || seen[s0]) continue;
+      const pts = [], st = [s0]; seen[s0] = 1;
+      while (st.length){ const i = st.pop(), x = i % W; pts.push(i);
+        for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) if (j >= 0 && j < W*H && core[j] && !cov[j] && !seen[j]){ seen[j] = 1; st.push(j); } }
+      if (pts.length < Mw(0.12)*Mw(0.12)) continue;
+      // its long axis, and how far it runs along and across that (the solid core, widened back by what was eroded)
+      let mx = 0, my = 0; pts.forEach(i => { mx += i % W; my += (i - i % W)/W; }); mx /= pts.length; my /= pts.length;
+      let sxx = 0, syy = 0, sxy = 0; pts.forEach(i => { const x = i % W - mx, y = (i - i % W)/W - my; sxx += x*x; syy += y*y; sxy += x*y; });
+      const th = 0.5*Math.atan2(2*sxy, sxx - syy), ux = Math.cos(th), uy = Math.sin(th);
+      let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9;
+      pts.forEach(i => { const x = i % W - mx, y = (i - i % W)/W - my, a = x*ux + y*uy, b = -x*uy + y*ux; a0 = Math.min(a0, a); a1 = Math.max(a1, a); b0 = Math.min(b0, b); b1 = Math.max(b1, b); });
+      const len = a1 - a0 + 2*rc + 1, thick = b1 - b0 + 2*rc + 1;
+      const fill = pts.length/((a1 - a0 + 1)*(b1 - b0 + 1)); // of the solid core's own box
+      if (len*mppW < 0.25 || thick*mppW > 0.7 || fill < 0.45) continue; // a solid lump, not lettering or a fitting's outline
+      const am = (a0 + a1)/2, bm = (b0 + b1)/2, cxw = mx + ux*am - uy*bm, cyw = my + uy*am + ux*bm, h = (len - thick*0.5)/2;
+      blocks.push({x1: (cxw - ux*h)/f, y1: (cyw - uy*h)/f, x2: (cxw + ux*h)/f, y2: (cyw + uy*h)/f, tM: Math.max(0.08, thick*mppW), outer: false, closing: true, src: "block"});
+    }
+  }
+  walls = walls.concat(blocks);
+  // (6) each door Claude saw that hasn't got a door near it: the drawing's door is in a gap between two walls (a porch's
+  // front door between its jambs, bifolds between a wall's end and a pier). The shortest straight way across through
+  // Claude's point, from solid to solid, about the door's width, gets a wall carrying that door.
+  const bridges = [], IW = src.naturalWidth || src.width, IH = src.naturalHeight || src.height;
+  const solid = (x, y) => walls.some(w => distTo(x, y, w) <= geo(w).t/2) || solidInk(x, y);
+  const tOut = (() => { const ts = res.walls.filter(w => w.outer).map(w => w.tM).sort((p, q) => p - q); return ts[ts.length >> 1] || 0.25; })();
+  (ai.openings || []).forEach(d=>{
+    const px = d.x*IW, py = d.y*IH, wid = Math.max(0.5, d.widthM || 0.8)/res.mPerPx;
+    if (solid(px, py)) return;
+    const served = doorsOut.some(o => { const ux = Math.cos(o.rot), uy = Math.sin(o.rot), a = (px - o.x)*ux + (py - o.y)*uy, b = -(px - o.x)*uy + (py - o.y)*ux;
+      return Math.hypot(px - o.x, py - o.y) < 0.3/res.mPerPx || (Math.abs(a) <= o.lenM/res.mPerPx/2 + 0.3/res.mPerPx && Math.abs(b) <= 0.25/res.mPerPx); });
+    if (served) return;
+    const reach = wid/2 + 0.9/res.mPerPx, step = 1/f;
+    const march = (ux, uy) => { for (let s = step; s <= reach; s += step) if (solid(px + ux*s, py + uy*s)) return s; return null; };
+    let best = null;
+    for (let deg = 0; deg < 180; deg += 2){
+      const th = deg*Math.PI/180, ux = Math.cos(th), uy = Math.sin(th), a = march(-ux, -uy); if (a == null) continue;
+      const b = march(ux, uy); if (b == null) continue;
+      const gap = a + b; if (gap < Math.max(0.5/res.mPerPx, 0.6*wid) || gap > wid + 0.9/res.mPerPx) continue;
+      if (!best || gap < best.gap) best = {gap, th, ux, uy, a, b};
+    }
+    if (!best) return;
+    const out = (d.rooms || []).some(n => /^outside$/i.test((n || "").trim())), ext = 0.05/res.mPerPx;
+    const A = {x: px - best.ux*(best.a + ext), y: py - best.uy*(best.a + ext)}, B = {x: px + best.ux*(best.b + ext), y: py + best.uy*(best.b + ext)};
+    const tM = out ? tOut : Math.max(0.08, Math.min(0.2, tOut*0.5));
+    bridges.push({x1: A.x, y1: A.y, x2: B.x, y2: B.y, tM, outer: out, closing: true, src: "doorway"});
+    const lenM = Math.min(Math.max(0.5, d.widthM || 0.8), best.gap*res.mPerPx), mid = (best.b - best.a)/2;
+    // a door of the same kind the tracer put somewhere near but not in this gap was this one, misplaced
+    for (let i = doorsOut.length - 1; i >= 0; i--){ const o = doorsOut[i]; if (o.kind === d.kind && Math.hypot(o.x - px, o.y - py) <= wid/2 + 0.6/res.mPerPx) doorsOut.splice(i, 1); }
+    doorsOut.push({x: px + best.ux*mid, y: py + best.uy*mid, rot: best.th, lenM, tM, kind: d.kind === "opening" ? "opening" : d.kind, hinge: 1, side: 1});
+  });
+  walls = walls.concat(bridges);
+  // (7) a bay's cheeks: a canted bay's sides are often glass, too light to be found as wall, leaving the bay's end in
+  // the air. An end of a bay window that no wall reaches is joined to the nearest wall end within a metre and a bit.
+  const cheeks = [];
+  wins.filter(w => w.bowCm || w.bowM).forEach(w => [[w.x1, w.y1], [w.x2, w.y2]].forEach(([x, y])=>{
+    const near = 0.1/res.mPerPx, own = v => Math.min(Math.hypot(v.x1 - w.x1, v.y1 - w.y1), Math.hypot(v.x2 - w.x1, v.y2 - w.y1)) < near*2 && Math.min(Math.hypot(v.x1 - w.x2, v.y1 - w.y2), Math.hypot(v.x2 - w.x2, v.y2 - w.y2)) < near*2;
+    if (walls.some(v => !own(v) && distTo(x, y, v) <= geo(v).t/2 + near)) return;
+    let best = null, bd = 1.2/res.mPerPx;
+    walls.forEach(v => v.outer && !own(v) && [[v.x1, v.y1], [v.x2, v.y2]].forEach(([ex, ey]) => { const dd = Math.hypot(ex - x, ey - y); if (dd < bd){ bd = dd; best = {x: ex, y: ey}; } }));
+    if (best) cheeks.push({x1: x, y1: y, x2: best.x, y2: best.y, tM: w.tM || tOut, outer: true, closing: true, src: "cheek"});
+  }));
+  walls = walls.concat(cheeks);
+  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length + blocks.length + bridges.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length, trimmed, blocks: blocks.length, bridges: bridges.length, cheeks: cheeks.length}};
 }
 
 // ---------------------------------------------------------------------------

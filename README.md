@@ -1735,3 +1735,35 @@ Plan 11 read as one single-floor image regressed from 6/6 to 3/6: it leaks throu
 Still open on plan 13:
 - The rear bifolds and the front door get snapped onto the wrong lines.
 - A grey chimney pier is read as walls.
+
+### Doors in their gaps, solid piers, bay cheeks (2026-11-15)
+
+Three more steps at the end of `closeRoomShells`:
+
+- **(5) Solid drawing.**
+  - A thick wall put in at step 1 (0.35 m or more) is cut back to the solid black it stands on. Before, a small
+    black block grew into a metre-wide cross of junk walls.
+  - Any solid black that no wall covers yet becomes a wall of its own: a chimney pier, a nib, a block. "Solid" means
+    ink that survives a 5 cm erosion. Its long axis and thickness come from its shape. It has to be at least 25 cm
+    long, at most 70 cm thick, and at least 45% filled.
+- **(6) Doors in their gaps.** The tracer sometimes snapped one of Claude's doors onto the wrong line. On plan 13
+  the rear bifolds landed on a stray cupboard line, and the front door on an inner line, leaving the real gaps open.
+  Now each Claude door with no door near its point gets bridged:
+  - Lines through its point are tried every 2°.
+  - The shortest one that runs from solid to solid (a wall or solid black) and is about the door's width gets a wall
+    carrying that door. The wall is outer thickness if Claude said the door leads outside.
+  - A tracer door of the same kind close by, which was this one misplaced, is removed.
+- **(7) Bay cheeks.** A canted bay's sides are often glass and go unfound, leaving the bay's end in the air. A bay
+  window end that no wall reaches is joined to the nearest outer wall's end within 1.2 m.
+
+Results:
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Rooms closed, single-floor batch | 180/234 | 191/237 |
+| Plan 13 ground floor through Trace the house | 1/6 | 4/4 |
+| Plan 23 first floor through Trace the house | 5/7 | 7/7 |
+
+- The single-floor gain came with no plan getting worse.
+- Plan 13's ground floor now reads as 4 rooms instead of 6: its two cupboards fold into the kitchen.
+- Stack fits held or rose: plan 01 went from 0.93 to 0.97, and plan 11 from 0.85 / 0.47 to 0.87 / 0.60.
