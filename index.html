@@ -67,10 +67,13 @@
   #stackList{display:flex; flex-direction:column; gap:3px; margin:2px 0 4px;}
   .stackRow{display:flex; align-items:center; gap:4px; padding:2px; border-radius:6px;}
   .stackRow.active{background:rgba(79,140,255,0.16);}
+  .stackHead{font-size:10.5px; color:var(--text-dim); margin:6px 2px 1px; font-weight:600;}
   .stackRow .stackName{flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
-  .stackRow input{width:54px;}
-  .stackRow .stackUnit{font-size:10.5px; color:var(--text-dim); margin-right:2px;}
-  .stackRow button:not(.stackName){padding-left:7px; padding-right:7px;}
+  .stackRow{gap:2px;}
+  .stackRow input{width:44px; padding-left:4px; padding-right:2px;}
+  .stackRow .stackUnit{font-size:10.5px; color:var(--text-dim); margin-right:1px;}
+  .stackRow button:not(.stackName){padding-left:4px; padding-right:4px; min-width:0;}
+  .stackRow .stackName{padding-left:6px; padding-right:4px;}
   #stackNudge button{flex:1;}
   #roofPanel{display:flex; flex-direction:column; gap:5px;}
   #roofPanel .roofNote{font-size:10.5px; color:var(--text-dim); line-height:1.4; margin:0;}
@@ -1688,6 +1691,7 @@ List every separate floor drawing. For each:
 - label: its printed name, exactly as printed (if none, describe it, e.g. "Floor 1").
 - level: which storey it is, as a whole number: 0 = ground floor (the floor with the front door), 1 = first floor, 2 = second floor, 3 = third / loft above a second floor, -1 = basement, cellar or lower ground floor. "Floor 1" with no other clue is the ground floor (0), "Floor 2" the first floor (1). A loft or attic room is the storey above the top full floor. An upper floor of an annex or garage gets that building's own count (its ground floor 0, its upper floor 1).
 - building: "main" for the house itself (including an attached garage drawn as part of the house's ground floor), or "separate" for a drawing of a different building — a detached garage, annex, outbuilding, barn, studio or summer house, or any part labelled as one.
+- buildingName: for a separate building, a short name for it, the same on each of its floors (e.g. "Annex", "Garage", "Studio"); "" for the house.
 - box: a tight box around that floor's drawing only (walls, bays, steps — not its printed title or the area figures), in normalized image coordinates: 0,0 = top-left of the whole image, 1,1 = bottom-right. Boxes of different floors must not overlap.
 
 Ignore site plans, location maps, garden-only drawings, logos, compass roses, keys and notes. If the image shows only one floor, list just that one.`;
@@ -1695,14 +1699,14 @@ const HOUSE_SPLIT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: {
     floors: {type: "array", items: {type: "object", additionalProperties: false, properties: {
-      label: {type: "string"}, level: {type: "integer"}, building: {type: "string", enum: ["main", "separate"]},
+      label: {type: "string"}, level: {type: "integer"}, building: {type: "string", enum: ["main", "separate"]}, buildingName: {type: "string"},
       box: {type: "object", additionalProperties: false, properties: {x0: {type: "number"}, y0: {type: "number"}, x1: {type: "number"}, y1: {type: "number"}}, required: ["x0", "y0", "x1", "y1"]},
-    }, required: ["label", "level", "building", "box"]}},
+    }, required: ["label", "level", "building", "buildingName", "box"]}},
   },
   required: ["floors"],
 };
 async function housePlanRead(dataURL, apiKey, model, fresh){
-  const key = "floorplanTool.houseSplit:" + hashString(dataURL) + ":" + dataURL.length;
+  const key = "floorplanTool.houseSplit2:" + hashString(dataURL) + ":" + dataURL.length;
   if (!fresh) try { const c = JSON.parse(localStorage.getItem(key) || "null"); if (c) return c; } catch(e){}
   const {mediaType, base64Data} = parseDataUrl(dataURL);
   const out = await callClaudeStructured(base64Data, mediaType, apiKey, model, HOUSE_SPLIT_PROMPT, HOUSE_SPLIT_SCHEMA);
@@ -1820,7 +1824,12 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
   const agrees = r => !r.ratioCount || Math.abs(r.mPerPx - mpp)/mpp < 0.08;
   const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: mpp && agrees(first[i]) ? smartTraceGeometry(imgs[i], reads[i].ai, {mPerPx: mpp}) : first[i]}));
   const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
-  return {storeys: traced.filter(t => t.building !== "separate").sort(byLevel), separate: traced.filter(t => t.building === "separate").sort(byLevel), mPerPx: mpp,
+  // separate buildings, each its floors bottom to top (named by Claude, or failing that by the label less "Floor 1")
+  const bname = t => (t.buildingName || "").trim() || (t.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || "Outbuilding";
+  const sep = traced.filter(t => t.building === "separate"), groups = new Map();
+  sep.forEach(t => { const k = bname(t).toLowerCase(); if (!groups.has(k)) groups.set(k, {name: bname(t), floors: []}); groups.get(k).floors.push(t); });
+  const buildings = [...groups.values()].map(g => ({name: g.name, floors: g.floors.sort(byLevel)}));
+  return {storeys: traced.filter(t => t.building !== "separate").sort(byLevel), separate: buildings.flatMap(b => b.floors), buildings, mPerPx: mpp,
     ratioCount: first.reduce((a, r) => a + r.ratioCount, 0)};
 }
 // Puts a traced house into version v: its floors become v's floor tabs, bottom to top (`floor` becomes the lowest,
@@ -1833,13 +1842,25 @@ function applyHousePlan(v, floor, house){
       f.name = s.label || f.name;
       f.image = {dataURL: s.dataURL, naturalWidth: s.w, naturalHeight: s.h};
       f.worldWidth = s.w; f.worldHeight = s.h;
-      delete f.stack;
+      delete f.stack; delete f.building;
       return f;
     });
-    v.floors = floors; v.activeFloorId = floor.id;
-    floors.forEach((f, i) => withFloor(f, () => applySmartTrace(f, house.storeys[i].res, house.storeys[i].ai, {noUndo: true})));
     floors.forEach((f, i) => { if (house.storeys[i].level < 0 && house.storeys.some(s => s.level >= 0)) f.underground = true; else delete f.underground; });
+    // each separate building's floors follow the house's, bottom to top, tagged with the building's name
+    const extra = [];
+    (house.buildings || []).forEach(b => b.floors.forEach(s => {
+      const f = makeFloor(s.label); f.building = b.name;
+      f.image = {dataURL: s.dataURL, naturalWidth: s.w, naturalHeight: s.h};
+      f.worldWidth = s.w; f.worldHeight = s.h;
+      if (s.level < 0 && b.floors.some(t => t.level >= 0)) f.underground = true;
+      extra.push([f, s]);
+    }));
+    v.floors = floors.concat(extra.map(e => e[0])); v.activeFloorId = floor.id;
+    floors.forEach((f, i) => withFloor(f, () => applySmartTrace(f, house.storeys[i].res, house.storeys[i].ai, {noUndo: true})));
+    extra.forEach(([f, s]) => withFloor(f, () => applySmartTrace(f, s.res, s.ai, {noUndo: true})));
     floors.fits = floors.map((f, i) => i ? autoStackFloor(f) : null); // how well each sits on the one below
+    extra.forEach(([f]) => { if (floorBelow(f)) autoStackFloor(f); else placeBesideHouse(f); });
+    floors.buildings = (house.buildings || []).map(b => b.name);
     return floors;
   } finally { suppressHistory = was; }
 }
@@ -1866,7 +1887,7 @@ async function runTraceHouse(ev){
     statusEl.textContent = `Traced ${n(floors.length, "floor")} (${floors.map(f => f.name).join(", ")}): ${n(sum("walls"), "wall")}, ${n(sum("windows"), "window")}, ${n(sum("doors"), "door")}, in ${Math.round((Date.now() - t0)/1000)}s` +
       (reused ? " (using Claude's earlier reading, so free — Shift-click to have it read again)" : "") + ". " +
       (floors.length > 1 ? "Each floor is lined up on the one below — see it in 3D with 🏘 Whole house, and fine-tune with the arrows under Floors of the house. " : "") +
-      (house.separate.length ? `Left out, as separate buildings: ${house.separate.map(s => s.label).join(", ")}. ` : "") +
+      (floors.buildings.length ? `Separate building${floors.buildings.length > 1 ? "s" : ""} — ${floors.buildings.join(", ")} — set down beside the house: the plan doesn't say where, so move ${floors.buildings.length > 1 ? "them" : "it"} with Line up by hand under Floors of the house. ` : "") +
       (house.ratioCount ? `Scale set from ${n(house.ratioCount, "printed room size")}.` : "No room sizes were printed, so the scale is a guess — use Calibrate scale on a wall you know.") + " Undo puts it all back.";
   }catch(err){
     console.error(err);
@@ -2447,6 +2468,7 @@ function normalizeFloor(f){
     ...(f.exterior ? {exterior: f.exterior} : {}), // the outside walls' finish — see EXTERIOR_FINISHES
     ...(f.stack ? {stack: f.stack} : {}), // where this floor sits in the house — see floorStack
     ...(f.roomHM ? {roomHM: f.roomHM} : {}), // this floor's own room height (m) — see floorRoomH
+    ...(f.building ? {building: f.building} : {}), // a separate building (garage, annex…) — see buildingName
     ...(f.underground ? {underground: true} : {}), // a basement / lower ground floor, below the garden — see groundFloor
     ...(f.roof ? {roof: f.roof} : {}), // its roof — see roofWingModel
     ...(f.bayCaps === false ? {bayCaps: false} : {}), // no lead tops on its curved bay windows — see bayCapOutlines
@@ -2635,11 +2657,21 @@ function renderStackPanel(){
   if (!list) return;
   const fl = houseFloors(), cur = activeFloor(), base = Math.round(floorRoomH(null)*100);
   list.innerHTML = "";
-  fl.slice().reverse().forEach(f=>{
+  // the house first, then each separate building under its own heading; each top floor first
+  const names = [...new Set(fl.map(buildingName))].sort((a, b) => (a ? 1 : 0) - (b ? 1 : 0));
+  const order = names.flatMap(b => fl.filter(f => buildingName(f) === b).reverse());
+  let lastB = null;
+  order.forEach(f=>{
     const i = fl.indexOf(f), row = document.createElement("div");
+    if (names.length > 1 && buildingName(f) !== lastB){
+      const hd = document.createElement("div"); hd.className = "stackHead";
+      hd.textContent = buildingName(f) ? "🏚 " + buildingName(f) + " (separate building)" : "🏠 The house";
+      list.appendChild(hd);
+    }
+    lastB = buildingName(f);
     row.className = "stackRow" + (f === cur ? " active" : "");
     const name = document.createElement("button");
-    const g0 = groundFloor(), under = isBelowGround(f);
+    const g0 = groundFloor(f), under = isBelowGround(f);
     name.className = "stackName"; name.textContent = (f === g0 ? "⌂ " : under ? "▽ " : "") + f.name;
     name.title = f === g0 ? "The ground floor — click to switch to it" : under ? "Below ground (a basement) — click to switch to it" : "Click to switch to this floor";
     name.addEventListener("click", ()=> switchFloor(f.id));
@@ -2655,11 +2687,11 @@ function renderStackPanel(){
     });
     const cm = document.createElement("span"); cm.className = "stackUnit"; cm.textContent = "cm";
     const mv = (d, label, tip)=>{
-      const b = document.createElement("button");
-      b.textContent = label; b.title = tip; b.disabled = !fl[i + d];
+      const b = document.createElement("button"), other = d > 0 ? floorAbove(f) : floorBelow(f); // swaps within its own building
+      b.textContent = label; b.title = tip; b.disabled = !other;
       b.addEventListener("click", ()=>{
         pushUndoSnapshot();
-        const j = i + d; [fl[i], fl[j]] = [fl[j], fl[i]];
+        const j = fl.indexOf(other); [fl[i], fl[j]] = [fl[j], fl[i]];
         scheduleAutosave(); renderFloorTabs(); render();
       });
       return b;
@@ -2669,18 +2701,35 @@ function renderStackPanel(){
     gb.title = f === g0 ? "This is the ground floor (the floors under it are below ground)" : "Make this the ground floor — the one at garden level, with the front door. Floors under it go below ground as basements";
     gb.disabled = f === g0;
     gb.addEventListener("click", ()=>{ pushUndoSnapshot(); setGroundFloor(f); scheduleAutosave(); renderStackPanel(); render(); });
-    row.append(name, h, cm, gb, mv(1, "▲", "Move this floor up the house"), mv(-1, "▼", "Move this floor down the house"));
+    // separate building on / off: joining the separate building listed just before it, if any (an annex's second floor)
+    const sb = document.createElement("button");
+    sb.textContent = "🏚"; sb.className = buildingName(f) ? "active" : "";
+    sb.title = buildingName(f) ? `Part of "${buildingName(f)}", a separate building — click to make it part of the house again` : "Make this floor a separate building (a detached garage, annex, outbuilding) — it then stands beside the house instead of stacking on it";
+    sb.addEventListener("click", ()=>{
+      pushUndoSnapshot();
+      if (f.building){ delete f.building; delete f.stack; }
+      else {
+        const prev = fl[i - 1];
+        f.building = prev && prev.building ? prev.building : (f.name || "Outbuilding").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || f.name;
+        delete f.stack; delete f.underground;
+      }
+      ensureHouseStacked(); scheduleAutosave(); renderStackPanel(); renderFloorTabs(); render();
+    });
+    row.append(name, h, cm, gb, sb, mv(1, "▲", "Move this floor up"), mv(-1, "▼", "Move this floor down"));
     list.appendChild(row);
   });
-  const below = floorBelow(cur);
+  const below = floorRef(cur), beside = isSeparateBase(cur);
   document.getElementById("stackAlign").hidden = !below;
+  ["btnStackAuto", "btnStackPick", "btnStackSnap"].forEach(id => { document.getElementById(id).hidden = beside; }); // it isn't stacked on the house
   document.getElementById("fldShowBelow").checked = showFloorBelow;
   document.getElementById("btnStackDrag").classList.toggle("active", stackDragMode);
   document.getElementById("btnStackDrag").textContent = stackDragMode ? "✓ Done lining up" : "✥ Line up by hand";
   document.getElementById("btnStackPick").classList.toggle("active", !!stackPick);
   document.getElementById("btnStackPick").textContent = stackPick ? "✕ Cancel matching corners" : "📐 Match two corners";
   try{ if (v3 && view3dOpen) v3UpdateBar(); }catch(e){ if (!(e instanceof ReferenceError)) throw e; } // the 3D bar's floor switcher (not before the 3D code has loaded)
-  document.getElementById("stackStatus").textContent = !below ? "" : stackNote || `"${cur.name}" sits on "${below.name}".` + (stackDragMode ? " Drag anywhere on the plan to slide the blue floor below into place, or use the arrow keys (hold Shift for 1cm steps)." : "");
+  document.getElementById("stackStatus").textContent = !below ? "" : stackNote || (beside
+    ? `"${buildingName(cur)}" is a separate building, shown beside the house — the house's "${below.name}" is in blue. Its real spot isn't on the plan: use Line up by hand to move it.`
+    : `"${cur.name}" sits on "${below.name}".`) + (stackDragMode ? " Drag anywhere on the plan to slide the blue floor into place, or use the arrow keys (hold Shift for 1cm steps)." : "");
 }
 // Slides this floor in the house so the floor below appears to move by (dx, dy) in this floor's plan units.
 function moveFloorBelowGhost(f, dx, dy, from = floorStack(f)){
@@ -2689,7 +2738,7 @@ function moveFloorBelowGhost(f, dx, dy, from = floorStack(f)){
 }
 function nudgeFloorBelow(dx, dy, cm){
   const f = activeFloor();
-  if (!floorBelow(f)) return;
+  if (!floorRef(f)) return;
   ensureHouseStacked();
   pushUndoSnapshotDebounced();
   moveFloorBelowGhost(f, dx*cmToWorld(cm), dy*cmToWorld(cm));
@@ -2860,7 +2909,7 @@ function moveWallSideways(f, w, vx, vy, reach){
 }
 function turnFloorOnBelow(){
   const f = activeFloor();
-  if (!floorBelow(f)) return;
+  if (!floorRef(f)) return;
   ensureHouseStacked();
   pushUndoSnapshot();
   // a quarter turn about the middle of its walls, so it stays roughly where it was
@@ -2874,7 +2923,7 @@ function turnFloorOnBelow(){
 }
 // The floor below, faintly in blue under this one: its walls and windows at their real thickness, and its stairs.
 function drawFloorBelowGhost(){
-  const f = activeFloor(), below = floorBelow(f);
+  const f = activeFloor(), below = floorRef(f);
   if (!below || !showFloorBelow) return;
   ensureHouseStacked();
   const kf = metersPerWorldUnitForFloor(f);
@@ -5200,25 +5249,41 @@ function metersPerWorldUnitForFloor(floor){
 // a floor with no stack yet is lined up on the one below it (autoStackFloor) the first time it's needed.
 const FLOOR_DEPTH_M = 0.25; // joists and boards between one floor's ceiling and the next floor up
 function houseFloors(){ return activeVersion().floors; }
-function floorBelow(f){ const fl = houseFloors(), i = fl.indexOf(f); return i > 0 ? fl[i-1] : null; }
+// Separate buildings (a detached garage, an annex, an outbuilding): a floor with f.building set belongs to that building
+// instead of the house. Each building stacks on its own — its floors' "below" and "above", its ground floor and its
+// heights only ever count its own floors — and its lowest floor is placed beside the house (lined up by hand
+// against the house's ground floor, see floorRef).
+function buildingName(f){ return (f && f.building) || ""; }
+function buildingFloors(f){ const b = buildingName(f); return houseFloors().filter(g => buildingName(g) === b); }
+function floorBelow(f){ const fl = buildingFloors(f), i = fl.indexOf(f); return i > 0 ? fl[i-1] : null; }
+function floorAbove(f){ const fl = buildingFloors(f), i = fl.indexOf(f); return i >= 0 && i < fl.length - 1 ? fl[i+1] : null; }
+function mainHouseFloors(){ return houseFloors().filter(g => !buildingName(g)); }
+// what a floor is lined up against: the floor below it, or — for a separate building's lowest floor — the house's
+// ground floor (moved about beside it, never stacked onto it)
+function floorRef(f){
+  const b = floorBelow(f); if (b) return b;
+  if (!buildingName(f)) return null;
+  const m = mainHouseFloors(); return m.length ? groundFloor(m[0]) : null;
+}
+function isSeparateBase(f){ return !!buildingName(f) && !floorBelow(f); }
 // The outside finish of a floor: its own, or carried up from the floor below (a house is usually brick all the way up).
 function floorExterior(f){ return f.exterior || (floorBelow(f) ? floorExterior(floorBelow(f)) : null); }
 function floorStack(f){ return f.stack || {x: 0, z: 0, rot: 0}; }
 function floorRoomH(f){ return Math.max(2, Math.min(6, +(f && f.roomHM) || +costSettings().ceilingM || 2.4)); }
 // The ground floor is the lowest floor not marked as below ground (f.underground: a basement, cellar or lower
 // ground floor). Floors under it sit below the garden: their elevations come out negative.
-function groundFloor(){ const fl = houseFloors(); return fl.find(f => !f.underground) || fl[fl.length - 1]; }
-function isBelowGround(f){ const fl = houseFloors(); return fl.indexOf(f) < fl.indexOf(groundFloor()); }
+function groundFloor(f){ const fl = f ? buildingFloors(f) : mainHouseFloors().length ? mainHouseFloors() : houseFloors(); return fl.find(g => !g.underground) || fl[fl.length - 1]; }
+function isBelowGround(f){ const fl = buildingFloors(f); return fl.indexOf(f) < fl.indexOf(groundFloor(f)); }
 // how high this floor's surface is above the ground floor's, in metres (negative for a basement)
 function floorElevFromBottom(f){
   let y = 0;
-  for (const g of houseFloors()){ if (g === f) break; y += floorRoomH(g) + FLOOR_DEPTH_M; }
+  for (const g of buildingFloors(f)){ if (g === f) break; y += floorRoomH(g) + FLOOR_DEPTH_M; }
   return y;
 }
-function floorElev(f){ return floorElevFromBottom(f) - floorElevFromBottom(groundFloor()); }
+function floorElev(f){ return floorElevFromBottom(f) - floorElevFromBottom(groundFloor(f)); }
 // Makes `f` the ground floor: every floor under it is below ground, it and the floors above aren't.
 function setGroundFloor(f){
-  const fl = houseFloors(), i = fl.indexOf(f);
+  const fl = buildingFloors(f), i = fl.indexOf(f);
   fl.forEach((g, j) => { if (j < i) g.underground = true; else delete g.underground; });
 }
 function floorToHouse(f, px, py){
@@ -5255,7 +5320,7 @@ function floorWallSamples(f, step = 0.1){
 // front/middle/back), then nudged in ever-finer steps. Returns how much of its outside wall now sits on a wall.
 function autoStackFloor(f, opts = {}){
   const below = floorBelow(f);
-  if (!below){ delete f.stack; return {cover: null, scale: 1}; }
+  if (!below){ if (!buildingName(f)) delete f.stack; return {cover: null, scale: 1}; }
   if (!below.stack && floorBelow(below)) autoStackFloor(below);
   const rot = floorStack(f).rot, mine = floorWallSamples(f).map(p => ({...rotate(p.x, p.y, rot), w: p.w}));
   const sb = floorStack(below), kb = metersPerWorldUnitForFloor(below), toH = q => { const r = rotate(q.x*kb, q.y*kb, sb.rot); return {x: sb.x + r.x, y: sb.z + r.y}; };
@@ -5421,10 +5486,29 @@ function drawStairWells(){
   });
   ctx.restore();
 }
+// A floor's walls' extent in the house, in metres (null with no walls)
+function floorHouseBounds(f){
+  const b = {x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity};
+  f.walls.forEach(w => wallCenterlinePoints(w).forEach(p => { const h = floorToHouse(f, p.x, p.y); b.x0 = Math.min(b.x0, h.x); b.x1 = Math.max(b.x1, h.x); b.z0 = Math.min(b.z0, h.z); b.z1 = Math.max(b.z1, h.z); }));
+  return b.x0 < Infinity ? b : null;
+}
+// Sets a separate building's lowest floor down to the right of everything placed so far (the house and any other
+// building), 3m clear and lined up with the house's back — the plans never say where it really is, so it's a start
+// to drag from (Build → Floors of the house → Line up by hand).
+function placeBesideHouse(f){
+  const placed = houseFloors().filter(g => g !== f && buildingName(g) !== buildingName(f) && (g.stack || !buildingName(g)));
+  const bs = placed.map(floorHouseBounds).filter(Boolean);
+  f.stack = {x: 0, z: 0, rot: 0};
+  const mine = floorHouseBounds(f);
+  if (!bs.length || !mine) return;
+  const right = Math.max(...bs.map(b => b.x1)), top = Math.min(...bs.map(b => b.z0));
+  f.stack = {x: right + 3 - mine.x0, z: top - mine.z0, rot: 0};
+}
 // Every floor above the ground placed somewhere (each new one lined up on the one below it).
 function ensureHouseStacked(){
   let changed = false;
-  houseFloors().forEach((f, i) => { if (i > 0 && !f.stack){ autoStackFloor(f); changed = true; } });
+  houseFloors().forEach(f => { if (!f.stack && floorBelow(f)){ autoStackFloor(f); changed = true; } });
+  houseFloors().forEach(f => { if (!f.stack && isSeparateBase(f)){ placeBesideHouse(f); changed = true; } });
   if (changed) scheduleAutosave();
 }
 // The raster covers the floor image AND every wall, plus a margin — not just
@@ -7308,7 +7392,7 @@ cv.addEventListener("pointerdown", (e)=>{
     return;
   }
   if (stackPick && floorBelow(activeFloor()) && e.button === 0){ stackPickClick(mw); dragUndoSnapshot = null; return; }
-  if (stackDragMode && floorBelow(activeFloor()) && e.button === 0){ // lining up by hand: any drag slides the floor below
+  if (stackDragMode && floorRef(activeFloor()) && e.button === 0){ // lining up by hand: any drag slides the floor below
     ensureHouseStacked();
     drag = {type:"stack-align", sx: mw.x, sy: mw.y, from: {...floorStack(activeFloor())}};
     return;
@@ -13280,8 +13364,8 @@ function v3Bounds(floor, k){
 function v3HouseFloors(){
   const fl = houseFloors(), cur = activeFloor();
   if (!v3.house || fl.length < 2) return [cur];
-  const i = fl.indexOf(cur);
-  return v3.mode === "walk" || v3.showAbove ? fl : fl.slice(0, i + 1);
+  // floors over this one's level hidden (every building cut at the same height)
+  return v3.mode === "walk" || v3.showAbove ? fl : fl.filter(g => floorElev(g) <= floorElev(cur) + 0.01);
 }
 // Roofs: always when you're walking about; from the dollhouse, when "Roof" is on (or you're editing it).
 function v3RoofsOn(){ return v3.mode === "walk" || !!v3.showRoof || roofEdit; }
@@ -13328,12 +13412,12 @@ function v3Rebuild(){
   if (v3.house) ensureHouseStacked();
   const shown = v3HouseFloors(), top = shown.at(-1);
   // floors with the next one up also in the scene: their stairs climb to it, and open a stairwell in it
-  v3.reachUp = new Set(shown.filter((f, i) => shown[i+1] && floorBelow(shown[i+1]) === f).map(f => f.id));
+  v3.reachUp = new Set(shown.filter(f => floorAbove(f) && shown.includes(floorAbove(f))).map(f => f.id));
   const wellsInto = f => v3.reachUp.has((floorBelow(f) || {}).id) ? stairWellsInto(f).map(w => w.hole) : [];
   const wellsUp = f => v3.reachUp.has(f.id) ? stairWells(f).map(w => w.hole) : [];
   v3FloorPlane(root, floor, k, wellsInto(floor));
   v3.doorGroups = new Map(); // filled by v3Door, for the selection outline
-  const nextUp = f => { const i = shown.indexOf(f); return shown[i+1] && floorBelow(shown[i+1]) === f ? shown[i+1] : null; };
+  const nextUp = f => { const a = floorAbove(f); return a && shown.includes(a) ? a : null; };
   v3BuildStructure(root, floor, k, H, cut, nextUp(floor) ? FLOOR_DEPTH_M - 0.005 : 0, nextUp(floor));
   v3.groups = new Map(); v3.natural = new Map();
   v3BuildFloorItems(root, floor, k, H, cut, true);
@@ -13356,7 +13440,7 @@ function v3Rebuild(){
       v3.doorGroups = doors;
       v3BuildFloorItems(g, f, fk, fH, fH, false);
       // under you, a single-storey part's flat top; walking about, every floor's ceiling (seen up a stairwell)
-      if (v3.mode === "walk" || houseFloors().indexOf(f) < houseFloors().indexOf(floor)) v3CeilingPlane(g, f, fk, fH, wellsUp(f));
+      if (v3.mode === "walk" || floorElev(f) < floorElev(floor) - 0.01) v3CeilingPlane(g, f, fk, fH, wellsUp(f));
       if (v3RoofsOn()) v3BuildRoof(g, f, fk, fH);
       const fb = v3Bounds(f, fk);
       [[fb.x0, fb.z0], [fb.x1, fb.z0], [fb.x0, fb.z1], [fb.x1, fb.z1]].forEach(([x, z]) => { const p = new THREE.Vector3(x, 0, z).applyMatrix4(g.matrix); grow(p.x, p.z); });
@@ -13567,8 +13651,8 @@ function v3StairHop(){
   v3.lastStair = st ? {f: f.id, s: st.s, total: st.total} : null;
   // at the top step — or just stepped off it (a long stride can go straight past)
   const atTop = st ? st.s >= st.total - 5 : !!(was && was.f === f.id && was.s >= was.total - 40);
-  if (fl[i+1] && reach.has(f.id) && atTop){ v3.lastStair = null; return hop(fl[i+1]); }
-  const below = fl[i-1];
+  if (floorAbove(f) && reach.has(f.id) && atTop){ v3.lastStair = null; return hop(floorAbove(f)); }
+  const below = floorBelow(f);
   if (below && reach.has(below.id)){
     const h = floorToHouse(f, c.x, c.y), sb = stairUnderfoot(below, houseToFloor(below, h.x, h.z));
     if (sb && sb.s < sb.total - 15){ v3.lastStair = null; return hop(below); } // well into the stairwell, not just at its top edge
@@ -14974,7 +15058,7 @@ function largestRect(grid, nx, ny){
   return best;
 }
 function autoRoofWings(f){
-  const fl = houseFloors(), above = fl[fl.indexOf(f) + 1] || null, axis = houseAxisOf(f), G = roofFootprintGrid(f, axis, above);
+  const above = floorAbove(f), axis = houseAxisOf(f), G = roofFootprintGrid(f, axis, above);
   if (!G) return [];
   const {grid, nx, ny, a0, b0, cu, k} = G, cellM = ROOF_CELL_M, wings = [], rects = [];
   // owner: which section (1-based) took each cell, so a later, smaller one knows what it's built onto
@@ -15171,7 +15255,7 @@ function v3DormerRoof(g, span, rise, y0, zf, zb, hipRun, cover, gableMat){
 const BAY_CAP_M = 0.08, BAY_CAP_LIP_M = 0.05;
 function bayCapOutlines(floor){
   if (floor.bayCaps === false) return [];
-  const k = metersPerWorldUnitForFloor(floor), areas = getRoomAreasForFloor(floor), fl = houseFloors(), above = fl[fl.indexOf(floor) + 1] || null;
+  const k = metersPerWorldUnitForFloor(floor), areas = getRoomAreasForFloor(floor), above = floorAbove(floor);
   const aboveAreas = above ? getRoomAreasForFloor(above) : null;
   const covered = q => { if (!above) return false; const h = floorToHouse(floor, q.x, q.y), p = houseToFloor(above, h.x, h.z); return !!roomAtWorld(aboveAreas, p.x, p.y) || pointInWallOf(above, p.x, p.y, 0); };
   const out = [];

@@ -1600,3 +1600,11 @@ A floor can now sit below the garden.
 - **Heights.** `floorElev` is measured from the ground floor, so a basement's elevation comes out negative and it's buried in 3D.
 - **Looking into a basement.** In the dollhouse view, on a basement with the floors over it hidden, the garden drops to the basement's floor so you can see into it. With the floors above shown, or walking about, the garden stays at its real level.
 - **Tracing.** "Trace the house from its image" marks the floors Claude reads as level −1 (basement, cellar, lower ground) as underground.
+
+### Separate buildings: garages, annexes, outbuildings (2026-11-15)
+
+- **What a building is.** A floor with `building` set (e.g. "Annex", "Garage") belongs to that building, not the house. Each building stacks on its own: `floorBelow`, `floorAbove`, `groundFloor(f)` and `floorElev` only count floors of the same building. So an annex's first floor sits on the annex, and its ground floor is at garden level like the house's.
+- **Placing it.** The plans never say where an outbuilding really is. `placeBesideHouse` sets a building's lowest floor 3 m to the right of everything already placed, lined up with the house's back. Move it with Build → Floors of the house → Line up by hand or the arrows: the house's ground floor shows in blue, via `floorRef`. The "Line up & match size", "Match two corners" and "Snap walls" tools are hidden for it, because it isn't stacked on anything.
+- **Floors of the house panel.** Floors are grouped under 🏠 The house and 🏚 <name> (separate building). ▲▼ only swap floors within a building. Each row's 🏚 button turns a floor into a separate building, or back into the house. A floor turned separate joins the separate building listed just before it, if there is one (an annex's second floor); otherwise it becomes a new building named after the floor.
+- **3D.** Whole house shows every building. Hiding the floors above cuts every building at the current floor's height.
+- **Tracing.** "Trace the house from its image" now traces separate buildings too, instead of leaving them out. Claude names each one (`buildingName`), and each building's floors become floor tabs after the house's. The cache key moved to `houseSplit2`, so old cached floor-finding runs once more.
