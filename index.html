@@ -2441,9 +2441,19 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
   const first = parts.map((p, i) => smartTraceGeometry(imgs[i], reads[i].ai));
   const main = parts.map((p, i) => i).filter(i => parts[i].building !== "separate");
   const mpp = pooledScale(main.map(i => first[i].ratiosPx)) || pooledScale(first.map(r => r.ratiosPx));
-  // a floor whose own sizes clearly disagree (an annex drawn at another scale on the same sheet) keeps its own
-  const agrees = r => !r.ratioCount || Math.abs(r.mPerPx - mpp)/mpp < 0.08;
-  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: closeRoomShells(imgs[i], smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: mpp && agrees(first[i]) ? mpp : first[i].mPerPx}), reads[i].ai)})); // (angled walls: see smartTraceAngled)
+  // A floor keeps its own scale only when its own sizes clearly disagree with the sheet's (an annex drawn at another
+  // scale) AND can be trusted: at least two rooms' sizes, agreeing among themselves within 15%. A floor with a few
+  // sizes that don't agree with each other (printed maximums, a size for the wrong room) takes its building's scale:
+  // plans draw every floor of a building at one scale, and a floor 10% too big won't stack on the one below.
+  const trusted = r => r.ratioCount >= 4 && (r.scaleSpread || 0) <= 0.15;
+  const own = (r, ref) => ref && r.ratioCount && Math.abs(r.mPerPx - ref)/ref >= 0.08 && trusted(r);
+  // a separate building's scale: its own floors' trusted sizes, pooled (else the sheet's)
+  const bldOf = p => p.building === "separate" ? "s:" + ((p.buildingName || "").trim() || (p.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim()).toLowerCase() : "main", bldMpp = new Map();
+  parts.forEach((p, i)=>{ const b = bldOf(p); if (b === "main" || bldMpp.has(b)) return;
+    const mine = parts.map((q, j) => j).filter(j => bldOf(parts[j]) === b && trusted(first[j]));
+    bldMpp.set(b, (mine.length && pooledScale(mine.map(j => first[j].ratiosPx))) || mpp); });
+  const scaleFor = i => { const ref = bldOf(parts[i]) === "main" ? mpp : bldMpp.get(bldOf(parts[i])); return own(first[i], ref) ? first[i].mPerPx : (ref || first[i].mPerPx); };
+  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: closeRoomShells(imgs[i], smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: scaleFor(i)}), reads[i].ai)})); // (angled walls: see smartTraceAngled)
   const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
   // separate buildings, each its floors bottom to top (named by Claude, or failing that by the label less "Floor 1")
   const bname = t => (t.buildingName || "").trim() || (t.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || "Outbuilding";

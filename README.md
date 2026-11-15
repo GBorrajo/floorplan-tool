@@ -1685,3 +1685,18 @@ Now:
   - Through Trace the house: 150 of 188 → 154 of 186.
 - Plan 11's front reception room went from 13.8 to 14.8 m², with the bay included. Its printed 5.26 × 3.99 m runs into the bay and the chimney recesses.
 - A canted bay is still drawn as a curve, which is how the app has always shaped bays.
+
+### One scale per building (2026-11-15)
+
+Trace the house used to let any floor whose printed sizes disagreed with the sheet's pooled scale by 8% or more keep its own scale. That rule was meant for an annex drawn at another scale. But plan 23's first floor had only two rooms' sizes, which disagreed with each other by 28%. It kept a scale 10% off and came out 10% too big, so only 46% of its outside walls sat on walls below. Plans draw every floor of a building at one scale.
+
+Now a floor keeps its own scale only if it differs by 8% or more **and** can be trusted: at least two rooms' sizes, agreeing among themselves within 15%. Otherwise it takes its building's scale:
+- **The house:** the sheet's pooled scale, as before.
+- **A separate building:** its own floors' trusted sizes, pooled. The sheet's scale if it has none.
+
+**Tested** (share of each upper floor's outside wall sitting on a wall below):
+- Plan 23: first floor 0.46 → 0.65, second floor 0.43 → 0.82. The first floor's main block now lines up. Its wing really is a different shape from the kitchen wing below.
+- Plan 11: second floor 0.14 → 0.26.
+- Plan 19: the annex's upper floor now shares its ground floor's scale.
+- Plans 01, 04, 06, 13, 18 and 29: unchanged.
+- No closed rooms lost.
