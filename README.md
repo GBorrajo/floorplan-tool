@@ -1806,3 +1806,30 @@ kitchen, where there are no walls below to match.
 
 The hint fired on no other test plan. Plans 18 and 20 give different room counts from one run to the next, with or
 without this change.
+
+### Small floors enlarged before Claude reads them (2026-11-15)
+
+Run-to-run variation, investigated. With the current code the house trace is fully repeatable:
+- the same walls across page reloads, after loading other houses, and at any wall id offset;
+- every floor's reading is a cache hit, and its crop is identical across reloads.
+
+Earlier swings came from comparing runs made under different code. The reading cache is keyed by a crop's exact
+pixels, so whenever a change to the cropping alters a crop, that floor is read again by Claude, freshly and
+slightly differently.
+
+Plan 18's ground floor (2/12 closed) wasn't a tracing problem. Its crop is 278 × 980 px, so Claude placed the rooms in
+the middle of the floor too high: the kitchen at 0.17–0.31 where it's drawn at 0.23–0.41, and so on down.
+`enlargedForReading` now scales any floor crop whose long side is under 1568 px (the API's size before it shrinks
+images) by up to 4×, before `traceHousePlan` sends it to Claude. Claude's positions are fractions of the image, so the
+reading applies unchanged to the crop as cut.
+
+Plan 18 results:
+
+| Floor | Rooms closed before | After | Stack fit before | After |
+| --- | --- | --- | --- | --- |
+| Ground | 2/12 | 13/13 | – | – |
+| First | 8/8 | 8/8 | 0.40 | 0.60 |
+| Second | 2/3 | 4/4 | 0.49 | 0.48 |
+
+About 26 of the 36 test floors are small enough to be enlarged, so each will be read afresh by Claude the first time
+it's traced.

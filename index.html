@@ -2582,6 +2582,21 @@ async function smartReadCached(dataURL, apiKey, model, fresh){
   try { localStorage.setItem(key, JSON.stringify(ai)); } catch(e){}
   return {ai, reused: false};
 }
+// A floor cut from a big sheet can be small: a narrow terrace's ground floor 278px wide, its room names a few pixels
+// high. Claude reads those poorly — rooms in the wrong places, the middle of a tall floor squeezed (plan 18's ground
+// floor: 2 of 12 rooms placed right, 13 of 13 once enlarged). So a small floor is enlarged before it's read, up to the
+// size the API takes without shrinking it (1568px on the long side), at most 4×. Claude's positions are fractions of
+// the image, so its reading holds for the floor as cut.
+const READ_LONG_PX = 1568;
+async function enlargedForReading(dataURL){
+  const im = await loadImageEl(dataURL), w = im.naturalWidth || im.width, h = im.naturalHeight || im.height;
+  const k = Math.min(4, READ_LONG_PX/Math.max(w, h));
+  if (k < 1.25) return dataURL;
+  const c = document.createElement("canvas"); c.width = Math.round(w*k); c.height = Math.round(h*k);
+  const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(im, 0, 0, c.width, c.height);
+  const png = c.toDataURL("image/png");
+  return png.length > 4.5e6 ? c.toDataURL("image/jpeg", 0.92) : png; // the API takes up to 5MB an image
+}
 // One scale for every floor of a sheet: the median of all the printed-size ratios, after dropping the stray ones
 function pooledScale(list){
   const all = list.flat().filter(v => v > 0).sort((a, b) => a - b);
@@ -2602,7 +2617,7 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
     : refineFloorBoxes(img, regions);
   let n = 0;
   onStatus(`Claude is reading ${parts.length === 1 ? "the floor" : `${parts.length} floors`}…`);
-  const reads = await Promise.all(parts.map(p => smartReadCached(p.dataURL, apiKey, model, fresh).then(r => { onStatus(`Claude is reading the floors… ${++n} of ${parts.length} done`); return r; })));
+  const reads = await Promise.all(parts.map(p => enlargedForReading(p.dataURL).then(du => smartReadCached(du, apiKey, model, fresh)).then(r => { onStatus(`Claude is reading the floors… ${++n} of ${parts.length} done`); return r; })));
   onStatus("Measuring the walls…");
   await new Promise(r => setTimeout(r, 20));
   const imgs = await Promise.all(parts.map(p => p.dataURL === dataURL ? img : loadImageEl(p.dataURL)));
