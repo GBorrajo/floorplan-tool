@@ -1700,3 +1700,38 @@ Now a floor keeps its own scale only if it differs by 8% or more **and** can be 
 - Plan 19: the annex's upper floor now shares its ground floor's scale.
 - Plans 01, 04, 06, 13, 18 and 29: unchanged.
 - No closed rooms lost.
+
+### Hatched gardens, floor crops, joined wall thickness (2026-11-15)
+
+- **Hatched ground is outside.** Some plans (Foxtons, for example) draw gardens, terraces and driveways as light
+  cross-hatching right up to the house. The hatching is too pale to count as ink and isn't paper, so a white room
+  used to grow out across it, and the walls beside it went unfound. Hatching is now picked out in `smartTraceGeometry`
+  as an area of at least 1.5 m² where:
+  - light lines cover between a sixth and two-thirds of the ground;
+  - there is little dark ink;
+  - the lines change at least 1.8 times per row and per column across a 10 cm window. A pale fill's edge changes
+    only once, which rules out grey walls and watermark letters.
+
+  The patches are then grown by one window over pale ground to fill the holes between them. Hatching counts as
+  outside, like paper. On the 29 test plans it fires only on 11, 12, 13, 14 (Foxtons gardens) and 26 (a planted strip).
+- **One floor, one drawing.** In `refineFloorBoxes`, Claude's boxes could split a floor's drawing between them, so
+  that no box owned more than half of it. On plan 11 the second-floor box was drawn too tall and took the top of the
+  first floor. Now a floor-sized drawing that no box owns goes to the one overlapping box that has no drawing of its
+  own yet. Only plan 11's crops change.
+- **A joined wall keeps one thickness.** When two collinear pieces join, the result takes the longer piece's
+  thickness, not the larger of the two. Before, a 0.6 m stub could turn a whole rear wall 0.72 m thick.
+
+Results:
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Rooms closed, single-floor batch | 180/236 | 180/234 |
+| Kitchens within 25% | 17/18 | 18/19 |
+| Plan 11 through Trace the house | 4/6, 1/2, 5/5 | 6/6, 6/6, 5/5 |
+| Plan 11 stack fits (first / second floor) | 0.65 / 0.26 | 0.85 / 0.47 |
+
+Plan 11 read as one single-floor image regressed from 6/6 to 3/6: it leaks through the terrace corner.
+
+Still open on plan 13:
+- The rear bifolds and the front door get snapped onto the wrong lines.
+- A grey chimney pier is read as walls.

@@ -1014,6 +1014,45 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
   const median = a => { if (!a.length) return 0; const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length/2)]; };
   let mpp = median(roughRatios) || 10/Math.max(W, H); // metres per work pixel (a 10m-wide plan, failing all else)
   const M = m => m/mpp; // metres → work pixels
+  // Hatching: a garden, terrace or drive drawn as dense light lines (a cross-hatch) right up to the house. Its lines
+  // are too pale to be ink and it isn't paper, so a white room would grow out across it and the walls beside it go
+  // unfound. It's picked out as an area where light lines cover between a sixth and two-thirds of the ground (walls
+  // and coloured fills cover all of it, paper and a room's floor none, stair treads and tile grids far less), at least
+  // 1.5 m² of it together; then it's outside, like paper.
+  const hatch = new Uint8Array(N);
+  // A pale fill's edge is half covered too, but changes once across the window; hatching changes again and again,
+  // both across and down.
+  { const rr = Math.max(3, Math.round(M(0.1))), S = (W + 1)*(H + 1), I = new Int32Array(S), D = new Int32Array(S), TX = new Int32Array(S), TY = new Int32Array(S);
+    const lt = i => lum[i] < 236 && !isBg(i) ? 1 : 0;
+    for (let y = 0; y < H; y++){ let a = 0, b = 0, tx = 0, ty = 0; for (let x = 0; x < W; x++){ const i = y*W + x, l = lt(i), dk = lum[i] < SMART_INK_LUM ? 1 : 0; a += l; b += dk;
+      if (x > 0 && l !== lt(i - 1)) tx++; if (y > 0 && l !== lt(i - W)) ty++;
+      const o = (y + 1)*(W + 1) + x + 1, u = y*(W + 1) + x + 1;
+      I[o] = I[u] + a; D[o] = D[u] + b; TX[o] = TX[u] + tx; TY[o] = TY[u] + ty; } }
+    const sum = (T, x0, y0, x1, y1) => T[y1*(W + 1) + x1] - T[y0*(W + 1) + x1] - T[y1*(W + 1) + x0] + T[y0*(W + 1) + x0];
+    const cand = new Uint8Array(N);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){
+      const x0 = Math.max(0, x - rr), y0 = Math.max(0, y - rr), x1 = Math.min(W, x + rr + 1), y1 = Math.min(H, y + rr + 1), n = (x1 - x0)*(y1 - y0);
+      const dens = sum(I, x0, y0, x1, y1)/n, dark = sum(D, x0, y0, x1, y1)/n;
+      if (dens < 0.16 || dens > 0.66 || dark > 0.12) continue;
+      // changes per row across, per column down
+      if (sum(TX, x0, y0, x1, y1)/(y1 - y0) >= 1.8 && sum(TY, x0, y0, x1, y1)/(x1 - x0) >= 1.8) cand[y*W + x] = 1;
+    }
+    const seen = new Uint8Array(N), st = [], minA = M(1.22)*M(1.22);
+    for (let s0 = 0; s0 < N; s0++){
+      if (!cand[s0] || seen[s0]) continue;
+      const comp = []; seen[s0] = 1; st.push(s0);
+      while (st.length){ const i = st.pop(), x = i % W; comp.push(i);
+        for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) if (j >= 0 && j < N && cand[j] && !seen[j]){ seen[j] = 1; st.push(j); } }
+      if (comp.length >= minA) comp.forEach(i => { hatch[i] = 1; });
+    }
+    // the found patches grown a window's width over pale ground, to fill the gaps between them (never over ink)
+    for (let pass = 0; pass < rr; pass++){
+      const add = [];
+      for (let i = 0; i < N; i++){ if (hatch[i] || lum[i] < SMART_INK_LUM) continue; const x = i % W;
+        if ((x > 0 && hatch[i - 1]) || (x < W - 1 && hatch[i + 1]) || (i >= W && hatch[i - W]) || (i < N - W && hatch[i + W])) add.push(i); }
+      add.forEach(i => { hatch[i] = 1; });
+    }
+  }
 
   // each room's fill colour: the commonest non-line colour in the middle of its box
   rooms.forEach(r=>{
@@ -1035,6 +1074,7 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
     return (x <= 0 || dist2(j - 1, c) <= 144) + (x >= W - 1 || dist2(j + 1, c) <= 144) + (y <= 0 || dist2(j - W, c) <= 144) + (y >= H - 1 || dist2(j + W, c) <= 144) >= 3;
   };
   const ownColour = (j, r, x, y)=>{
+    if (hatch[j]) return false;
     const d = dist2(j, r.colour);
     if (!r.white && !flat(j, x, y)) return false;
     if (d > SMART_FILL_TOL*SMART_FILL_TOL) return false;
@@ -1087,7 +1127,7 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
       const nx = x + dx, ny = y + dy;
       if (nx < r.x0 || nx > r.x1 || ny < r.y0 || ny > r.y1) continue;
       const j = ny*W + nx;
-      if (label[j] || ink(j)) continue;
+      if (label[j] || ink(j) || hatch[j]) continue;
       label[j] = id; queue[qt++] = j;
     }
   }
@@ -1148,7 +1188,7 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
   // opening, a window's glass, a hob drawn against it — is enclosed, and counts as part of the wall.
   const outPaper = new Uint8Array(N);
   { const q = new Int32Array(N); let qh = 0, qt = 0;
-    const push = i => { if (!outPaper[i] && !label[i] && isBg(i)){ outPaper[i] = 1; q[qt++] = i; } };
+    const push = i => { if (!outPaper[i] && !label[i] && (isBg(i) || hatch[i])){ outPaper[i] = 1; q[qt++] = i; } };
     for (let x = 0; x < W; x++){ push(x); push((H - 1)*W + x); }
     for (let y = 0; y < H; y++){ push(y*W); push(y*W + W - 1); }
     while (qh < qt){ const i = q[qh++], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W); }
@@ -1595,7 +1635,7 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
   const segOut = segs.map(sg => ({...(sg.o === "v" ? {x1: sg.c*k, y1: sg.s0*k, x2: sg.c*k, y2: sg.s1*k} : {x1: sg.s0*k, y1: sg.c*k, x2: sg.s1*k, y2: sg.c*k}), tM: sg.t*mpp, outer: sg.outer}))
     .concat(diags.map(d => ({x1: d.x1*k, y1: d.y1*k, x2: d.x2*k, y2: d.y2*k, tM: d.t*mpp, outer: false})));
   return {
-    mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, ratiosPx: ratios.map(v => v*f), work: {W, H, f, label, rooms, segs, crossings, log},
+    mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, ratiosPx: ratios.map(v => v*f), work: {W, H, f, label, rooms, segs, crossings, log, hatch},
     walls: segOut,
     doors: doors.map(d => ({x: d.x*k, y: d.y*k, rot: d.o === "v" ? Math.PI/2 : 0, lenM: d.len*mpp, tM: d.t*mpp, kind: d.kind, hinge: d.hinge, side: d.side})),
     windows: windows.map(w => ({...(w.o === "v" ? {x1: w.c*k, y1: w.a*k, x2: w.c*k, y2: w.b*k} : {x1: w.a*k, y1: w.c*k, x2: w.b*k, y2: w.c*k}), tM: w.t*mpp, bowM: w.bow*mpp, o: w.o})),
@@ -2088,7 +2128,7 @@ function closeRoomShells(src, res, ai){
               // outer when what's past it, along the stretch, is mostly no room at all
               let none = 0; seg.forEach(p => { const d = Math.round(face + t + 3), X = vert ? c + dir*d : p.a, Y = vert ? p.a : c + dir*d;
                 const id = X >= 0 && Y >= 0 && X < W && Y < H ? L[Y*W + X] : 0; if (!id || outsideIds.has(id)) none++; });
-              added.push({...w, tM: Math.max(0.05, t*mppW), outer: none > seg.length/2, closing: true});
+              added.push({...w, tM: Math.max(0.05, t*mppW), outer: none > seg.length/2, closing: true, src: "edge"});
             }
             seg = [];
           };
@@ -2123,7 +2163,7 @@ function closeRoomShells(src, res, ai){
         const ts = run.map(p => p.t).sort((p, q) => p - q), t = ts[ts.length >> 1];
         const at = s => ({x: ux*s + nx*best.rho, y: uy*s + ny*best.rho}), A = at(s0 - t/f/2), B = at(s1 + t/f/2);
         if (inkCover(A.x, A.y, B.x, B.y) < 0.7) continue;
-        added.push({x1: A.x, y1: A.y, x2: B.x, y2: B.y, tM: Math.max(0.05, t*mppW), outer: false, closing: true});
+        added.push({x1: A.x, y1: A.y, x2: B.x, y2: B.y, tM: Math.max(0.05, t*mppW), outer: false, closing: true, src: "slant"});
       }
     }
   }
@@ -2158,7 +2198,7 @@ function closeRoomShells(src, res, ai){
         continue;
       }
       const q1 = {x: a.x1 + ga.ux*sb[1], y: a.y1 + ga.uy*sb[1]};
-      walls[i] = {...a, x2: q1.x, y2: q1.y, tM: Math.max(a.tM, b.tM), outer: a.outer || b.outer};
+      walls[i] = {...a, x2: q1.x, y2: q1.y, tM: ga.L >= gb.L ? a.tM : b.tM, outer: a.outer || b.outer, src: (a.src || "t") + "+" + (b.src || "t")}; // one wall, one thickness: the longer piece's
       walls.splice(j, 1); merged = true;
     }
   }
@@ -2373,6 +2413,17 @@ function refineFloorBoxes(img, regions){
     let best = -1, most = 0;
     boxes.forEach((b, k)=>{ const ov = Math.max(0, Math.min(cc.x1 + 1, b.x1) - Math.max(cc.x0, b.x0))*Math.max(0, Math.min(cc.y1 + 1, b.y1) - Math.max(cc.y0, b.y0)); if (ov > most){ most = ov; best = k; } });
     if (best >= 0 && most >= 0.5*a) owner[cc.id] = best;
+  });
+  // A whole floor's drawing that Claude's boxes split between them (a box drawn too tall takes in the top of the
+  // floor below it) belongs to no box by half. One floor is one drawing: a box that already has a floor-sized drawing
+  // of its own doesn't want another, so the drawing goes to the one box overlapping it that has none yet.
+  const floorSized = cc => (cc.x1 - cc.x0) + (cc.y1 - cc.y0) > 0.08*(W + H);
+  const hasDrawing = boxes.map((b, k) => comps.some(cc => owner[cc.id] === k && floorSized(cc)));
+  comps.filter(cc => owner[cc.id] < 0 && floorSized(cc)).sort((p, q) => q.n - p.n).forEach(cc=>{
+    const a = (cc.x1 - cc.x0 + 1)*(cc.y1 - cc.y0 + 1);
+    const want = boxes.map((b, k) => ({k, ov: Math.max(0, Math.min(cc.x1 + 1, b.x1) - Math.max(cc.x0, b.x0))*Math.max(0, Math.min(cc.y1 + 1, b.y1) - Math.max(cc.y0, b.y0))}))
+      .filter(o => o.ov >= 0.1*a && !hasDrawing[o.k]);
+    if (want.length === 1){ owner[cc.id] = want[0].k; hasDrawing[want[0].k] = true; }
   });
   return regions.map((r, k)=>{
     const mine = comps.filter(cc => owner[cc.id] === k && cc.n >= 4);
