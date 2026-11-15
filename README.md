@@ -691,6 +691,12 @@ The 3D view is also an editor: without Space held, a press picks things rather t
 - The strip of brickwork across a curved bay's mouth runs on half its thickness past each end, closing small gaps where the bay and the walls either side weren't traced to meet exactly.
 - A wall's end where it meets a window counts as the window's jamb at a shallow turn (`reveal` in `wallEndExtM`, turn under 60°; a square corner beside a window is still the corner's outside face), so it takes the room's finish. Before, looking through a curved bay's glass showed brick on its sides.
 
+## Paint picker scroll, styles keep their colours, a steady 3D window (2026-11-15)
+
+- **Paint picker keeps its place:** the paint controls are rebuilt whenever what they show changes, including the colour just picked, and that reset every scroll box. `buildPaintControls` now remembers the scroll of each box in it and of the panel round it, and puts them back after the rebuild. It does this only when the same grid redraws; a different brand, kind or scope starts at the top.
+- **Switching style keeps your colours** (`carriedFinishes`). Each colour picked for an item carries over to the new style wherever that style has the same part in a palette containing the colour. Bedding carries to every bed. A wood frame colour carries between the wooden beds, not onto the iron one. A window's paint colour carries between the painted styles, not to Crittall. Anything else starts in the new style's own colour. Glass, door frames and stair rails live on the item, so they already carried over. The style thumbnails show each style as it would look with your colours carried over.
+- **The 3D window no longer moves with the plan:** `#view3d` used to sit inside `#canvasWrap`, the plan's `overflow:auto` scroll area. A trackpad pinch over the 3D view zoomed its camera, then bubbled on to the plan's ctrl+wheel zoom, which resized and scrolled the plan and carried the 3D window off with it. The 3D window is now a sibling in `#planArea`, a non-scrolling layer over the plan, and its canvas's wheel handler stops the event going any further.
+
 ## Installable app and updates (2026-10-24)
 
 Served over https (GitHub Pages), the planner installs as an app from Edge

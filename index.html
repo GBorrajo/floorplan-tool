@@ -112,6 +112,7 @@
   #selPanel{border-top:1px solid var(--panel-border); padding-top:12px; display:none; flex-direction:column; gap:8px;}
   #selPanel.show{display:flex;}
   #hint{font-size:11.5px; color:var(--text-dim); line-height:1.4; background:var(--field-bg); border:1px solid var(--panel-border); border-radius:6px; padding:8px;}
+  #planArea{flex:1; position:relative; min-width:0; display:flex; overflow:hidden;}
   #canvasWrap{flex:1; position:relative; background:#111317; min-width:0; overflow:auto;}
   canvas{display:block; width:100%; height:100%; cursor:default;}
   #fileInput, #loadInput{display:none;}
@@ -585,8 +586,10 @@
     </footer>
   </div>
 
+  <div id="planArea"> <!-- the plan, and the 3D window floating over it: a sibling, so the plan scrolling or zooming never moves it -->
   <div id="canvasWrap">
     <canvas id="cv"></canvas>
+  </div>
     <div id="view3d" hidden>
       <div id="view3dBar">
         <button data-v3mode="walk" title="Look through the camera on the plan">🚶 Walk</button>
@@ -11210,7 +11213,7 @@ const thumbCache = new Map();
 // A window (a wall object) as something the thumbnail renderer can size: wCm along it, thicknessCm across.
 function windowStyleProxy(w){ return {...w, wCm: worldToCm(polylineCumLengths(windowCenterlinePoints(w)).at(-1)), dCm: w.thicknessCm || WINDOW_THICKNESS_CM}; }
 function styleThumb(b, styleKey, extra = null){
-  const probe = {...b, style: styleKey, finishes: b.style === styleKey ? b.finishes : undefined, ...(extra || {})};
+  const probe = {...b, style: styleKey, finishes: carriedFinishes(b, styleKey), ...(extra || {})}; // as it'd look switched to it
   const key = JSON.stringify([b.type, styleKey, probe.finishes || null, probe.worktop || "", probe.glass || "", probe.frameStyle || "", b.doorType || "", Math.round(b.wCm/10), Math.round(b.dCm/10), b.cornerSide || 0, b.under || "", probe.railL || "", probe.railR || "", probe.runner || "", b.direction || "", b.path || 0, b.tall || "", b.sinkX, b.hobX, b.hob || "", b.fit || 0,
     b.type.startsWith("bench") ? benchShape(b).length : 0]);
   if (thumbCache.has(key)) return thumbCache.get(key);
@@ -11319,10 +11322,28 @@ function updateStylePanel(){
   match.textContent = t.fam === "kitchen" ? `Use on the whole kitchen (${all.length} units)` : `Use on all ${all.length} ${STYLE_FAMILY_PLURAL[t.fam]} on this floor`;
   match.onclick = ()=> matchStyleToAll(b, all);
 }
+// Switching style keeps what was picked for this item where the new style can have it: each chosen colour whose
+// part the new style has, in a colour that part comes in there (bedding, a frame colour, a window's paint). The
+// rest start in the new style's own colours. (Glass, door frames and the like live on the item itself, so they
+// carry over anyway.)
+function carriedFinishes(b, key){
+  const fam = styleFamily(b.type), st = fam && fam.styles.find(s => s.key === key);
+  if (!st || !b.finishes) return undefined;
+  if (b.style === key) return b.finishes;
+  const out = {};
+  fam.slots.forEach(sl=>{
+    const hex = b.finishes[sl.key];
+    if (!hex) return;
+    if (sl.key === "top" && b.worktop){ out.top = hex; return; } // a kitchen's worktop is its own choice
+    const pal = slotPalette(st, sl) || [];
+    if (pal.some(([, h]) => h.toLowerCase() === hex.toLowerCase())) out[sl.key] = hex;
+  });
+  return Object.keys(out).length ? out : undefined;
+}
 function setFurnitureStyle(boxes, key){
   pushUndoSnapshot();
   boxes.forEach(b=>{
-    if (b.style !== key){ b.style = key; delete b.finishes; } // a new style starts in its own colours
+    if (b.style !== key){ const keep = carriedFinishes(b, key); b.style = key; if (keep) b.finishes = {...keep}; else delete b.finishes; }
     rememberStyle(b);
   });
   scheduleAutosave(); updateStylePanel(); render();
@@ -12719,7 +12740,27 @@ function paintsInUse(){
   f.walls.forEach(w => Array.isArray(w.paint) && w.paint.forEach(p => set.add(p.color)));
   return [...set];
 }
+// Rebuilt whenever what it shows changes — the colour just picked included — so every scrolled box in it (and the
+// panel round it) is put back where it was: picking colour after colour down a long card doesn't jump to the top.
 function buildPaintControls(el){
+  const boxes = [], ancestors = [];
+  for (let p = el.parentElement; p; p = p.parentElement) if (p.scrollTop) ancestors.push([p, p.scrollTop]);
+  el.querySelectorAll("*").forEach((n, i) => { if (n.scrollTop) boxes.push([n.className + "|" + i, n.scrollTop]); });
+  const before = el.dataset.sig, layout = JSON.stringify([paintUI.coll, paintUI.kind, paintUI.extKind, paintUI.paperBrand, wallPaintScope, extPaintScope]);
+  const sameGrid = el.dataset.layout === layout; // a different brand or kind starts at the top
+  el.dataset.layout = layout;
+  buildPaintControlsNow(el);
+  if (el.dataset.sig === before || !sameGrid) return;
+  ancestors.forEach(([p, top]) => { p.scrollTop = top; });
+  if (!boxes.length) return;
+  const all = [...el.querySelectorAll("*")];
+  boxes.forEach(([key, top])=>{
+    const i = +key.slice(key.lastIndexOf("|") + 1), cls = key.slice(0, key.lastIndexOf("|"));
+    const n = all[i] && all[i].className === cls ? all[i] : all.find(x => x.className === cls);
+    if (n) n.scrollTop = top;
+  });
+}
+function buildPaintControlsNow(el){
   const t = paintTarget();
   if (!t){ el.innerHTML = ""; el.dataset.sig = ""; return; }
   const effective = t.scope, used = paintsInUse();
@@ -13064,7 +13105,7 @@ function v3Wire(canvas){
   canvas.addEventListener("pointerup", up); canvas.addEventListener("pointercancel", up);
   canvas.addEventListener("contextmenu", e => e.preventDefault());
   canvas.addEventListener("wheel", e=>{
-    e.preventDefault();
+    e.preventDefault(); e.stopPropagation(); // the plan underneath never zooms or scrolls from it
     // a trackpad pinch arrives as a wheel event with ctrlKey: in the walk view it widens / narrows the view
     if (v3.mode === "walk"){
       if (e.ctrlKey) v3SetFov(v3Fov(ensurePlanCamera(v3Floor()))*Math.exp(e.deltaY*0.005));
