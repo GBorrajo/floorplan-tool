@@ -153,7 +153,8 @@
   .v3Scope button{flex:1; font-size:11.5px; padding:4px 8px;}
   .v3Scope button.active{background:var(--accent); color:var(--accent-text); border-color:var(--accent);}
   button.plainChip{background:repeating-linear-gradient(135deg, #f1eee8 0 5px, #d9d4ca 5px 7px) !important;}
-  .paintCurrent{display:flex; gap:6px; align-items:center; font-size:11.5px; font-weight:600;}
+  .paintBrushHint{font-size:11.5px;line-height:1.35;padding:6px 8px;margin:4px 0 6px;border-radius:6px;background:var(--accent-soft, rgba(79,140,255,0.14));color:var(--text);}
+.paintCurrent{display:flex; gap:6px; align-items:center; font-size:11.5px; font-weight:600;}
   .paintDot{width:16px; height:16px; border-radius:50%; border:1px solid rgba(255,255,255,.35); flex:0 0 auto;}
   .paintUsed{display:flex; flex-wrap:wrap; gap:3px; align-items:center; font-size:10.5px; color:var(--text-dim);}
   .paintUsed span{margin-right:3px;}
@@ -731,6 +732,11 @@ const FURNITURE_TYPES = [
   // up/down indicator arrow is a separate `direction` field, defaulted below
   // and flipped from the selection panel — see fldStairDirWrap.
   {key:"stairs",     label:"Staircase",      wCm:100, dCm:280, color:"#a67c52", category:"Structure", direction:"up"},
+  // Garden & outside: a climber stands with its back to a wall (an outside one, usually) and grows up it; shrubs and
+  // hedges stand anywhere. Each has its own looks — see the climber and shrub style families.
+  {key:"climber",    label:"Climbing plant", wCm:150, dCm:20,  color:"#4f7a3a", category:"Garden & outside"},
+  {key:"shrub",      label:"Shrub / bush",   wCm:80,  dCm:80,  color:"#5a8a45", category:"Garden & outside"},
+  {key:"hedge",      label:"Hedge",          wCm:250, dCm:60,  color:"#3f6e35", category:"Garden & outside"},
 ];
 // Rugs are ordinary furniture boxes (type "rug" / "ruground") with two
 // special rules: they always draw — and hit-test — beneath every other box
@@ -6797,6 +6803,7 @@ window.addEventListener("keydown", (e)=>{
     if (d){ nudgeFloorBelow(d[0], d[1], e.shiftKey ? 1 : 5); e.preventDefault(); return; }
   }
   if (e.key==="Escape" && (stackDragMode || stackPick)){ stackDragMode = false; stackPick = null; stackNote = ""; renderStackPanel(); render(); }
+  if (e.key==="Escape" && extPaintScope === "brush"){ extPaintScope = "wall"; extBrush = undefined; updateV3Fields(); if (v3) v3Draw(); return; }
   if (e.key==="Escape"){
     if (placing){
       if (placing.kind==="door") activeFloor().boxes = activeFloor().boxes.filter(x=>x.id!==placing.id);
@@ -8491,12 +8498,12 @@ const FURNITURE_ICONS = {
   kitchen:"🗄", sink:"🚰", cooker:"🍳", fridge:"🧊", dishwasher:"🫧", washer:"🧺", dryer:"🌀", washerstack:"🧺", oven:"⏲", beddbl:"🛏", bedsgl:"🛏", wardrobe:"🚪", drawers:"🗃",
   bedside:"🕯", toilet:"🚽", bath:"🛁", shower:"🚿", basin:"🚰", desk:"🖥", officechair:"💺", radiator:"♨", stairs:"🪜",
   rug:"🟫", ruground:"🟤", rugrunner:"▬", island:"🏝", wallunit:"🗄", tallunit:"🚪", hob:"🔥", ovenbuiltin:"⏲", range:"🍳", bench:"🛋", benchcorner:"⌐",
-  fridgeint:"🧊", fridgeunder:"🧊", freezerunder:"❄",
+  fridgeint:"🧊", fridgeunder:"🧊", freezerunder:"❄", climber:"🌿", shrub:"🌳", hedge:"🌲",
 };
 // Things that stand with their back against a wall (back = local −y, the
 // side every icon draws its backrest/headboard/worktop-back on) — dropped
 // near a wall, these turn and slide to sit flush against it.
-const WALL_BACKED_TYPES = new Set(["fridgeunder","freezerunder","wallunit","tallunit","hob","ovenbuiltin","range","bench","benchcorner","kitchencorner","dryer","washerstack","oven","tvunit","bookshelf","fireplace","kitchen","sink","cooker","fridge","dishwasher","washer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","basin","desk","radiator","bath"]);
+const WALL_BACKED_TYPES = new Set(["climber","fridgeunder","freezerunder","wallunit","tallunit","hob","ovenbuiltin","range","bench","benchcorner","kitchencorner","dryer","washerstack","oven","tvunit","bookshelf","fireplace","kitchen","sink","cooker","fridge","dishwasher","washer","beddbl","bedsgl","wardrobe","drawers","bedside","toilet","basin","desk","radiator","bath"]);
 const WALL_BACK_REACH_CM = 50; // dropped within this much of a wall (beyond the item's own half-depth) = put it against the wall
 const FACES_AWAY_TYPES = new Set(["sofa","armchair"]); // turn to face away from a nearby wall, but stay exactly where dropped
 const ROOM_ANGLE_REACH_CM = 400; // outside any enclosed room, walls this close set which way free-standing furniture squares up
@@ -10304,7 +10311,7 @@ const FINISH_NAMES = new Map(Object.values(FINISH_PALETTES).flat().map(([n, h]) 
 const STYLE_FAMILY_OF = {sofa:"sofa", armchair:"sofa", beddbl:"bed", bedsgl:"bed", dining:"table", dininground:"roundtable", diningchair:"chair",
   coffee:"coffee", desk:"desk", officechair:"officechair", tvunit:"tvunit", bookshelf:"shelf", wardrobe:"wardrobe", drawers:"cabinet", bedside:"cabinet",
   kitchen:"kitchen", kitchencorner:"kitchen", island:"kitchen", wallunit:"kitchen", tallunit:"kitchen", hob:"kitchen", ovenbuiltin:"kitchen", range:"range", bench:"bench", benchcorner:"bench", sink:"kitchen", dishwasher:"kitchen", fridgeunder:"kitchen", freezerunder:"kitchen", bath:"bath", basin:"basin", toilet:"toilet", fireplace:"fireplace",
-  fridge:"fridge", radiator:"radiator", door:"door", window:"window", stairs:"stairs"};
+  fridge:"fridge", radiator:"radiator", door:"door", window:"window", stairs:"stairs", climber:"climber", shrub:"shrub", hedge:"shrub"};
 // slots: what can be recoloured, with a default palette (a style can swap it, e.g. a metal bed frame).
 const FURNITURE_STYLES = {
   sofa: {slots:[{key:"main", label:"Fabric", palette:"fabric"}], styles:[
@@ -10410,13 +10417,36 @@ const FURNITURE_STYLES = {
     {key:"contemporary", label:"Contemporary", desc:"contemporary flush front door with a glazed strip and a long bar handle", main:"#3a3c40", frame:"#3a3c40", handle:"#a9adb2", glass:true, palettes:{frame:"metal"}},
     {key:"oakfront", label:"Oak grooved", desc:"solid oak front door with horizontal grooves", main:"#b08457", frame:"#b08457", handle:"#1f2022"},
   ]},
-  window: {slots:[{key:"main", label:"Frame", palette:"door"}], defaultFor: () => "casement", extras: [{key:"glass", label:"Glass"}], styles:[
+  window: {slots:[{key:"main", label:"Frame", palette:"door"},
+      {key:"cover", label:"Curtains / blind", palette:"fabric", default:"#e3d9c3", when: b => COVER_FABRIC.has(b.covering)},
+      {key:"slats", label:"Blind / shutters", palette:"door", default:"#f3f1ec", when: b => COVER_SLATS.has(b.covering)}],
+    defaultFor: () => "casement", extras: [{key:"glass", label:"Glass"}, {key:"covering", label:"Curtains & blinds"}], styles:[
     {key:"casement", label:"Casement", desc:"casement window", main:"#f3f1ec"},
     {key:"sash", label:"Georgian sash", desc:"Georgian six-over-six sash window", main:"#f3f1ec"},
     {key:"vsash", label:"Victorian sash", desc:"Victorian two-over-two sash window", main:"#f3f1ec"},
     {key:"crittall", label:"Crittall", desc:"black steel Crittall-style window", main:"#1f2022", palettes:{main:"metal"}},
     {key:"picture", label:"Picture", desc:"large picture window", main:"#3a3c40"},
     {key:"leaded", label:"Leaded cottage", desc:"leaded-light cottage window", main:"#f3f1ec"},
+  ]},
+  // climbing plants up a wall (see v3BuildClimber); `flower` only on those that flower
+  climber: {slots:[{key:"flower", label:"Flowers", palette:"fabric", when: (b, st) => !!st.flowers}], styles:[
+    {key:"ivy", label:"Ivy", desc:"ivy-covered wall", leaf:["#2f4a26", "#3b5a2e", "#24391e", "#46663a"], leafSize:1},
+    {key:"virginia", label:"Virginia creeper", desc:"Virginia creeper in autumn red", leaf:["#8e2a1e", "#a8432a", "#6e2418", "#b8612f", "#5d6b2e"], leafSize:1.3},
+    {key:"wisteria", label:"Wisteria", desc:"wisteria in flower", leaf:["#5d7a3a", "#6f8c45", "#4f6a32"], leafSize:0.9, flowers:"racemes", flower:"#b6a3c9"},
+    {key:"rose", label:"Climbing rose", desc:"climbing rose", leaf:["#36552c", "#44663a", "#2c4824"], leafSize:0.8, flowers:"roses", flower:"#c78f8c"},
+    {key:"jasmine", label:"Jasmine", desc:"star jasmine", leaf:["#28401f", "#33502a", "#1f331a"], leafSize:0.6, flowers:"stars", flower:"#f6f5f1"},
+    {key:"clematis", label:"Clematis", desc:"clematis in flower", leaf:["#47663a", "#557545", "#3a5630"], leafSize:0.8, flowers:"clematis", flower:"#5a3350"},
+  ]},
+  // shrubs, bushes and hedges (see v3BuildShrub); a hedge is the same family, starting as a clipped hedge
+  shrub: {slots:[{key:"flower", label:"Flowers", palette:"fabric", when: (b, st) => !!st.flowers}], extras: [{key:"pot", label:"Planted"}],
+    defaultFor: b => b.type === "hedge" ? "hedge" : "round", styles:[
+    {key:"round", label:"Evergreen shrub", desc:"rounded evergreen shrub", leaf:["#3b5a2e", "#4a6b38", "#2f4a26"], shape:"mound", hM:0.9},
+    {key:"box", label:"Box ball", desc:"clipped box ball", leaf:["#3f5f2a", "#4d7033", "#365224"], shape:"ball", hM:0.6, clipped:true},
+    {key:"lavender", label:"Lavender", desc:"lavender bush", leaf:["#8a9a7e", "#9aa88f", "#7d8c72"], shape:"low", hM:0.55, flowers:"spikes", flower:"#b6a3c9"},
+    {key:"hydrangea", label:"Hydrangea", desc:"hydrangea in flower", leaf:["#3e6332", "#4c743d", "#335428"], shape:"mound", hM:1.0, flowers:"heads", flower:"#9dbfd9"},
+    {key:"conifer", label:"Conifer", desc:"conical conifer", leaf:["#24402a", "#2e4f33", "#1d3522"], shape:"cone", hM:2.0, clipped:true},
+    {key:"hedge", label:"Clipped hedge", desc:"neatly clipped hedge", leaf:["#2f5326", "#3b6230", "#26451f"], shape:"hedge", hM:1.4, clipped:true},
+    {key:"laurel", label:"Laurel hedge", desc:"glossy laurel hedge", leaf:["#2a4a22", "#3a5f2c", "#203c1b"], shape:"hedge", hM:1.8, leafSize:1.6},
   ]},
   range: {slots:[{key:"main", label:"Enamel", palette:"paint"}], styles:[
     {key:"range", label:"Range cooker", desc:"traditional range cooker", main:"#27344d"},
@@ -10482,12 +10512,16 @@ Object.values(FURNITURE_STYLES).forEach(fam => fam.styles.forEach(st => fam.slot
 })));
 const STYLE_FAMILY_PLURAL = {sofa:"sofas and armchairs", bed:"beds", table:"dining tables", roundtable:"round tables", chair:"dining chairs", coffee:"coffee tables",
   desk:"desks", officechair:"desk chairs", tvunit:"TV units", shelf:"bookshelves", wardrobe:"wardrobes", cabinet:"chests and bedsides", bath:"baths",
-  basin:"basins", toilet:"toilets", fireplace:"fireplaces", fridge:"fridges", radiator:"radiators", bench:"benches", range:"range cookers", door:"doors", window:"windows", stairs:"staircases"};
+  basin:"basins", toilet:"toilets", fireplace:"fireplaces", fridge:"fridges", radiator:"radiators", bench:"benches", range:"range cookers", door:"doors", window:"windows", stairs:"staircases", climber:"climbing plants", shrub:"shrubs and hedges"};
 const GLASS_TYPES = [["clear","Clear"], ["frosted","Frosted"], ["reeded","Reeded"], ["tinted","Tinted"], ["stained","Stained glass"]];
 const DOOR_FRAMES = [["square","Square"], ["moulded","Victorian moulded"], ["chunky","Chunky"], ["none","None"]];
 const STAIR_RAILS = [["auto","Auto"], ["banister","Banister"], ["wall","Wall rail"], ["none","None"]];
 const STAIR_CARPET = [["none","Bare"], ["on","Runner"], ["full","Fully carpeted"]];
-const STYLE_EXTRA_OPTIONS = {glass: GLASS_TYPES, frameStyle: DOOR_FRAMES, railL: STAIR_RAILS, railR: STAIR_RAILS, runner: STAIR_CARPET};
+// Inside a window: curtains (to the floor, or to the sill) on a pole above it, or a blind or shutters across it.
+const WINDOW_COVERINGS = [["none","None"], ["curtains","Long curtains"], ["sillcurtains","Sill curtains"], ["roman","Roman blind"], ["roller","Roller blind"], ["venetian","Venetian"], ["shutters","Shutters"]];
+const COVER_FABRIC = new Set(["curtains", "sillcurtains", "roman", "roller"]), COVER_SLATS = new Set(["venetian", "shutters"]);
+const PLANT_POTS = [["ground","In the ground"], ["pot","In a pot"]];
+const STYLE_EXTRA_OPTIONS = {glass: GLASS_TYPES, frameStyle: DOOR_FRAMES, railL: STAIR_RAILS, railR: STAIR_RAILS, runner: STAIR_CARPET, covering: WINDOW_COVERINGS, pot: PLANT_POTS};
 function setStyleExtra(items, key, value){
   pushUndoSnapshot();
   items.forEach(b => { b[key] = value; if (!b.style) b.style = furnitureStyleOf(b).key; });
@@ -10528,7 +10562,7 @@ function furnitureStyleOf(b){
 function furnitureFinishes(b, st = furnitureStyleOf(b)){
   const fam = styleFamily(b.type), out = {};
   if (!fam || !st) return out;
-  fam.slots.forEach(sl => { out[sl.key] = (b.finishes && b.finishes[sl.key]) || st[sl.key] || "#9aa0a8"; });
+  fam.slots.forEach(sl => { out[sl.key] = (b.finishes && b.finishes[sl.key]) || st[sl.key] || sl.default || "#9aa0a8"; });
   return out;
 }
 function slotPalette(st, slot){ return FINISH_PALETTES[(st.palettes && st.palettes[slot.key]) || slot.palette]; }
@@ -11202,9 +11236,200 @@ function v3BuildStyled(g, b, W, D, H, cut){
     case "fireplace": v3BuildFireplace(g, W, D, k, f, H); break;
     case "fridge": v3BuildFridge(g, W, D, k, f); break;
     case "radiator": v3BuildRadiator(g, W, D, k, f); break;
+    case "climber": v3BuildClimber(g, b, W, D, st, f); break;
+    case "shrub": v3BuildShrub(g, b, W, D, st, f); break;
     default: return false;
   }
   return true;
+}
+
+// --- plants. Leaves and flowers are drawn on canvases (seeded, so the same plant looks the same every time).
+function seededRand(seed){ let a = seed >>> 0; return ()=>{ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0)/4294967296; }; }
+function hashStr(str){ let h = 2166136261; for (let i = 0; i < str.length; i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function drawFlower(g, kind, x, y, r, col, rnd){
+  if (kind === "roses"){
+    g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, Math.PI*2); g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.25)"; g.lineWidth = Math.max(1, r*0.18); g.beginPath(); g.arc(x, y, r*0.55, 0, Math.PI*1.6); g.stroke();
+  } else if (kind === "stars" || kind === "clematis"){
+    const n = kind === "stars" ? 5 : 6, pr = kind === "stars" ? r : r*1.5;
+    g.fillStyle = col;
+    for (let i = 0; i < n; i++){ const a = i/n*Math.PI*2 + rnd(); g.beginPath(); g.ellipse(x + Math.cos(a)*pr*0.5, y + Math.sin(a)*pr*0.5, pr*0.5, pr*0.22, a, 0, Math.PI*2); g.fill(); }
+    g.fillStyle = kind === "stars" ? "#e8d27a" : "#efe0a8"; g.beginPath(); g.arc(x, y, pr*0.18, 0, Math.PI*2); g.fill();
+  } else if (kind === "racemes"){ // wisteria: a hanging cone of little florets
+    const len = r*7;
+    for (let i = 0; i < 26; i++){ const t = i/26, w = (1 - t)*r*1.1; g.fillStyle = shadeHex(col, (rnd() - 0.5)*0.25 - t*0.15); g.beginPath(); g.arc(x + (rnd() - 0.5)*w*2, y + t*len, r*0.32, 0, Math.PI*2); g.fill(); }
+  } else if (kind === "heads"){ // hydrangea: a big dome of florets
+    for (let i = 0; i < 30; i++){ const a = rnd()*Math.PI*2, d = Math.sqrt(rnd())*r; g.fillStyle = shadeHex(col, (rnd() - 0.5)*0.3); g.beginPath(); g.arc(x + Math.cos(a)*d, y + Math.sin(a)*d, r*0.22, 0, Math.PI*2); g.fill(); }
+  } else if (kind === "spikes"){ // lavender: an upright spike
+    for (let i = 0; i < 7; i++){ g.fillStyle = shadeHex(col, -i*0.04); g.beginPath(); g.ellipse(x, y - i*r*0.5, r*0.3, r*0.4, 0, 0, Math.PI*2); g.fill(); }
+  }
+}
+function shadeHex(hex, amt){ // lighter (+) or darker (−), -1..1
+  const n = parseInt(hex.slice(1), 16), c = [n >> 16, n >> 8 & 255, n & 255].map(v => Math.max(0, Math.min(255, Math.round(amt > 0 ? v + (255 - v)*amt : v*(1 + amt)))));
+  return "#" + c.map(v => v.toString(16).padStart(2, "0")).join("");
+}
+function drawLeaf(g, x, y, sz, ang, col){
+  g.fillStyle = col; g.beginPath(); g.ellipse(x, y, sz, sz*0.6, ang, 0, Math.PI*2); g.fill();
+  g.strokeStyle = "rgba(0,0,0,0.18)"; g.lineWidth = Math.max(0.6, sz*0.08); g.beginPath(); g.moveTo(x - Math.cos(ang)*sz*0.8, y - Math.sin(ang)*sz*0.8); g.lineTo(x + Math.cos(ang)*sz*0.8, y + Math.sin(ang)*sz*0.8); g.stroke();
+}
+// A climber's leaves, one layer: transparent outside its outline — narrow at the root, spreading out up the wall.
+const climberTexes = new Map();
+function climberTexture(st, f, W, Hh, layer){
+  const key = JSON.stringify([st.key, f.flower, Math.round(W*10), Math.round(Hh*10), layer]);
+  if (climberTexes.has(key)) return climberTexes.get(key);
+  const ppm = Math.min(220, 2048/Math.max(W, Hh)), cw = Math.max(32, Math.round(W*ppm)), ch = Math.max(32, Math.round(Hh*ppm));
+  const c = document.createElement("canvas"); c.width = cw; c.height = ch;
+  const g = c.getContext("2d"), rnd = seededRand(hashStr(key)), edge = seededRand(hashStr(st.key + Math.round(W*10)));
+  // the outline: a ragged fan, the same for every layer
+  const prof = Array.from({length: 24}, () => 0.8 + edge()*0.35);
+  const inside = (u, v)=>{ // u across 0..1, v up 0..1
+    const half = (0.3 + 0.7*Math.pow(v, 0.45))*0.5*prof[Math.min(23, Math.floor(v*24))];
+    return Math.abs(u - 0.5) < half && v < 0.97 - (1 - prof[Math.floor(u*23.99)])*0.4;
+  };
+  // stems from the root
+  g.strokeStyle = "#5a4632"; g.lineCap = "round";
+  for (let i = 0; i < 9; i++){
+    g.lineWidth = Math.max(1.5, ppm*0.012*(1 - i/12)); g.beginPath();
+    let x = cw/2, y = ch, a = -Math.PI/2 + (rnd() - 0.5)*1.4;
+    g.moveTo(x, y);
+    for (let j = 0; j < 30; j++){ a += (rnd() - 0.5)*0.4; x += Math.cos(a)*ch/34; y += Math.sin(a)*ch/34; if (!inside(x/cw, 1 - y/ch)) break; g.lineTo(x, y); }
+    g.stroke();
+  }
+  const sz = ppm*0.045*(st.leafSize || 1), n = Math.round(cw*ch/(sz*sz)*(layer ? 0.45 : 0.75));
+  for (let i = 0; i < n; i++){
+    const u = rnd(), v = rnd();
+    if (!inside(u, v)) continue;
+    drawLeaf(g, u*cw, (1 - v)*ch, sz*(0.7 + rnd()*0.6), rnd()*Math.PI*2, shadeHex(st.leaf[Math.floor(rnd()*st.leaf.length)], (rnd() - 0.5)*0.2 + (layer ? 0.06 : -0.04)));
+  }
+  if (st.flowers){
+    const fr = sz*(st.flowers === "racemes" ? 0.9 : st.flowers === "clematis" ? 1.1 : 0.75), fn = Math.round(n*(st.flowers === "racemes" ? 0.03 : 0.06));
+    for (let i = 0; i < fn; i++){
+      const u = rnd(), v = 0.15 + rnd()*0.85;
+      if (inside(u, v)) drawFlower(g, st.flowers, u*cw, (1 - v)*ch, fr, f.flower || st.flower, rnd);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  climberTexes.set(key, tex);
+  return tex;
+}
+// A climbing plant up the wall behind it (local −z is the wall): three layers of leaves standing off it a little,
+// and a few woody stems at the root. Its height is its own (b.hCm), 2.2m to start — stretch it up the house.
+function v3BuildClimber(g, b, W, D, st, f){
+  const Hh = (b.hCm || 220)/100, back = -D/2;
+  [0.02, 0.07, 0.12].forEach((z, i)=>{
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(W, Hh), new THREE.MeshStandardMaterial({map: climberTexture(st, f, W, Hh, i), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.85}));
+    m.position.set((i - 1)*0.03, Hh/2 + 0.01, back + Math.min(z, D*0.8)); m.castShadow = true; m.receiveShadow = true; m.userData.ownMaterial = true;
+    g.add(m);
+  });
+  const wood = v3Mat("#5a4632", {roughness: 1});
+  [-0.06, 0.05].forEach(x => v3Cyl(g, 0.018, 0.03, Math.min(0.9, Hh*0.4), x, 0, back + 0.05, wood, 8));
+}
+// leafy texture for a shrub's surface, repeating
+const shrubTexes = new Map();
+function shrubTexture(st, f, ru = 1, rv = 1){ // repeated ru × rv times over the shape's own UVs
+  const key = JSON.stringify([st.key, f.flower]), rkey = key + ru + "x" + rv;
+  if (shrubTexes.has(rkey)) return shrubTexes.get(rkey);
+  if (shrubTexes.has(key)){ const t = shrubTexes.get(key).clone(); t.needsUpdate = true; t.repeat.set(ru, rv); shrubTexes.set(rkey, t); return t; }
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d"), rnd = seededRand(hashStr(key));
+  g.fillStyle = shadeHex(st.leaf[0], -0.35); g.fillRect(0, 0, 256, 256);
+  const sz = (st.clipped ? 4 : 7)*(st.leafSize || 1);
+  for (let i = 0; i < (st.clipped ? 2600 : 1300); i++){
+    const x = rnd()*256, y = rnd()*256, col = shadeHex(st.leaf[Math.floor(rnd()*st.leaf.length)], (rnd() - 0.5)*0.3);
+    [0, 256, -256].forEach(dx => [0, 256, -256].forEach(dy => drawLeaf(g, x + dx, y + dy, sz*(0.7 + rnd()*0.6), rnd()*Math.PI*2, col)));
+  }
+  if (st.flowers === "spikes") for (let i = 0; i < 140; i++) drawFlower(g, "spikes", rnd()*256, rnd()*256, 3.5, f.flower || st.flower, rnd);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  shrubTexes.set(key, tex);
+  return tex;
+}
+// A shrub: a lumpy mound, ball, cone or clipped hedge block in a leafy coat; hydrangea heads on top; in a pot if asked.
+function v3BuildShrub(g, b, W, D, st, f){
+  const rnd = seededRand(hashStr(st.key + b.id)), pot = b.pot === "pot";
+  let base = 0;
+  if (pot){ // a terracotta pot, the plant sitting in it
+    const pr = Math.min(W, D)/2*0.75, ph = Math.min(0.5, pr*1.3);
+    v3Cyl(g, pr, pr*0.75, ph, 0, 0, 0, v3Mat("#b5603f", {roughness: 0.9}), 24);
+    v3Cyl(g, pr*1.06, pr*1.06, 0.05, 0, ph - 0.05, 0, v3Mat("#a8553a", {roughness: 0.9}), 24);
+    base = ph - 0.04;
+  }
+  const hM = (st.hM || 1)*(pot ? 0.7 : 1), rough = st.clipped ? 0.025 : 0.09;
+  let geo;
+  if (st.shape === "cone") geo = new THREE.ConeGeometry(0.5, 1, 24, 12);
+  else if (st.shape === "hedge"){ geo = new THREE.BoxGeometry(1, 1, 1, 16, 8, 8); }
+  else geo = new THREE.IcosahedronGeometry(0.5, 4);
+  const pos = geo.attributes.position, v = new THREE.Vector3(), seeds = [rnd()*9, rnd()*9, rnd()*9];
+  for (let i = 0; i < pos.count; i++){
+    v.fromBufferAttribute(pos, i);
+    if (st.shape === "hedge"){ // round off the box's edges a little
+      v.x = Math.sign(v.x)*Math.min(0.5, Math.abs(v.x)); v.z = Math.sign(v.z)*Math.min(0.5, Math.abs(v.z));
+      const r = 0.12, cx = Math.max(0, Math.abs(v.x) - (0.5 - r)), cy = Math.max(0, v.y - (0.5 - r));
+      if (cx > 0 && cy > 0){ const d = Math.hypot(cx, cy), s2 = r/d; v.x = Math.sign(v.x)*((0.5 - r) + cx*s2); v.y = (0.5 - r) + cy*s2; }
+    }
+    // lumps from the position alone, so the corners that several triangles share all move together (no cracks)
+    const n = Math.sin(v.x*7 + seeds[0])*Math.sin(v.y*6 + seeds[1])*Math.sin(v.z*7 + seeds[2]) + 0.3*Math.sin(v.x*23 + v.y*19 + seeds[0])*Math.sin(v.z*21 - v.y*17 + seeds[2]);
+    const len = v.length() || 1; v.multiplyScalar(1 + n*rough/len*2);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  const ru = st.shape === "hedge" ? Math.max(1, Math.round(W*2.5)) : Math.max(2, Math.round(Math.PI*W*2.5)), rv = Math.max(1, Math.round(hM*(st.shape === "hedge" ? 2.5 : 3.5)));
+  shrubTexture(st, f); // the base canvas, then this size's repeat of it
+  const tex = shrubTexture(st, f, ru, rv), mat = new THREE.MeshStandardMaterial({map: tex, bumpMap: tex, bumpScale: 0.6, roughness: st.key === "laurel" ? 0.55 : 0.95});
+  const m = new THREE.Mesh(geo, mat); m.userData.ownMaterial = true; m.castShadow = m.receiveShadow = true;
+  const low = st.shape === "low" ? 0.75 : 1, sw = st.shape === "hedge" ? W : W*low, sd = st.shape === "hedge" ? D : D*low;
+  m.scale.set(sw, st.shape === "hedge" || st.shape === "cone" ? hM : hM*1.15, sd);
+  m.position.y = base + (st.shape === "hedge" || st.shape === "cone" ? hM/2 : hM*0.48);
+  g.add(m);
+  if (st.flowers === "heads") for (let i = 0; i < 14; i++){ // hydrangea heads over the top
+    const a = rnd()*Math.PI*2, r = Math.sqrt(rnd())*0.4, hh = hM*1.15/2, y = base + hM*0.48 + hh*Math.sqrt(1 - (r/0.5)**2) - 0.02; // on the mound's surface
+    const ball = new THREE.Mesh(new THREE.IcosahedronGeometry(0.09 + rnd()*0.04, 1), v3Mat(shadeHex(f.flower || st.flower, (rnd() - 0.5)*0.25), {roughness: 0.9}));
+    ball.position.set(Math.cos(a)*r*sw, y, Math.sin(a)*r*sd); ball.castShadow = true; g.add(ball);
+  }
+}
+// --- curtains and blinds inside a window: `sd` is the room side (+1/−1 along the piece's local z), and `first`/`last`
+// say whether this piece starts or ends the whole window (curtains hang either side of the whole of it).
+function v3CurtainPanel(g, x, wd, y0, y1, z, mat){
+  const folds = Math.max(3, Math.round(wd/0.08)), geo = new THREE.PlaneGeometry(wd, y1 - y0, folds*6, 1), pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setZ(i, Math.sin((pos.getX(i)/wd + 0.5)*folds*Math.PI*2)*0.025);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, (y0 + y1)/2, z); m.castShadow = m.receiveShadow = true; g.add(m);
+}
+function v3WindowCovering(g, w, L, T, sd, sill, head, H, first, last, f){
+  const kind = w.covering, face = sd*T/2;
+  if (kind === "curtains" || kind === "sillcurtains"){
+    const fab = v3Mat(f.cover, {roughness: 1, side: THREE.DoubleSide}), pole = M3.metal("#5a5650");
+    const py = Math.min(head + 0.15, H - 0.05), z = face + sd*0.1, x0 = -L/2 - (first ? 0.3 : 0), x1 = L/2 + (last ? 0.3 : 0);
+    const p = v3Cyl(g, 0.015, 0.015, x1 - x0, 0, py - (x1 - x0)/2, z, pole, 10); p.rotation.z = Math.PI/2; p.position.set((x0 + x1)/2, py, z);
+    const pw = Math.max(0.25, Math.min(0.5, L*0.2)), bottom = kind === "curtains" ? 0.01 : Math.max(0.01, sill - 0.12);
+    if (first){ v3CurtainPanel(g, -L/2 - 0.27 + pw/2, pw, bottom, py - 0.03, z - sd*0.03, fab); const e = v3Cyl(g, 0.03, 0.03, 0.06, x0, py - 0.03, z, pole, 10); e.rotation.z = Math.PI/2; e.position.set(x0, py, z); }
+    if (last){ v3CurtainPanel(g, L/2 + 0.27 - pw/2, pw, bottom, py - 0.03, z - sd*0.03, fab); const e = v3Cyl(g, 0.03, 0.03, 0.06, x1, py - 0.03, z, pole, 10); e.rotation.z = Math.PI/2; e.position.set(x1, py, z); }
+    return;
+  }
+  const span = head - sill, wd = L + 0.06;
+  if (kind === "roman"){ // pulled half up: soft folds stacked under a headrail
+    const fab = v3Mat(f.cover, {roughness: 1}), z = face + sd*0.03, drop = span*0.4, n = 4;
+    v3Box(g, wd, 0.04, 0.05, 0, head, z, fab);
+    for (let i = 0; i < n; i++){ const m = v3Cyl(g, 0.035, 0.035, wd, 0, 0, 0, fab, 12); m.rotation.z = Math.PI/2; m.position.set(0, head - (i + 0.5)*drop/n, z); m.scale.set(1, 1, 0.6); }
+    v3Box(g, wd, drop, 0.01, 0, head - drop, z - sd*0.01, fab);
+  } else if (kind === "roller"){ // a roll at the top, a third down, a bar at its foot
+    const fab = v3Mat(f.cover, {roughness: 0.95}), z = face + sd*0.04, drop = span*0.33;
+    const r = v3Cyl(g, 0.03, 0.03, wd, 0, 0, 0, fab, 16); r.rotation.z = Math.PI/2; r.position.set(0, head + 0.02, z);
+    v3Box(g, wd - 0.02, drop, 0.004, 0, head - drop, z, fab);
+    v3Box(g, wd - 0.02, 0.02, 0.012, 0, head - drop - 0.02, z, M3.metal("#c9ccd0"));
+  } else if (kind === "venetian"){ // slats all the way down, tilted open
+    const sm = v3TimberMat(f.slats), z = face + sd*0.035;
+    v3Box(g, wd, 0.035, 0.045, 0, head - 0.035, z, sm);
+    for (let y = head - 0.06; y > sill + 0.01; y -= 0.045){ const m = v3Box(g, wd - 0.02, 0.003, 0.045, 0, y, z, sm); if (m) m.rotation.x = sd*0.5; }
+  } else if (kind === "shutters"){ // full-height plantation shutters, louvres open
+    const sm = v3TimberMat(f.slats), z = face + sd*0.025, np = Math.max(2, Math.round(L/0.45)), pw = L/np, y0 = sill + 0.01, y1 = head - 0.01;
+    for (let i = 0; i < np; i++){
+      const cx = -L/2 + pw*(i + 0.5);
+      v3Box(g, 0.045, y1 - y0, 0.03, cx - pw/2 + 0.0225, y0, z, sm); v3Box(g, 0.045, y1 - y0, 0.03, cx + pw/2 - 0.0225, y0, z, sm);
+      v3Box(g, pw, 0.07, 0.03, cx, y0, z, sm); v3Box(g, pw, 0.07, 0.03, cx, y1 - 0.07, z, sm);
+      const mid = (y0 + y1)/2; v3Box(g, pw, 0.06, 0.03, cx, mid - 0.03, z, sm);
+      for (let y = y0 + 0.1; y < y1 - 0.08; y += 0.075){ if (Math.abs(y - mid) < 0.05) continue; const m = v3Box(g, pw - 0.09, 0.008, 0.06, cx, y, z, sm); if (m) m.rotation.x = sd*0.7; }
+    }
+  }
 }
 
 // --- style thumbnails: each style rendered once at the selected item's size and colours
@@ -11363,7 +11588,7 @@ function matchStyleToAll(src, all){
   all.forEach(b=>{
     b.style = style; if (src.finishes) b.finishes = {...src.finishes}; else delete b.finishes;
     if (src.worktop) b.worktop = src.worktop; else delete b.worktop;
-    ["glass", "frameStyle"].forEach(k => { if (src[k]) b[k] = src[k]; else delete b[k]; });
+    ["glass", "frameStyle", "covering", "pot"].forEach(k => { if (src[k]) b[k] = src[k]; else delete b[k]; });
   });
   scheduleAutosave(); updateStylePanel(); render();
 }
@@ -11811,7 +12036,9 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
               for (const d of [0.08, 0.16, 0.25]) if (roomAtWorld(areas, p.x + ux*sg*d/k, p.y + uy*sg*d/k)) return inside;
               return outside;
             }
-            if ((o.type||"wall") === "window" || end.reveal) return inside;
+            // a window's own end against a wall is buried in that wall but for a sliver seen from the room (a bay's
+            // first and last panes leave the wall line at an angle) — plaster, like the reveal it is
+            if ((o.type||"wall") === "window" || end.reveal || isWin) return inside;
             return end.e > 0.005 && end.convex ? sideMat(end.convex) : outside;
           };
           const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6, s0 - 0.04), s1: endMat(end1, s1 >= L + e1 - 1e-6, s1 + 0.04), top: inside};
@@ -11841,6 +12068,11 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
           wg.userData.windowId = w.id; wg.userData.span = [L, sill, Math.min(head, top), T]; // clickable: selects the window
           const wst = furnitureStyleOf(w);
           v3WindowSpan(wg, along, along + L, winLen, T, w, wst, furnitureFinishes(w, wst), sill, Math.min(head, top));
+          // curtains or a blind on the room side (whichever side has a room — a window between two rooms gets none)
+          if (w.covering && w.covering !== "none"){
+            const r1 = sideRoom(L/2, 1), r2 = sideRoom(L/2, -1), sd = r1 && !r2 ? 1 : r2 && !r1 ? -1 : 0;
+            if (sd) v3WindowCovering(wg, w, L, T, sd, sill, Math.min(head, top), top, i === 1, i === pts.length - 1, furnitureFinishes(w, wst));
+          }
         }
         continue;
       }
@@ -12224,7 +12456,21 @@ function v3CameraMoved(){
 }
 // --- picking and moving things in the 3D view (selection is the plan's own, so both views stay in step)
 let v3Paint = null; // {wallId, side, x, y}: the wall face last clicked in 3D, and a plan point just in front of it
-let extPaintScope = "house"; // on an outside face: "house" (the whole outside of this floor) or "wall"
+let extPaintScope = "house"; // on an outside face: "house" (the whole outside of this floor), "wall", or "brush" (see extBrush)
+// The outside brush: with "🖌 Click walls" picked, the finish (or paint) last chosen goes on every outside face
+// clicked in 3D — on any floor of the house — until Esc or another scope. undefined = nothing chosen yet;
+// null = back to plain (the floor's whole-outside finish).
+let extBrush;
+// Put the brush's finish on one outside face of a wall on any floor; false when that face is inside a room.
+function brushWallFace(floor, wallId, side, x, y){
+  const areas = getRoomAreasForFloor(floor), w = floor.walls.find(o => o.id === wallId);
+  if (!w || roomAtWorld(areas, x, y) || extBrush === undefined) return false;
+  pushUndoSnapshot();
+  w.paint = (Array.isArray(w.paint) ? w.paint : []).filter(p => !(p.side === side && roomAtWorld(areas, p.x, p.y) === null));
+  if (extBrush && extBrush !== floorExterior(floor)) w.paint.push({side, x, y, color: extBrush});
+  if (!w.paint.length) delete w.paint;
+  return true;
+}
 let wallPaintScope = "room"; // what a colour swatch paints: "room" (every wall facing that room) or "wall" (this face only)
 function v3Ray(e){
   const r = v3.renderer.domElement.getBoundingClientRect();
@@ -12246,7 +12492,21 @@ function v3Pick(e){
     const m = Array.isArray(h.object.material) ? h.object.material[h.face && h.face.materialIndex || 0] : h.object.material;
     if (!h.object.visible) continue;
     const other = v3OtherFloorOf(h.object);
-    if (other){ if (m && m.transparent && m.opacity < 0.5) continue; return {kind: "floor", id: other, point: h.point}; } // another floor of the house: clicking it goes there
+    if (other){ // another floor of the house: clicking it goes there (or, brushing the outside, paints the wall face clicked)
+      if (m && m.transparent && m.opacity < 0.5) continue;
+      let wall = null;
+      if (extPaintScope === "brush" && extBrush !== undefined){
+        let o = h.object, fg = null, wd = null;
+        for (; o && o !== v3.root; o = o.parent){ if (!wd && o.userData.wall) wd = o.userData.wall; if (o.userData.floorId != null){ fg = o; break; } }
+        const f = fg && houseFloors().find(x => x.id === other);
+        if (wd && f){
+          const inv = fg.matrix.clone().invert(), lp = h.point.clone().applyMatrix4(inv), lc = v3.camera.position.clone().applyMatrix4(inv), k = metersPerWorldUnitForFloor(f);
+          const side = ((lc.x/k - wd.ax)*wd.nx + (lc.z/k - wd.ay)*wd.ny) >= 0 ? 1 : -1, hx = lp.x/k, hy = lp.z/k, d = (hx - wd.ax)*wd.nx + (hy - wd.ay)*wd.ny;
+          wall = {floor: f, id: wd.id, side, x: hx - wd.nx*d + wd.nx*side*wd.off, y: hy - wd.ny*d + wd.ny*side*wd.off};
+        }
+      }
+      return {kind: "floor", id: other, point: h.point, wall};
+    }
     let opening = null; // a door or window — glass and all, it's what you clicked
     for (let o = h.object; o && o !== v3.root && !opening; o = o.parent){
       if (o.userData.doorId != null) opening = {kind: "door", id: o.userData.doorId, point: h.point};
@@ -12318,6 +12578,16 @@ function v3PlaceOne(spec, at){
 }
 function v3ClickPick(hit){
   if (hit && hit.kind === "box") return; // picked on press
+  if (extPaintScope === "brush" && extBrush !== undefined && hit){ // brushing the outside: each outside face clicked takes it
+    if (hit.kind === "floor" && hit.wall){
+      if (brushWallFace(hit.wall.floor, hit.wall.id, hit.wall.side, hit.wall.x, hit.wall.y)){ scheduleAutosave(); updateV3Fields(); render(); }
+      return; // stay on this floor, the wall stays selected
+    }
+    if (hit.kind === "wall" && brushWallFace(activeFloor(), hit.id, hit.side, hit.x, hit.y)){
+      v3Paint = {wallId: hit.id, side: hit.side, x: hit.x, y: hit.y}; select("wall", hit.id); scheduleAutosave(); updateV3Fields(); render();
+      return;
+    }
+  }
   if (hit && hit.kind === "floor"){ v3Paint = null; switchFloor(hit.id); return; }
   if (hit && (hit.kind === "door" || hit.kind === "window")){ v3Paint = null; select(hit.kind === "door" ? "box" : "wall", hit.id); return; }
   if (hit && hit.kind === "wall"){ v3Paint = {wallId: hit.id, side: hit.side, x: hit.x, y: hit.y}; select("wall", hit.id); return; }
@@ -12446,13 +12716,14 @@ function paintTarget(){
   if (!selection || multiSelection.length || selection.kind !== "wall" || selection.id !== v3Paint.wallId) return null;
   const w = getWall(selection.id);
   if (!w) return null;
-  const scope = !room ? extPaintScope : wallPaintScope;
+  const scope = !room ? (extPaintScope === "brush" ? "wall" : extPaintScope) : wallPaintScope;
   const current = scope === "ceiling" ? ceiling : wallOwnPaint(w, v3Paint.side, room, areas) || (room ? paintAssignments(floor, areas).get(room) : floorExterior(floor)) || null;
-  return {w, side: v3Paint.side, room, areas, scope, current, outside: !room};
+  return {w, side: v3Paint.side, room, areas, scope, current, outside: !room, brush: !room && extPaintScope === "brush"};
 }
 function applyWallPaint(hex){
   const t = paintTarget();
   if (!t) return;
+  if (t.brush) extBrush = hex;
   pushUndoSnapshot();
   const floor = activeFloor();
   if (t.scope === "house"){ // the whole outside: every outside face takes it, one-off walls included
@@ -12765,7 +13036,7 @@ function buildPaintControlsNow(el){
   if (!t){ el.innerHTML = ""; el.dataset.sig = ""; return; }
   const effective = t.scope, used = paintsInUse();
   const kind = effective === "ceiling" ? "paint" : t.outside ? (paintUI.extKind || "ext") : paintUI.kind;
-  const sig = JSON.stringify([t.w && t.w.id, t.side, t.room && t.room.label, t.current, effective, paintUI.coll, used, v3 && v3.mode, kind, paintUI.paperBrand, !!WALLPAPERS]);
+  const sig = JSON.stringify([t.w && t.w.id, t.side, t.room && t.room.label, t.current, effective, paintUI.coll, used, v3 && v3.mode, kind, paintUI.paperBrand, !!WALLPAPERS, t.brush, t.brush && extBrush]);
   if (el.dataset.sig === sig) return; // keep the search box focused and the grid where it was scrolled
   el.dataset.sig = sig;
   el.innerHTML = "";
@@ -12773,12 +13044,13 @@ function buildPaintControlsNow(el){
   const scope = document.createElement("div"); scope.className = "v3Scope";
   const done = document.createElement("button"); done.textContent = "✕"; done.title = "Deselect (Esc)"; done.style.flex = "0 0 auto";
   done.addEventListener("click", ()=>{ v3Paint = null; deselect(); });
-  (t.outside ? [["house", "Whole outside"], ["wall", "Just this wall"]] : [["room", "Whole room"], ["wall", "Just this wall"], ["ceiling", "Ceiling"]]).forEach(([key, label])=>{
+  (t.outside ? [["house", "Whole outside"], ["wall", "Just this wall"], ["brush", "🖌 Click walls"]] : [["room", "Whole room"], ["wall", "Just this wall"], ["ceiling", "Ceiling"]]).forEach(([key, label])=>{
     const btn = document.createElement("button");
     btn.textContent = label;
-    btn.classList.toggle("active", effective === key);
+    btn.classList.toggle("active", t.brush ? key === "brush" : effective === key);
+    if (key === "brush") btn.title = "Pick a finish, then click outside walls in 3D to put it on each one — any floor. Esc to stop.";
     if (key !== "ceiling" && t.ceilingOnly){ btn.disabled = true; btn.title = "Click a wall to paint walls"; }
-    btn.addEventListener("click", ()=>{ if (t.outside) extPaintScope = key; else wallPaintScope = key; updateV3Fields(); if (v3) v3Draw(); });
+    btn.addEventListener("click", ()=>{ if (t.outside){ extPaintScope = key; if (key === "brush") extBrush = undefined; } else wallPaintScope = key; el.dataset.sig = ""; updateV3Fields(); if (v3) v3Draw(); });
     scope.appendChild(btn);
   });
   scope.appendChild(done);
@@ -12806,6 +13078,9 @@ function buildPaintControlsNow(el){
   const nm = document.createElement("span");
   nm.textContent = paintLabel(t.current) + (effective !== "ceiling" ? "" : v3 && v3.mode !== "walk" ? " — ceiling (see it in 🚶 Walk)" : " — ceiling");
   cur.append(sw, nm);
+  const hint = document.createElement("div"); hint.className = "paintBrushHint"; hint.hidden = !t.brush;
+  if (t.brush) hint.textContent = extBrush === undefined ? "🖌 Pick a finish below, then click each outside wall you want it on (any floor). Esc to stop."
+    : `🖌 Brushing ${paintLabel(extBrush)} — click outside walls to add it. Esc to stop.`;
   const kinds = document.createElement("div"); kinds.className = "paintKind";
   (t.outside ? [["ext", "🧱 Brick & render"], ["paint", "🎨 Paint"]] : [["paint", "🎨 Paint"], ["paper", "🌿 Wallpaper"]]).forEach(([key, label])=>{
     const btn = document.createElement("button");
@@ -12819,7 +13094,7 @@ function buildPaintControlsNow(el){
   if (kind === "ext"){
     const g = document.createElement("div");
     buildExteriorGrid(g, t.current, id => applyWallPaint(id));
-    box.append(scope, kinds, cur, g);
+    box.append(scope, kinds, cur, hint, g);
     el.appendChild(box);
     return;
   }
@@ -12829,7 +13104,7 @@ function buildPaintControlsNow(el){
     usedRow.append(lab, chip(null, "Plain"), ...usedHere.map(h => chip(h, paintLabel(h))));
   }
   if (kind === "paper"){
-    box.append(scope, kinds, cur, usedRow);
+    box.append(scope, kinds, cur, hint, usedRow);
     buildPaperPicker(box, t, chip, !usedHere.length, el);
     el.appendChild(box);
     return;
@@ -12878,7 +13153,7 @@ function buildPaintControlsNow(el){
   pick.addEventListener("change", ()=> applyWallPaint(pick.value.toLowerCase()));
   const mix = document.createElement("span"); mix.textContent = "or mix your own";
   row.append(pick, mix);
-  box.append(scope, kinds, cur, usedRow, tools, grid, row);
+  box.append(scope, kinds, cur, hint, usedRow, tools, grid, row);
   el.appendChild(box);
 }
 // The wallpaper half of the picker: brand, search, and a grid of pattern thumbnails.

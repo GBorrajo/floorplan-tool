@@ -697,6 +697,27 @@ The 3D view is also an editor: without Space held, a press picks things rather t
 - **Switching style keeps your colours** (`carriedFinishes`). Each colour picked for an item carries over to the new style wherever that style has the same part in a palette containing the colour. Bedding carries to every bed. A wood frame colour carries between the wooden beds, not onto the iron one. A window's paint colour carries between the painted styles, not to Crittall. Anything else starts in the new style's own colour. Glass, door frames and stair rails live on the item, so they already carried over. The style thumbnails show each style as it would look with your colours carried over.
 - **The 3D window no longer moves with the plan:** `#view3d` used to sit inside `#canvasWrap`, the plan's `overflow:auto` scroll area. A trackpad pinch over the 3D view zoomed its camera, then bubbled on to the plan's ctrl+wheel zoom, which resized and scrolled the plan and carried the 3D window off with it. The 3D window is now a sibling in `#planArea`, a non-scrolling layer over the plan, and its canvas's wheel handler stops the event going any further.
 
+## Outside highlights, climbing plants and bushes, curtains and blinds (2026-11-15)
+
+- **Highlight finishes on the outside, by clicking walls.** Click any outside wall in 3D, then choose
+  **🖌 Click walls** at the top of the colour picker. Pick a brick, render, stone, cladding or paint, and every
+  outside wall face you click afterwards takes it. That includes walls on other floors when floors above are
+  shown, and it doesn't switch floor. Esc stops the brush. Inside faces are ignored while brushing. "Plain"
+  takes a face back to its floor's whole-outside finish. Each face is stored like a "Just this wall" choice
+  (`w.paint` with an `ext:` value).
+- **Garden & outside** in the Furnish list:
+  - **Climbing plant** (ivy, Virginia creeper, wisteria, climbing rose, jasmine, clematis) stands with its back to a
+    wall and grows up it. Its *Height* field is how far up the house it reaches (2.2 m to start). Flowering
+    ones have a flower colour.
+  - **Shrub / bush** (evergreen, box ball, lavender, hydrangea, conifer) can go in the ground or in a terracotta pot.
+  - **Hedge** (clipped or laurel). Stretch it to any length.
+  Leaves and flowers are drawn in code, seeded, so a plant looks the same every time.
+- **Curtains & blinds** on a window's style panel: long curtains, sill curtains, roman, roller, venetian or
+  shutters, with a colour for the fabric or slats. They hang on the room side only, so a window between two
+  rooms gets none. Curtains sit on a pole either side of the whole window, and on a bay a blind follows each pane.
+- Fixed thin brick strips showing indoors where a bay window meets the wall. A window's end against a
+  wall now takes the plaster finish.
+
 ## Installable app and updates (2026-10-24)
 
 Served over https (GitHub Pages), the planner installs as an app from Edge
