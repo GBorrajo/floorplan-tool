@@ -11680,7 +11680,7 @@ function wallEndExtM(floor, w, pts, i, end){
     // turning toward one side leaves the corner sticking out on the other (the piece's normal is (-uy, ux), and at
     // its start end ua runs backwards along it)
     const convex = (cross > 0 ? -1 : 1)*(end ? 1 : -1);
-    return {e: Math.max(0, Math.min(Math.max(TA, TB), TB/2/sin - TA/2*cos/sin)), convex};
+    return {e: Math.max(0, Math.min(Math.max(TA, TB), TB/2/sin - TA/2*cos/sin)), convex, turnCos: cos};
   };
   // its own curve carrying on
   const inner = end ? (i + 1 < pts.length ? pts[i+1] : null) : (i - 2 >= 0 ? pts[i-2] : null);
@@ -11694,8 +11694,9 @@ function wallEndExtM(floor, w, pts, i, end){
     [[op[0], op[1]], [op.at(-1), op.at(-2)]].forEach(([p, q])=>{
       if (!p || !q || Math.hypot(p.x - J.x, p.y - J.y) > tol) return;
       let e = extFor(q, TB);
-      // into a window (a bay's side): this end is the window's jamb, seen from indoors through the glass
-      if (e && (o.type||"wall") === "window") e = {...e, reveal: true};
+      // into a window at a shallow turn (a bay's side): this end is the window's jamb, seen from indoors through the
+      // glass. At a square corner it's still the corner's outside face.
+      if (e && (o.type||"wall") === "window" && e.turnCos > 0.5) e = {...e, reveal: true};
       if (e && (!best || e.e > best.e)) best = e;
     });
   });
@@ -11782,7 +11783,7 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
         }
       };
       const end0 = isWin ? {e: 0, convex: 0} : wallEndExtM(floor, w, pts, i, 0), end1 = isWin ? {e: 0, convex: 0} : wallEndExtM(floor, w, pts, i, 1), e0 = end0.e, e1 = end1.e;
-      if (aboveAreas && cut >= H){ // up through the floor's depth, along the stretches with the floor above over them
+      if (aboveAreas && cut >= H && !(isWin && w.bowCm)){ // up through the floor's depth, along the stretches with the floor above over them (a curved bay: along its chord, below)
         const step = 0.2, cov = sM => underAbove(at(sM, 1)) || underAbove(at(sM, -1));
         let run = null;
         for (let sM = -e0; sM <= L + e1 + 1e-6; sM += step){
@@ -11818,6 +11819,16 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
       });
       if (cursor < L + e1) wallSlab(cursor, L + e1, 0, top);
     }
+  });
+  // a curved bay window with the floor above's wall running straight across its mouth: that wall stands on the floor's
+  // depth of brickwork along the chord (otherwise there's a gap there, under the wall above, over the bay's lead top)
+  if (aboveAreas && cut >= H) floor.walls.forEach(w=>{
+    if ((w.type||"wall") !== "window" || !w.bowCm) return;
+    const pts = wallCenterlinePoints(w), A = pts[0], B = pts.at(-1), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
+    if (!underAbove({x: (A.x + B.x)/2, y: (A.y + B.y)/2})) return;
+    const fin = floorExterior(floor), mat = !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : v3Mat(fin, {roughness: 0.95});
+    const L = Math.hypot(B.x - A.x, B.y - A.y)*k, m = v3Slab(group, A.x*k, A.y*k, B.x*k, B.y*k, 0, L, H, H + over, T, mat, null);
+    if (m) v3WallUVs(m, 0);
   });
   if (cut >= H) floor.boxes.forEach(b => { if (b.kind === "door") v3Door(group, b, k, H); }); // with the walls cut down, the doors go too
 }
@@ -13320,6 +13331,48 @@ function roofWingFacets(m){
     return {plane: p, poly};
   }).filter(f => f.poly.length >= 3 && Math.abs(polyAreaUV(f.poly)) > 1e-4);
 }
+// The part of convex polygon `poly` inside convex polygon `region` (both {u, v} points).
+function clipToConvex(poly, region){
+  const cu = region.reduce((s, q) => s + q.u, 0)/region.length, cv = region.reduce((s, q) => s + q.v, 0)/region.length;
+  for (let i = 0; i < region.length && poly.length >= 3; i++){
+    const P = region[i], Q = region[(i + 1) % region.length];
+    let A = -(Q.v - P.v), B = Q.u - P.u, C = -(A*P.u + B*P.v);
+    if (A*cu + B*cv + C > 0){ A = -A; B = -B; C = -C; }
+    poly = clipHalfPlane(poly, A, B, C);
+  }
+  return poly;
+}
+// A section carried on into another to meet it in valleys (w.joins = [{host, x, y, end}] from autoRoofWings: (x, y)
+// the plan point on its spine where it reaches that one's wall) is only wanted, past that point, under the other's
+// roof — otherwise its eaves overhang runs on past the other's gable as a strip of roof and a white soffit. Its
+// rectangle as convex regions: its own part, and each carried-on part cut down to the other's rectangle.
+function roofWingRegions(roof, w, m, k){
+  const rect = [{u: m.u0, v: m.v0}, {u: m.u1, v: m.v0}, {u: m.u1, v: m.v1}, {u: m.u0, v: m.v1}];
+  const joins = (w.joins || []).map(j => ({j, host: roof.wings.find(o => o.id === j.host)})).filter(x => x.host);
+  if (!joins.length) return [rect];
+  const ov = roofOverhang(roof), out = [];
+  let own = rect;
+  joins.forEach(({j, host})=>{
+    const cut = planToWing(w, k, j.x, j.y).u, sg = j.end ? 1 : -1;
+    own = clipHalfPlane(own, sg, 0, -sg*cut);
+    // the other's rectangle — out to its eaves, but only to its walls at a gable (its verge is just tiles)
+    const hm = roofWingModel(host, ov), lim = side => hm.kind[side] === "eave" ? {u0: hm.u0, u1: hm.u1, vA: hm.v0, vB: hm.v1}[side] : {u0: -hm.L/2, u1: hm.L/2, vA: -hm.W/2, vB: hm.W/2}[side];
+    const hu0 = lim("u0"), hu1 = lim("u1"), hv0 = lim("vA"), hv1 = lim("vB");
+    const hr = [{u: hu0, v: hv0}, {u: hu1, v: hv0}, {u: hu1, v: hv1}, {u: hu0, v: hv1}].map(q => { const p = wingToPlan(host, k, q.u, q.v); return planToWing(w, k, p.x, p.y); });
+    const part = clipToConvex(clipHalfPlane(rect, -sg, 0, sg*cut), hr);
+    if (part.length >= 3 && Math.abs(polyAreaUV(part)) > 1e-4) out.push(part);
+  });
+  if (own.length >= 3) out.unshift(own);
+  return out;
+}
+// roofWingFacets, cut to roofWingRegions
+function roofWingPieces(roof, w, m, k){
+  const facets = roofWingFacets(m);
+  if (!(w.joins || []).length) return facets;
+  const regions = roofWingRegions(roof, w, m, k), out = [];
+  facets.forEach(f => regions.forEach(r => { const poly = clipToConvex(f.poly, r); if (poly.length >= 3 && Math.abs(polyAreaUV(poly)) > 1e-4) out.push({plane: f.plane, poly}); }));
+  return out;
+}
 // wing frame <-> the floor's plan
 function wingToPlan(w, k, u, v){ const o = rotate(u/k, v/k, w.rot || 0); return {x: w.cx + o.x, y: w.cy + o.y}; }
 function planToWing(w, k, x, y){ const o = rotate((x - w.cx)*k, (y - w.cy)*k, -(w.rot || 0)); return {u: o.x, v: o.y}; }
@@ -13472,6 +13525,7 @@ function autoRoofWings(f){
         if (Math.abs(hu.x*u.x + hu.y*u.y) > 0.3) return; // parallel wings: leave them be
         const q = planToWing(host, k, w.cx + u.x*endM/k, w.cy + u.y*endM/k), spineV = -host.widCm/200 + (host.ridge == null ? 0.5 : host.ridge)*host.widCm/100;
         const extra = Math.abs(spineV - q.v);
+        (w.joins = w.joins || []).push({host: host.id, end: e, x: w.cx + u.x*endM/k, y: w.cy + u.y*endM/k}); // where it meets that one's wall — see roofWingRegions
         w.lenCm += Math.round(extra*100);
         w.cx += u.x*sgn*extra/2/k; w.cy += u.y*sgn*extra/2/k;
         w.riseCm = Math.min(w.riseCm, host.riseCm - 5); // a lower ridge, tucked under the main one
@@ -13653,7 +13707,7 @@ function v3BuildRoof(group, floor, k, H){
   const models = roof.wings.map(w => ({w, m: roofWingModel(w, ov)}));
   models.forEach(({w, m})=>{
     const wg = new THREE.Group(); wg.position.set(w.cx*k, H, w.cy*k); wg.rotation.y = -(w.rot || 0); wg.userData.roof = w.id; group.add(wg);
-    const T = m.flat ? ROOF_FLAT_T_M : ROOF_T_M, cover = v3RoofMat(m.flat ? roof.flatCover : roof.cover), facets = roofWingFacets(m);
+    const T = m.flat ? ROOF_FLAT_T_M : ROOF_T_M, cover = v3RoofMat(m.flat ? roof.flatCover : roof.cover), facets = roofWingPieces(roof, w, m, k);
     const onEdge = (p, q)=>{
       const near = (a, b) => Math.abs(a - b) < 1e-5;
       if (near(p.u, m.u0) && near(q.u, m.u0)) return "u0"; if (near(p.u, m.u1) && near(q.u, m.u1)) return "u1";
@@ -13674,11 +13728,24 @@ function v3BuildRoof(group, floor, k, H){
       const mesh = new THREE.Mesh(geo, cover); mesh.castShadow = mesh.receiveShadow = true; wg.add(mesh);
       // its edges on the rectangle's border: a fascia at an eave, the wall carried up at a gable or high side
       for (let i = 0; i < poly.length; i++){
-        const a = poly[i], b = poly[(i + 1) % poly.length], side = onEdge(a, b);
+        let a = poly[i], b = poly[(i + 1) % poly.length];
+        const side = onEdge(a, b);
         if (!side) continue;
-        const ya = h(a) + T, yb = h(b) + T, L = Math.hypot(b.u - a.u, b.v - a.v);
-        if (L < 1e-4) continue;
         const wallish = m.kind[side] !== "eave", mat = wallish ? extMat : trim;
+        // the wall carried up stands on the wall below's line, not out at the verge — only the tiles overhang it
+        if (wallish && m.kind[side] === "gable"){
+          // a bargeboard along the tiles' edge, out at the verge
+          const bh = 0.12, pa = h(a) + T, pb = h(b) + T, g4 = new THREE.BufferGeometry();
+          g4.setAttribute("position", new THREE.Float32BufferAttribute([a.u, pa - bh, a.v, b.u, pb - bh, b.v, b.u, pb + 0.01, b.v, a.u, pa + 0.01, a.v], 3));
+          g4.setIndex([0, 1, 2, 0, 2, 3]); g4.computeVertexNormals();
+          const bb = new THREE.Mesh(g4, trim); bb.material.side = THREE.DoubleSide; wg.add(bb);
+        }
+        if (wallish){
+          const at = {u0: -m.L/2 + 0.005, u1: m.L/2 - 0.005, vA: -m.W/2 + 0.005, vB: m.W/2 - 0.005}[side];
+          if (side[0] === "u"){ a = {u: at, v: a.v}; b = {u: at, v: b.v}; } else { a = {u: a.u, v: at}; b = {u: b.u, v: at}; }
+        }
+        const ya = h(a) + T*(wallish ? 0.5 : 1), yb = h(b) + T*(wallish ? 0.5 : 1), L = Math.hypot(b.u - a.u, b.v - a.v);
+        if (L < 1e-4) continue;
         const g2 = new THREE.BufferGeometry(), along0 = side[0] === "u" ? a.v : a.u, along1 = side[0] === "u" ? b.v : b.u;
         g2.setAttribute("position", new THREE.Float32BufferAttribute([a.u, 0, a.v, b.u, 0, b.v, b.u, yb, b.v, a.u, ya, a.v], 3));
         g2.setAttribute("uv", new THREE.Float32BufferAttribute([along0, H, along1, H, along1, H + yb, along0, H + ya], 2));
@@ -13687,8 +13754,13 @@ function v3BuildRoof(group, floor, k, H){
       }
     });
     // the soffit underneath, at the wall tops
-    const sof = new THREE.Mesh(new THREE.PlaneGeometry(m.u1 - m.u0, m.v1 - m.v0), trim);
-    sof.rotation.x = Math.PI/2; sof.position.set((m.u0 + m.u1)/2, 0.001, (m.v0 + m.v1)/2); wg.add(sof);
+    roofWingRegions(roof, w, m, k).forEach(r=>{
+      const pos = [], idx = [];
+      r.forEach(q => pos.push(q.u, 0.001, q.v));
+      for (let i = 1; i < r.length - 1; i++) idx.push(0, i, i + 1);
+      const g3 = new THREE.BufferGeometry(); g3.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g3.setIndex(idx); g3.computeVertexNormals();
+      const sof = new THREE.Mesh(g3, trim); sof.material.side = THREE.DoubleSide; wg.add(sof);
+    });
     // its windows: each on whichever wing is highest under it
     (roof.windows || []).forEach(win=>{
       const at = roofAt(floor, win.x, win.y);
@@ -13722,7 +13794,7 @@ function drawRoofPlan(){
   ctx.save();
   roof.wings.forEach(w=>{
     const m = roofWingModel(w, ov), sel = roofSel && roofSel.kind === "wing" && roofSel.id === w.id;
-    roofWingFacets(m).forEach(({plane, poly})=>{
+    roofWingPieces(roof, w, m, k).forEach(({plane, poly})=>{
       const pts = poly.map(q => toScreen(...Object.values(wingToPlan(w, k, q.u, q.v))));
       // shade each slope by which way it faces, so the roof reads as a roof
       const g = Math.hypot(plane.a, plane.b), lit = g < 1e-6 ? 0 : (plane.a*0.6 - plane.b*0.8)/g*0.18;
@@ -13809,7 +13881,7 @@ function roofPointerDown(mw, ms){
 function roofPointerMove(mw, shift){
   const f = activeFloor(), k = metersPerWorldUnitForFloor(f), w = drag.w;
   if (drag.type === "roof-win"){ drag.win.x = mw.x + drag.dx; drag.win.y = mw.y + drag.dy; }
-  else if (drag.type === "roof-move"){ w.cx = mw.x + drag.dx; w.cy = mw.y + drag.dy; drag.winStart.forEach(s => { s.x.x = w.cx + s.ox; s.x.y = w.cy + s.oy; }); }
+  else if (drag.type === "roof-move"){ const ddx = mw.x + drag.dx - w.cx, ddy = mw.y + drag.dy - w.cy; (w.joins || []).forEach(j => { j.x += ddx; j.y += ddy; }); w.cx += ddx; w.cy += ddy; drag.winStart.forEach(s => { s.x.x = w.cx + s.ox; s.x.y = w.cy + s.oy; }); }
   else if (drag.type === "roof-spine"){
     // where across the wing the pointer is: 0 at the A edge, 1 at the B edge — snapping to the edges and the middle
     const q = planToWing(w, k, mw.x, mw.y), W = w.widCm/100;
@@ -13924,7 +13996,7 @@ function renderRoofPanel(force){
     }
     el.append(h("div", {className: "roofSize"}, num("Length ", w.lenCm, " cm", v => w.lenCm = v, 100, 3000, 5), num("Width ", w.widCm, " cm", v => w.widCm = v, 100, 2000, 5)));
     const row = h("div", {className: "row"});
-    row.append(btn("↻ Turn 90°", "Turn this section so its spine runs the other way", () => edit(() => { w.rot = (w.rot || 0) + Math.PI/2; [w.lenCm, w.widCm] = [w.widCm, w.lenCm]; if (!w.flat && roofShapeOf(w) !== "lean") w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2); })));
+    row.append(btn("↻ Turn 90°", "Turn this section so its spine runs the other way", () => edit(() => { delete w.joins; w.rot = (w.rot || 0) + Math.PI/2; [w.lenCm, w.widCm] = [w.widCm, w.lenCm]; if (!w.flat && roofShapeOf(w) !== "lean") w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2); })));
     row.append(btn("＋ Add a turn", "A new section at right angles off this one's end, for an L or T-shaped roof — then drag it into place", () => edit(()=>{
       // square off this one's far end: from its spine, out past its side by about a room's depth
       const k = metersPerWorldUnitForFloor(f), W = w.widCm/100, wid = Math.round(w.widCm*0.8), out = Math.max(3, W*0.8), vr = -W/2 + (w.ridge == null ? 0.5 : w.ridge)*W;
