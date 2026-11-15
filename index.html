@@ -11647,7 +11647,8 @@ function v3WallUVs(m, s0){
   uv.needsUpdate = true;
 }
 // Is plan point (x, y) of `floor` inside one of its walls (or within marginM of a face)? `skip`: a wall to leave out.
-function pointInWallOf(floor, x, y, marginM = 0, skip = null){
+function pointInWallOf(floor, x, y, marginM = 0, skip = null){ return !!wallAtPoint(floor, x, y, marginM, skip); }
+function wallAtPoint(floor, x, y, marginM = 0, skip = null){
   const k = metersPerWorldUnitForFloor(floor);
   for (const w of floor.walls){
     if (w === skip) continue;
@@ -11655,10 +11656,10 @@ function pointInWallOf(floor, x, y, marginM = 0, skip = null){
     for (let i = 1; i < pts.length; i++){
       const a = pts[i-1], b = pts[i], dx = b.x - a.x, dy = b.y - a.y, L2 = dx*dx + dy*dy;
       const t = L2 ? Math.max(0, Math.min(1, ((x - a.x)*dx + (y - a.y)*dy)/L2)) : 0;
-      if (Math.hypot(x - a.x - dx*t, y - a.y - dy*t) <= hw) return true;
+      if (Math.hypot(x - a.x - dx*t, y - a.y - dy*t) <= hw) return w;
     }
   }
-  return false;
+  return null;
 }
 // How far (metres) a wall piece's square end runs on past its end point (pts[i-1] for end 0, pts[i] for end 1), so
 // the corner closes on the outside without the end poking through anywhere else. Where it turns into another wall
@@ -11776,8 +11777,23 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
           const inside = rooms[1] && !rooms[-1] ? mats[0] : !rooms[1] && rooms[-1] ? mats[1] : null;
           const outside = inside ? (inside === mats[0] ? mats[1] : mats[0]) : null, band = y0 >= H - 1e-6;
           const s0 = cuts[j-1], s1 = cuts[j], sideMat = sd => sd > 0 ? mats[0] : mats[1];
-          const endMat = (end, atEnd) => atEnd && end.e > 0.005 && !end.reveal ? (end.convex ? sideMat(end.convex) : outside) : inside;
-          const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6), s1: endMat(end1, s1 >= L + e1 - 1e-6), top: inside};
+          // A wall's own end: look just past it. A room there — it shows indoors; a window — it's that window's jamb
+          // (indoors too); open air — it's an outside corner or a free end, so the outside finish; inside another wall,
+          // it's hidden, so go by which way the corner sticks out.
+          const endMat = (end, atEnd, sM)=>{
+            if (!atEnd) return inside;
+            const p = {x: a.x + ux*sM/k, y: a.y + uy*sM/k};
+            if (roomAtWorld(areas, p.x, p.y)) return inside;
+            const o = wallAtPoint(floor, p.x, p.y, 0, w);
+            if (!o){ // open air — unless it's the rounded-off corner of a room's outline: look a little further on
+              const sg = sM < 0 ? -1 : 1;
+              for (const d of [0.08, 0.16, 0.25]) if (roomAtWorld(areas, p.x + ux*sg*d/k, p.y + uy*sg*d/k)) return inside;
+              return outside;
+            }
+            if ((o.type||"wall") === "window" || end.reveal) return inside;
+            return end.e > 0.005 && end.convex ? sideMat(end.convex) : outside;
+          };
+          const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6, s0 - 0.04), s1: endMat(end1, s1 >= L + e1 - 1e-6, s1 + 0.04), top: inside};
           const m = v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, T, mats, capMat, edges);
           if (m){ m.userData.wall = {id: w.id, ax: a.x, ay: a.y, nx, ny, off, rooms}; v3WallUVs(m, along + cuts[j-1]); }
         }
@@ -13790,8 +13806,10 @@ function v3BuildRoof(group, floor, k, H){
           const bb = new THREE.Mesh(g4, trim); bb.material.side = THREE.DoubleSide; wg.add(bb);
         }
         if (wallish){
+          // ...and only between the walls either side: out under an eave's overhang there's no wall to carry up
           const at = {u0: -m.L/2 + 0.005, u1: m.L/2 - 0.005, vA: -m.W/2 + 0.005, vB: m.W/2 - 0.005}[side];
-          if (side[0] === "u"){ a = {u: at, v: a.v}; b = {u: at, v: b.v}; } else { a = {u: a.u, v: at}; b = {u: b.u, v: at}; }
+          const span = side[0] === "u" ? m.W/2 : m.L/2, cl = x => Math.max(-span, Math.min(span, x));
+          if (side[0] === "u"){ a = {u: at, v: cl(a.v)}; b = {u: at, v: cl(b.v)}; } else { a = {u: cl(a.u), v: at}; b = {u: cl(b.u), v: at}; }
         }
         const ya = h(a) + T*(wallish ? 0.5 : 1), yb = h(b) + T*(wallish ? 0.5 : 1), L = Math.hypot(b.u - a.u, b.v - a.v);
         if (L < 1e-4) continue;
