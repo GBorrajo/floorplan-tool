@@ -1592,3 +1592,11 @@ Estate-agent plans almost always show every floor on one sheet, so **✨ Trace t
 It's all one undo step. Shift-click makes Claude read the image again instead of using the cached readings. `traceHousePlan` is the pipeline with no UI; `applyHousePlan` puts a result into a version.
 
 Tested on 9 multi-floor sheets (2 to 4 floors, with annexes, a detached garage, a lower ground floor and eaves). All split, traced and stacked. Room accuracy at the shared scale matches each floor's own scale. The remaining misses are kitchens and bathrooms, where fitted units shrink the measured room.
+
+### Basements below ground (2026-11-15)
+
+A floor can now sit below the garden.
+- **Which floor is the ground floor.** It's the lowest floor not marked `underground`. In Build → Floors of the house it shows ⌂, and the floors under it show ▽. Each row has a ⌂ button that makes that floor the ground floor; every floor under it then goes below ground. This is undoable.
+- **Heights.** `floorElev` is measured from the ground floor, so a basement's elevation comes out negative and it's buried in 3D.
+- **Looking into a basement.** In the dollhouse view, on a basement with the floors over it hidden, the garden drops to the basement's floor so you can see into it. With the floors above shown, or walking about, the garden stays at its real level.
+- **Tracing.** "Trace the house from its image" marks the floors Claude reads as level −1 (basement, cellar, lower ground) as underground.

@@ -1838,6 +1838,7 @@ function applyHousePlan(v, floor, house){
     });
     v.floors = floors; v.activeFloorId = floor.id;
     floors.forEach((f, i) => withFloor(f, () => applySmartTrace(f, house.storeys[i].res, house.storeys[i].ai, {noUndo: true})));
+    floors.forEach((f, i) => { if (house.storeys[i].level < 0 && house.storeys.some(s => s.level >= 0)) f.underground = true; else delete f.underground; });
     floors.fits = floors.map((f, i) => i ? autoStackFloor(f) : null); // how well each sits on the one below
     return floors;
   } finally { suppressHistory = was; }
@@ -2446,6 +2447,7 @@ function normalizeFloor(f){
     ...(f.exterior ? {exterior: f.exterior} : {}), // the outside walls' finish — see EXTERIOR_FINISHES
     ...(f.stack ? {stack: f.stack} : {}), // where this floor sits in the house — see floorStack
     ...(f.roomHM ? {roomHM: f.roomHM} : {}), // this floor's own room height (m) — see floorRoomH
+    ...(f.underground ? {underground: true} : {}), // a basement / lower ground floor, below the garden — see groundFloor
     ...(f.roof ? {roof: f.roof} : {}), // its roof — see roofWingModel
     ...(f.bayCaps === false ? {bayCaps: false} : {}), // no lead tops on its curved bay windows — see bayCapOutlines
   };
@@ -2637,8 +2639,9 @@ function renderStackPanel(){
     const i = fl.indexOf(f), row = document.createElement("div");
     row.className = "stackRow" + (f === cur ? " active" : "");
     const name = document.createElement("button");
-    name.className = "stackName"; name.textContent = (i === 0 ? "⌂ " : "") + f.name;
-    name.title = i === 0 ? "The ground floor — click to switch to it" : "Click to switch to this floor";
+    const g0 = groundFloor(), under = isBelowGround(f);
+    name.className = "stackName"; name.textContent = (f === g0 ? "⌂ " : under ? "▽ " : "") + f.name;
+    name.title = f === g0 ? "The ground floor — click to switch to it" : under ? "Below ground (a basement) — click to switch to it" : "Click to switch to this floor";
     name.addEventListener("click", ()=> switchFloor(f.id));
     const h = document.createElement("input");
     h.type = "number"; h.min = 200; h.max = 600; h.step = 1; h.placeholder = base; h.value = f.roomHM ? Math.round(f.roomHM*100) : "";
@@ -2661,7 +2664,12 @@ function renderStackPanel(){
       });
       return b;
     };
-    row.append(name, h, cm, mv(1, "▲", "Move this floor up the house"), mv(-1, "▼", "Move this floor down the house"));
+    const gb = document.createElement("button");
+    gb.textContent = "⌂"; gb.className = f === g0 ? "active" : "";
+    gb.title = f === g0 ? "This is the ground floor (the floors under it are below ground)" : "Make this the ground floor — the one at garden level, with the front door. Floors under it go below ground as basements";
+    gb.disabled = f === g0;
+    gb.addEventListener("click", ()=>{ pushUndoSnapshot(); setGroundFloor(f); scheduleAutosave(); renderStackPanel(); render(); });
+    row.append(name, h, cm, gb, mv(1, "▲", "Move this floor up the house"), mv(-1, "▼", "Move this floor down the house"));
     list.appendChild(row);
   });
   const below = floorBelow(cur);
@@ -5197,11 +5205,21 @@ function floorBelow(f){ const fl = houseFloors(), i = fl.indexOf(f); return i > 
 function floorExterior(f){ return f.exterior || (floorBelow(f) ? floorExterior(floorBelow(f)) : null); }
 function floorStack(f){ return f.stack || {x: 0, z: 0, rot: 0}; }
 function floorRoomH(f){ return Math.max(2, Math.min(6, +(f && f.roomHM) || +costSettings().ceilingM || 2.4)); }
-// how high this floor's surface is above the ground floor's, in metres
-function floorElev(f){
+// The ground floor is the lowest floor not marked as below ground (f.underground: a basement, cellar or lower
+// ground floor). Floors under it sit below the garden: their elevations come out negative.
+function groundFloor(){ const fl = houseFloors(); return fl.find(f => !f.underground) || fl[fl.length - 1]; }
+function isBelowGround(f){ const fl = houseFloors(); return fl.indexOf(f) < fl.indexOf(groundFloor()); }
+// how high this floor's surface is above the ground floor's, in metres (negative for a basement)
+function floorElevFromBottom(f){
   let y = 0;
   for (const g of houseFloors()){ if (g === f) break; y += floorRoomH(g) + FLOOR_DEPTH_M; }
   return y;
+}
+function floorElev(f){ return floorElevFromBottom(f) - floorElevFromBottom(groundFloor()); }
+// Makes `f` the ground floor: every floor under it is below ground, it and the floors above aren't.
+function setGroundFloor(f){
+  const fl = houseFloors(), i = fl.indexOf(f);
+  fl.forEach((g, j) => { if (j < i) g.underground = true; else delete g.underground; });
 }
 function floorToHouse(f, px, py){
   const k = metersPerWorldUnitForFloor(f), s = floorStack(f), p = rotate(px*k, py*k, s.rot);
@@ -13347,7 +13365,9 @@ function v3Rebuild(){
   });
   bd.cx = (bd.x0 + bd.x1)/2; bd.cz = (bd.z0 + bd.z1)/2; bd.r = Math.max(3, Math.hypot(bd.x1 - bd.x0, bd.z1 - bd.z0)/2);
   v3.bounds = bd;
-  const ground = v3.house ? -floorElev(floor) : 0, hTop = v3.house ? floorElev(top) - floorElev(floor) + floorRoomH(top) : H;
+  // (in the dollhouse, looking down into a basement with the floors over it hidden, the garden drops to the
+  // basement's floor so it doesn't cover it)
+  const ground = !v3.house ? 0 : floorElev(floor) < 0 && v3.mode !== "walk" && !v3.showAbove ? 0 : -floorElev(floor), hTop = v3.house ? floorElev(top) - floorElev(floor) + floorRoomH(top) : H;
   v3.ground.position.set(bd.cx, ground - 0.005, bd.cz);
   const sun = v3.sun, sc = sun.shadow.camera, r = bd.r + 2 + Math.max(0, hTop - H)*0.5;
   sun.position.set(bd.cx - r*0.6, ground + r*1.6, bd.cz - r*0.9); sun.target.position.set(bd.cx, ground, bd.cz);
