@@ -1138,6 +1138,21 @@ function smartTraceGeometry(src, ai){
     const s = (x - b.ax)*ux + (y - b.ay)*uy, t = (x - b.ax)*-uy + (y - b.ay)*ux;
     return s > -M(0.15) && s < L + M(0.15) && Math.abs(t) < b.depth + M(0.45);
   });
+  // paper that's really outside: connected to the image's edge. White drawn inside a wall — a fireplace's
+  // opening, a window's glass, a hob drawn against it — is enclosed, and counts as part of the wall.
+  const outPaper = new Uint8Array(N);
+  { const q = new Int32Array(N); let qh = 0, qt = 0;
+    const push = i => { if (!outPaper[i] && !label[i] && isBg(i)){ outPaper[i] = 1; q[qt++] = i; } };
+    for (let x = 0; x < W; x++){ push(x); push((H - 1)*W + x); }
+    for (let y = 0; y < H; y++){ push(y*W); push(y*W + W - 1); }
+    while (qh < qt){ const i = q[qh++], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W); }
+  }
+  // furniture Claude saw against a wall (a hob, a sink, units) — see ext()
+  const furnZones = (ai.furniture || []).filter(it => it.item !== "fireplace").map(it=>{
+    const r = M(Math.max(it.widthM || 0.6, it.depthM || 0.6)/2 + 0.08);
+    return {x0: it.x*W - r, x1: it.x*W + r, y0: it.y*H - r, y1: it.y*H + r};
+  });
+  const inFurniture = (x, y) => furnZones.some(z => x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1);
   const crossings = {v: [], h: []}, log = [];
   const scan = (vert)=>{ // vert: rows → upright walls; else columns → level walls
     const n = vert ? H : W, m = vert ? W : H, at = (a, s) => vert ? s*W + a : a*W + s;
@@ -1149,15 +1164,22 @@ function smartTraceGeometry(src, ai){
     // lies past a short gap (a label's box drawn against the wall) isn't wall. A thin first block is hatching
     // or an outline: the wall carries on across paper gaps narrower than a wall is thick.
     const ext = (s, a, dir)=>{
-      const prof = [];
-      for (let k = 0; k <= TMAX; k++){
+      const t = extRaw(s, a, dir);
+      // by furniture Claude saw against the wall, a depth far beyond a wall's is the furniture's drawing run on
+      // into the wall's: no wall measured there (the wall either side carries on across, see the slit-filling)
+      if (t && t > M(0.55) && (vert ? inFurniture(a, s) : inFurniture(s, a))) return null;
+      return t;
+    };
+    const extRaw = (s, a, dir)=>{
+      const prof = [], reach = TMAX + M(0.15); // (a chimney breast with its fireplace is deeper than a plain wall)
+      for (let k = 0; k <= reach; k++){
         const p = a + dir*k;
         if (p < 0 || p >= m) break;
         const i = at(p, s);
         if (label[i]) return null;
-        prof.push(isBg(i) ? 0 : 1);
+        prof.push(outPaper[i] ? 0 : 1);
       }
-      const reachEnd = prof.length <= TMAX; // ran off the image: paper beyond
+      const reachEnd = prof.length <= reach; // ran off the image: paper beyond
       const blockEnd = (from, gapMax)=>{ // end of the drawing starting at `from`, bridging paper gaps < gapMax; -1 if it runs out of reach
         let last = from - 1, run = 0;
         for (let k = from; k < prof.length; k++){
@@ -1233,7 +1255,8 @@ function smartTraceGeometry(src, ai){
 
   // what Claude saw sitting in walls: doors/openings, windows (bays included) — gaps across them get bridged
   const marks = [];
-  (ai.openings || []).forEach(d => marks.push({x: d.x*W, y: d.y*H, w: M(Math.max(0.5, d.widthM || 0.8)), kind: "door"}));
+  // (an open-plan opening isn't one: no wall is drawn either side of it to carry through)
+  (ai.openings || []).filter(d => d.kind !== "opening").forEach(d => marks.push({x: d.x*W, y: d.y*H, w: M(Math.max(0.5, d.widthM || 0.8)), kind: "door"}));
   (ai.windows || []).forEach(w => marks.push({x: (w.x1 + w.x2)/2*W, y: (w.y1 + w.y2)/2*H, w: Math.hypot((w.x2 - w.x1)*W, (w.y2 - w.y1)*H), kind: "window"}));
   const along = (sg, x, y) => sg.o === "v" ? y : x, across = (sg, x, y) => sg.o === "v" ? x : y;
   const solidBetween = (sg, a, b)=>{ // along sg's line from a to b, nothing but drawing — no room's floor
@@ -1264,7 +1287,7 @@ function smartTraceGeometry(src, ai){
         if (!ok && gap <= M(2.2)) ok = marks.some(mk => { const s = along(A, mk.x, mk.y), t = across(A, mk.x, mk.y); return s > lo.s1 - M(0.1) && s < hi.s0 + M(0.1) && Math.abs(t - A.c) < A.t/2 + M(0.35); });
         if (!ok) continue;
         const la = A.s1 - A.s0, lb = Bq.s1 - Bq.s0;
-        const m = {o: A.o, c: (A.c*la + Bq.c*lb)/(la + lb), t: (A.t*la + Bq.t*lb)/(la + lb), s0: Math.min(A.s0, Bq.s0), s1: Math.max(A.s1, Bq.s1), pairs: A.pairs.concat(Bq.pairs), outer: A.outer && Bq.outer};
+        const m = {o: A.o, c: (A.c*la + Bq.c*lb)/(la + lb), t: (A.t*la + Bq.t*lb)/(la + lb), s0: Math.min(A.s0, Bq.s0), s1: Math.max(A.s1, Bq.s1), pairs: A.pairs.concat(Bq.pairs), outer: A.outer || Bq.outer}; // outside for any of its length
         segs.splice(j, 1); segs.splice(i, 1, m); changed = true; break;
       }
     }
@@ -1327,7 +1350,10 @@ function smartTraceGeometry(src, ai){
         const lo = Math.min(...chain.map(c => c.sg.s0)), hi = Math.max(...chain.map(c => c.sg.s1));
         for (const q of list){
           if (used.has(q) || Math.abs(q.face - first.face) > Math.max(2, M(0.06))) continue;
-          if (q.sg.s0 > hi + M(0.5) || q.sg.s1 < lo - M(0.5)) continue;
+          const near = q.sg.s0 <= hi + M(0.5) && q.sg.s1 >= lo - M(0.5);
+          const solidRun = !near && q.sg.s0 > hi && q.sg.s0 - hi <= M(3) && solidBetween({o, c: q.face - side*Math.min(q.sg.t, M(0.25))/2, t: Math.min(q.sg.t, M(0.25))}, hi, q.sg.s0)
+            || !near && q.sg.s1 < lo && lo - q.sg.s1 <= M(3) && solidBetween({o, c: q.face - side*Math.min(q.sg.t, M(0.25))/2, t: Math.min(q.sg.t, M(0.25))}, q.sg.s1, lo);
+          if (!near && !solidRun) continue;
           chain.push(q); used.add(q); grew = true;
         }
       }
@@ -1356,7 +1382,9 @@ function smartTraceGeometry(src, ai){
     let best = null;
     segs.forEach(p=>{
       if (p === sg || p.o === sg.o) return;
-      if (sg.c < p.s0 - sg.t - M(0.3) || sg.c > p.s1 + sg.t + M(0.3)) return;
+      // (past the end of the wall across — an L corner — but not far, or only across solid drawing: a cut-off corner)
+      const past = sg.c < p.s0 ? p.s0 - sg.c : sg.c > p.s1 ? sg.c - p.s1 : 0;
+      if (past > sg.t + M(0.3) && !(past <= sg.t + M(0.7) && solidBetween(p, sg.c, sg.c < p.s0 ? p.s0 : p.s1))) return;
       const d = Math.abs(e - p.c);
       // near enough — or a little further on past this end, where what lies between is all drawing (no room): one solid block of wall
       if (d > p.t/2 + sg.t/2 + M(0.15) && !(d <= p.t/2 + sg.t/2 + M(0.6) && (end ? p.c > e : p.c < e) && solidBetween(sg, e, p.c + Math.sign(e - p.c)*p.t/2))) return;
@@ -1366,12 +1394,41 @@ function smartTraceGeometry(src, ai){
     const p = best.p;
     log.push(["corner", sg.o, Math.round(sg.c), end, Math.round(e), Math.round(p.c), Math.round(p.s0), Math.round(p.s1)]);
     if (end) sg.s1 = p.c; else sg.s0 = p.c;
-    if (sg.c < p.s0 && p.s0 - sg.c < sg.t + M(0.35)) p.s0 = sg.c; // an L corner: that wall reaches this one's centre line too
-    if (sg.c > p.s1 && sg.c - p.s1 < sg.t + M(0.35)) p.s1 = sg.c;
+    if (sg.c < p.s0 && p.s0 - sg.c < sg.t + M(0.75)) p.s0 = sg.c; // an L corner: that wall reaches this one's centre line too
+    if (sg.c > p.s1 && sg.c - p.s1 < sg.t + M(0.75)) p.s1 = sg.c;
   }));
   segs = segs.filter(sg => sg.s1 - sg.s0 >= M(0.15));
   foldCopies(); // joining corners can stretch one piece over another copy of the same wall
   mergeRuns(); // and can bring pieces of one wall end to end (either side of a T), which then join
+  // a wall end left loose near another wall, with drawing (not floor) between: a corner cut off at an angle.
+  // An angled wall joins them.
+  const diags = [];
+  { const pt = (sg, end) => sg.o === "v" ? {x: sg.c, y: end ? sg.s1 : sg.s0} : {x: end ? sg.s1 : sg.s0, y: sg.c};
+    const inSeg = (p, sg, m) => sg.o === "v" ? Math.abs(p.x - sg.c) <= sg.t/2 + m && p.y >= sg.s0 - m && p.y <= sg.s1 + m : Math.abs(p.y - sg.c) <= sg.t/2 + m && p.x >= sg.s0 - m && p.x <= sg.s1 + m;
+    const nearestOn = (p, sg) => sg.o === "v" ? {x: sg.c, y: Math.max(sg.s0, Math.min(sg.s1, p.y))} : {x: Math.max(sg.s0, Math.min(sg.s1, p.x)), y: sg.c};
+    segs.forEach(sg => [0, 1].forEach(end=>{
+      const e = pt(sg, end);
+      if (segs.some(o => o !== sg && inSeg(e, o, M(0.05)))) return; // meets a wall already
+      let best = null;
+      segs.forEach(o=>{
+        if (o === sg || (o.o === sg.o && Math.abs(o.c - sg.c) < Math.max(o.t, sg.t))) return;
+        const q = nearestOn(e, o), d = Math.hypot(q.x - e.x, q.y - e.y);
+        if (d < M(0.12) || d > M(0.8)) return;
+        if (!best || d < best.d) best = {q, d};
+      });
+      if (!best) return;
+      const n = Math.max(4, Math.round(best.d)); let floor = 0;
+      for (let i = 1; i < n; i++){ const x = Math.round(e.x + (best.q.x - e.x)*i/n), y = Math.round(e.y + (best.q.y - e.y)*i/n); if (label[y*W + x]) floor++; }
+      if (floor > (n - 1)*0.5) return; // open floor between: an opening, not a corner
+      if (inSeg(best.q, sg, M(0.05))) return; // that's just back along its own line
+      // a doorway or opening Claude saw there (any kind, open-plan included): not a corner to close
+      const segD = (px, py)=>{ const dx = best.q.x - e.x, dy = best.q.y - e.y, L2 = dx*dx + dy*dy || 1, u = Math.max(0, Math.min(1, ((px - e.x)*dx + (py - e.y)*dy)/L2)); return Math.hypot(px - e.x - u*dx, py - e.y - u*dy); };
+      if ((ai.openings || []).some(d => segD(d.x*W, d.y*H) < M(Math.max(0.5, d.widthM || 0.8))/2)) return;
+      if (diags.some(d => Math.hypot(d.x1 - best.q.x, d.y1 - best.q.y) < M(0.1) && Math.hypot(d.x2 - e.x, d.y2 - e.y) < M(0.1))) return;
+      diags.push({x1: e.x, y1: e.y, x2: best.q.x, y2: best.q.y, t: sg.t});
+      log.push(["diag", Math.round(e.x), Math.round(e.y), Math.round(best.q.x), Math.round(best.q.y)]);
+    }));
+  }
   const segEnds = sg => sg.o === "v" ? [{x: sg.c, y: sg.s0}, {x: sg.c, y: sg.s1}] : [{x: sg.s0, y: sg.c}, {x: sg.s1, y: sg.c}];
 
   // 5) doors and windows, each on the wall it sits in, its exact span found where that wall's drawing breaks
@@ -1458,9 +1515,43 @@ function smartTraceGeometry(src, ai){
     doors.push({x: cxp, y: cyp, o: sg.o, len: b - a, t: sg.t, kind: d.kind, hinge, side: side || 1});
   });
   const windows = [];
+  // a bay's mouth: no wall was measured across it (the bay's own drawing was left out above), so one is made,
+  // on the line of the outside wall either side of the bay, running out to the walls at the corners
+  const bayMouth = (w, ax, ay, bx, by)=>{
+    const o = Math.abs(bx - ax) >= Math.abs(by - ay) ? "h" : "v";
+    const line = o === "h" ? (ay + by)/2 : (ax + bx)/2, a = Math.min(o === "h" ? ax : ay, o === "h" ? bx : by), b = Math.max(o === "h" ? ax : ay, o === "h" ? bx : by);
+    const r = findRoom(w.room), inward = r && r.area ? Math.sign((o === "h" ? r.cy : r.cx) - line) || 1 : 1;
+    const depth = M(Math.max(0.3, w.bayDepthM || 0.6)), want = line + inward*depth;
+    let best = null;
+    segs.forEach(sg=>{
+      if (sg.o !== o || !sg.outer) return;
+      const off = (sg.c - line)*inward; // how far in from the bay's front
+      if (off < M(0.15) || off > depth + M(0.6)) return;
+      const gap = sg.s1 < a ? a - sg.s1 : sg.s0 > b ? sg.s0 - b : 0;
+      if (gap > M(1.5)) return;
+      const score = Math.abs(sg.c - want) + gap*0.5;
+      if (!best || score < best.score) best = {sg, score};
+    });
+    const c = best ? best.sg.c : want, t = best ? best.sg.t : M(0.3);
+    let s0 = a, s1 = b;
+    segs.forEach(sg=>{ // out to the collinear pieces beside it, and to the corner walls
+      if (sg.o === o && Math.abs(sg.c - c) < Math.max(sg.t, t)/2){ if (sg.s1 < a && a - sg.s1 < M(1.5)) s0 = Math.min(s0, sg.s0); if (sg.s0 > b && sg.s0 - b < M(1.5)) s1 = Math.max(s1, sg.s1); }
+      if (sg.o !== o && c >= sg.s0 - M(0.3) && c <= sg.s1 + M(0.3)){ if (sg.c < a && a - sg.c < M(1.5)) s0 = Math.min(s0, sg.c); if (sg.c > b && sg.c - b < M(1.5)) s1 = Math.max(s1, sg.c); }
+    });
+    const mouth = {o, c, t, s0, s1, pairs: [], outer: true};
+    segs.push(mouth);
+    log.push(["bayMouth", o, Math.round(c), Math.round(s0), Math.round(s1)]);
+    return {sg: mouth, s: (a + b)/2};
+  };
   (ai.windows || []).forEach(w=>{
     const ax = w.x1*W, ay = w.y1*H, bx = w.x2*W, by = w.y2*H, mx = (ax + bx)/2, my = (ay + by)/2;
-    const hit = nearestSeg(mx, my, sg => sg.outer);
+    const isBay = w.bay && w.bay !== "none";
+    let hit = nearestSeg(mx, my, sg => sg.outer);
+    if (isBay && hit){ // the wall it found must cross the bay's whole width, else it's a wall beside the bay
+      const sa = along(hit.sg, ax, ay), sb = along(hit.sg, bx, by);
+      if (Math.min(sa, sb) < hit.sg.s0 - M(0.3) || Math.max(sa, sb) > hit.sg.s1 + M(0.3)) hit = null;
+    }
+    if (!hit && isBay) hit = bayMouth(w, ax, ay, bx, by);
     if (!hit) return;
     const sg = hit.sg, sa = along(sg, ax, ay), sb = along(sg, bx, by);
     let a = Math.min(sa, sb), b = Math.max(sa, sb);
@@ -1480,7 +1571,7 @@ function smartTraceGeometry(src, ai){
       for (let k = 0; k < M(2.5); k++){
         const t = Math.round(sg.c + out*k), x = sg.o === "v" ? t : Math.round(mid), y = sg.o === "v" ? Math.round(mid) : t;
         if (x < 0 || y < 0 || x >= W || y >= H) break;
-        if (isBg(y*W + x)){ if (++run > BGRUN*3) break; } else { run = 0; last = k; }
+        if (outPaper[y*W + x]){ if (++run > BGRUN*3) break; } else { run = 0; last = k; } // (a window's white glass is the bay's, not outside)
       }
       bow = out*Math.max(M(0.2), last - sg.t/2);
     }
@@ -1489,13 +1580,14 @@ function smartTraceGeometry(src, ai){
 
   // 6) back to the plan's own units (the image's full-size pixels)
   const k = 1/f;
-  const segOut = segs.map(sg => ({...(sg.o === "v" ? {x1: sg.c*k, y1: sg.s0*k, x2: sg.c*k, y2: sg.s1*k} : {x1: sg.s0*k, y1: sg.c*k, x2: sg.s1*k, y2: sg.c*k}), tM: sg.t*mpp, outer: sg.outer}));
+  const segOut = segs.map(sg => ({...(sg.o === "v" ? {x1: sg.c*k, y1: sg.s0*k, x2: sg.c*k, y2: sg.s1*k} : {x1: sg.s0*k, y1: sg.c*k, x2: sg.s1*k, y2: sg.c*k}), tM: sg.t*mpp, outer: sg.outer}))
+    .concat(diags.map(d => ({x1: d.x1*k, y1: d.y1*k, x2: d.x2*k, y2: d.y2*k, tM: d.t*mpp, outer: false})));
   return {
     mPerPx: mpp*f, scaleSpread, ratioCount: ratios.length, work: {W, H, f, label, rooms, segs, crossings, log},
     walls: segOut,
     doors: doors.map(d => ({x: d.x*k, y: d.y*k, rot: d.o === "v" ? Math.PI/2 : 0, lenM: d.len*mpp, tM: d.t*mpp, kind: d.kind, hinge: d.hinge, side: d.side})),
     windows: windows.map(w => ({...(w.o === "v" ? {x1: w.c*k, y1: w.a*k, x2: w.c*k, y2: w.b*k} : {x1: w.a*k, y1: w.c*k, x2: w.b*k, y2: w.c*k}), tM: w.t*mpp, bowM: w.bow*mpp, o: w.o})),
-    rooms: rooms.filter(r => r.area).map(r => ({name: r.name, x: r.cx*k, y: r.cy*k, inside: label[Math.round(r.cy)*W + Math.round(r.cx)] === r.id, id: r.id})),
+    rooms: rooms.filter(r => r.area).map(r => ({name: r.name, x: r.cx*k, y: r.cy*k, inside: label[Math.round(r.cy)*W + Math.round(r.cx)] === r.id, id: r.id, area: r.area})),
     findPointIn: (id)=>{ // a point that's surely inside room id (its centre if that is, else its pixel nearest the centre)
       const r = byId.get(id); if (!r || !r.area) return null;
       // well clear of its edges (the drawn wall's thickness starts there), the clearance eased off for a tiny room
@@ -1569,13 +1661,21 @@ function applySmartTrace(floor, res, ai){
         for (let a = 0; a < 16 && !found; a++){ const q = {x: p.x + Math.cos(a*Math.PI/8)*ring*step, y: p.y + Math.sin(a*Math.PI/8)*ring*step}; if (roomAtWorld(areas, q.x, q.y)) found = q; }
         if (found) p = found;
       }
-      floor.roomNames.push({x: p.x, y: p.y, name: r.name});
+      floor.roomNames.push({x: p.x, y: p.y, name: r.name, area: r.area});
     });
+    // two of Claude's rooms that are one open space here (open-plan): the bigger one's name stands for it
+    const byRoom = new Map();
+    floor.roomNames.forEach(n=>{ const r = roomAtWorld(areas, n.x, n.y); const k = r ? r.label : "x" + n.x + "," + n.y; const was = byRoom.get(k); if (!was || n.area > was.area) byRoom.set(k, n); });
+    floor.roomNames = [...byRoom.values()].map(({x, y, name}) => ({x, y, name}));
     if (!floor.roomNames.length) delete floor.roomNames;
   } finally { suppressHistory = was; }
   scheduleAutosave();
 }
-async function runSmartTrace(){
+// Claude's reading of an image is kept (in this browser, per image), so tracing the same image again — after
+// fixing something, or to start over — costs nothing. Shift-click the button to have Claude read it afresh.
+const SMART_CACHE_PREFIX = "floorplanTool.smartRead:";
+function smartCacheKey(dataURL){ return SMART_CACHE_PREFIX + hashString(dataURL) + ":" + dataURL.length; }
+async function runSmartTrace(ev){
   const floor = activeFloor(), statusEl = document.getElementById("smartStatus");
   if (!floor.image){ alert("Open the floorplan image on this floor first (Image, above)."); return; }
   const apiKey = document.getElementById("fldApiKey").value.trim();
@@ -1585,8 +1685,14 @@ async function runSmartTrace(){
   btn.disabled = true; setAIButtonsDisabled(true);
   const t0 = Date.now(), tick = setInterval(()=>{ statusEl.textContent = `Claude is reading the plan… ${Math.round((Date.now() - t0)/1000)}s (usually under a minute)`; }, 1000);
   try{
-    const {mediaType, base64Data} = readImageDataUrl(floor);
-    const ai = await callSmartTrace(base64Data, mediaType, apiKey, document.getElementById("fldModel").value);
+    const key = smartCacheKey(floor.image.dataURL);
+    let ai = null, reused = false;
+    if (!(ev && ev.shiftKey)) try { ai = JSON.parse(localStorage.getItem(key) || "null"); reused = !!ai; } catch(e){ ai = null; }
+    if (!ai){
+      const {mediaType, base64Data} = readImageDataUrl(floor);
+      ai = await callSmartTrace(base64Data, mediaType, apiKey, document.getElementById("fldModel").value);
+      try { localStorage.setItem(key, JSON.stringify(ai)); } catch(e){ /* full: just not kept */ }
+    }
     clearInterval(tick);
     statusEl.textContent = "Measuring the walls from the image…";
     await new Promise(r => setTimeout(r, 20));
@@ -1598,7 +1704,8 @@ async function runSmartTrace(){
     const n = (a, w) => `${a} ${w}${a === 1 ? "" : "s"}`;
     const scaleNote = res.ratioCount ? `Scale set from ${n(res.ratioCount, "printed room size")}` + (res.scaleSpread > 0.15 ? ` — they didn't all agree (the drawing isn't exactly to scale), so measure a wall or two against the plan.` : ".") : "No room sizes were printed, so the scale is a guess — use Calibrate scale on a wall you know.";
     statusEl.textContent = `Traced ${n(res.rooms.length, "room")}, ${n(res.walls.length, "wall")}, ${n(res.windows.length, "window")}, ${n(res.doors.length, "door")}` +
-      ((ai.furniture || []).length ? ` and ${n(ai.furniture.length, "piece")} of furniture` : "") + ` in ${Math.round((Date.now() - t0)/1000)}s. ${scaleNote} Check it over and fix anything with Select — Undo puts it all back.`;
+      ((ai.furniture || []).length ? ` and ${n(ai.furniture.length, "piece")} of furniture` : "") + ` in ${Math.round((Date.now() - t0)/1000)}s` +
+      (reused ? " (using Claude's earlier reading of this image, so free — Shift-click to have it read again)" : "") + `. ${scaleNote} Check it over and fix anything with Select — Undo puts it all back.`;
   }catch(err){
     clearInterval(tick); console.error(err);
     statusEl.textContent = "";

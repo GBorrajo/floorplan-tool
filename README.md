@@ -1561,3 +1561,16 @@ Thin brick strips showed indoors on traced plans. Each one came from walls overl
 - A wall end flush with the far face of a wall it runs into takes the finish of what's beyond it.
 - An inside wall whose end is flush with the outside takes the outside finish. This is checked out to 30 cm, so a hallway's ragged raster edge doesn't count as outside.
 - A piece with no room on either side that is short, or buried on one face (behind a breast, or under a thicker copy), gets a plain top instead of a brick one fighting the neighbouring wall tops.
+
+### Smart trace: third test plan, reading cache (2026-11-15)
+
+**Claude's reading is cached per image.** Pressing *Trace from the image* again on the same picture reuses the reading, which is free and instant, and only re-measures. Shift-click asks Claude again. The cache lives in localStorage under `floorplanTool.smartRead:<hash>:<length>`.
+
+Fixes from a terraced plan with solid black walls, chimney breasts, an open-plan kitchen/family room and a square bay:
+- "Outside" means paper connected to the image border (`outPaper`). A fireplace's or a window's white inside the house no longer breaks the outside wall.
+- An open-plan *opening* Claude names no longer bridges a wall across the gap. Dimension ticks no longer make a false wall there.
+- At furniture Claude saw against a wall (a hob, a sink), a reading far thicker than a wall (over 55 cm) is the furniture running into it. It's dropped, and the wall either side carries across.
+- Bay windows with no wall across their mouth get one (`bayMouth`), lined up with the front wall either side. The bay's depth is measured to real outside paper, not to the window glass.
+- A wall merged from pieces counts as outside if any piece was, so windows beside French doors still find it.
+- A corner joins across up to 70 cm of solid drawing (a corner cut off at an angle). A wall end left loose near another wall, with drawing rather than floor between and no opening Claude saw there, is joined by a short angled wall.
+- Two of Claude's rooms that turn out to be one open space keep one name: the bigger room's.
