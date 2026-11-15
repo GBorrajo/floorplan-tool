@@ -2191,7 +2191,7 @@ function closeRoomShells(src, res, ai){
       const off = Math.abs((b.x1 - a.x1)*ga.nx + (b.y1 - a.y1)*ga.ny); if (off > Math.max(ga.t, gb.t)/2) continue;
       const along = (x, y) => (x - a.x1)*ga.ux + (y - a.y1)*ga.uy, sb = [along(b.x1, b.y1), along(b.x2, b.y2)].sort((p, q) => p - q);
       if (sb[0] < ga.L) continue; // b must lie past a's far end (each pair is looked at both ways round)
-      const gap = sb[0] - ga.L; if (gap <= 0 || gap > 2.5/res.mPerPx) continue;
+      const gap = sb[0] - ga.L, rim = a.outer && b.outer && Math.max(a.tM, b.tM) <= 1.8*Math.min(a.tM, b.tM); if (gap <= 0 || gap > (rim ? 4 : 2.5)/res.mPerPx) continue;
       const p0 = {x: a.x1 + ga.ux*ga.L, y: a.y1 + ga.uy*ga.L}, p1 = {x: a.x1 + ga.ux*sb[0], y: a.y1 + ga.uy*sb[0]};
       const door = doors.some(d => { const s = along(d.x, d.y); return s > ga.L - 2/f && s < sb[0] + 2/f && Math.abs((d.x - a.x1)*ga.nx + (d.y - a.y1)*ga.ny) < Math.max(ga.t, gb.t); });
       if (wins.some(o => distTo((p0.x + p1.x)/2, (p0.y + p1.y)/2, o) <= geo(o).t/2 + 2/f)) continue; // a window there already
@@ -2202,7 +2202,13 @@ function closeRoomShells(src, res, ai){
         const lines = ks.filter(q => q.c >= 0.7);
         const twoLines = lines.length >= 2 && lines[lines.length - 1].k - lines[0].k >= Math.max(2/f, tt*0.4)
           && ks.some(q => q.k > lines[0].k && q.k < lines[lines.length - 1].k && q.c < 0.4);
-        if (!twoLines || sb[0] - ga.L > 2.5/res.mPerPx) continue;
+        // two outer walls with one thin line drawn the whole way between them: the house's edge, drawn thin for a stretch
+        // (beside a stair, round a porch) — one wall
+        const thinRim = rim && !twoLines && Math.max(...ks.map(q => q.c)) >= 0.9;
+        if (!thinRim && (!twoLines || gap > 2.5/res.mPerPx)) continue;
+        if (thinRim){ const q1 = {x: a.x1 + ga.ux*sb[1], y: a.y1 + ga.uy*sb[1]};
+          walls[i] = {...a, x2: q1.x, y2: q1.y, tM: ga.L >= gb.L ? a.tM : b.tM, outer: true, src: (a.src || "t") + "+rim+" + (b.src || "t")};
+          walls.splice(j, 1); merged = true; continue; }
         wins.push({x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, tM: Math.max(a.tM, b.tM), bowM: 0, o: "h", closing: true});
         continue;
       }
@@ -2454,7 +2460,48 @@ function closeRoomShells(src, res, ai){
     if (best) cheeks.push({x1: x, y1: y, x2: best.x, y2: best.y, tM: w.tM || tOut, outer: true, closing: true, src: "cheek"});
   }));
   walls = walls.concat(cheeks);
-  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length + blocks.length + bridges.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length, trimmed, blocks: blocks.length, bridges: bridges.length, winBridges, cheeks: cheeks.length}};
+  // ...and the same where a bay is traced as straight walls: two wall ends touching nothing, within 1.2m of each other
+  // (2m where the way is drawn the whole way), with drawn lines running between them, are joined: by a window where
+  // the lines are thin (glazing), by a wall where they're solid
+  const hangEnds = [];
+  // (a piece on the same line — the window in a wall, the wall on past it — is the same run, not something it meets)
+  const sameLine = (a, b) => { const ga = geo(a), gb = geo(b); return Math.abs(ga.ux*gb.uy - ga.uy*gb.ux) < 0.05 && Math.abs((b.x1 - a.x1)*ga.nx + (b.y1 - a.y1)*ga.ny) <= Math.max(ga.t, gb.t); };
+  walls.concat(wins).forEach(w => [[w.x1, w.y1], [w.x2, w.y2]].forEach(([x, y]) => {
+    const meets = walls.concat(wins).filter(v => v !== w && distTo(x, y, v) <= geo(v).t/2 + 0.05/res.mPerPx);
+    if (meets.some(v => !sameLine(w, v))) return;
+    // the run's end: no piece on its line carries on past this point
+    const g = geo(w), out = (x - (w.x1 + w.x2)/2)*g.ux + (y - (w.y1 + w.y2)/2)*g.uy > 0 ? 1 : -1;
+    if (meets.some(v => [[v.x1, v.y1], [v.x2, v.y2]].some(([vx, vy]) => ((vx - x)*g.ux + (vy - y)*g.uy)*out > 2/f))) return;
+    hangEnds.push({x, y, w});
+  }));
+  const usedHang = new Set(); let glazed = 0;
+  hangEnds.forEach((e, i)=>{
+    if (usedHang.has(i)) return;
+    let best = null;
+    hangEnds.forEach((q, j)=>{
+      if (j === i || q.w === e.w || usedHang.has(j)) return;
+      const d = Math.hypot(q.x - e.x, q.y - e.y), inLine = sameLine(e.w, q.w) && sameLine(e.w, {x1: e.x, y1: e.y, x2: q.x, y2: q.y, tM: e.w.tM});
+      if (d < 0.3/res.mPerPx || d > (inLine ? 2.5 : 2.0)/res.mPerPx) return;
+      // nothing already across the way between them
+      const mids = [0.3, 0.5, 0.7].map(u => ({x: e.x + (q.x - e.x)*u, y: e.y + (q.y - e.y)*u}));
+      if (mids.some(m => walls.concat(wins).some(v => distTo(m.x, m.y, v) <= geo(v).t/2))) return;
+      // drawn lines along the way, somewhere across a wall's thickness
+      const L = Math.hypot(q.x - e.x, q.y - e.y), nx = -(q.y - e.y)/L, ny = (q.x - e.x)/L, tt = Math.max(geo(e.w).t, geo(q.w).t);
+      let cov = 0; for (let k = -tt/2; k <= tt/2; k += 1/f) cov = Math.max(cov, inkCover(e.x + nx*k, e.y + ny*k, q.x + nx*k, q.y + ny*k, line));
+      const solidCov = inkCover(e.x, e.y, q.x, q.y);
+      if (cov < (d > 1.2/res.mPerPx ? 0.75 : 0.7)) return;
+      // one wall carrying straight on, drawn thinner here: a wall, unless Claude saw a window in the gap
+      const claudeWin = (ai.windows || []).some(cw => { const mx = (cw.x1 + cw.x2)/2*IW, my = (cw.y1 + cw.y2)/2*IH; return distTo(mx, my, {x1: e.x, y1: e.y, x2: q.x, y2: q.y, tM: 0}) < tt; });
+      if (!best || d < best.d) best = {j, q, d, solid: solidCov >= 0.75 || (inLine && !claudeWin)};
+    });
+    if (!best) return;
+    usedHang.add(i); usedHang.add(best.j);
+    // drawn solid all the way: a stretch of wall left out; otherwise thin lines, glazing
+    if (best.solid) walls.push({x1: e.x, y1: e.y, x2: best.q.x, y2: best.q.y, tM: Math.max(e.w.tM, best.q.w.tM), outer: !!(e.w.outer || best.q.w.outer), closing: true, src: "hang"});
+    else wins.push({x1: e.x, y1: e.y, x2: best.q.x, y2: best.q.y, tM: Math.max(e.w.tM, best.q.w.tM), bowM: 0, o: "h", closing: true});
+    glazed++;
+  });
+  return {...res, walls, windows: wins, doors: doorsOut, closed: added.length + links.length + blocks.length + bridges.length, closeInfo: {splits: splits.length, wallLum, cut, loose: loosePts.length, added: added.length, links: links.length, trimmed, blocks: blocks.length, bridges: bridges.length, winBridges, cheeks: cheeks.length, glazed}};
 }
 
 // ---------------------------------------------------------------------------
@@ -2529,7 +2576,13 @@ function refineFloorBoxes(img, regions){
     if (cc.n < 4) return;
     const a = (cc.x1 - cc.x0 + 1)*(cc.y1 - cc.y0 + 1);
     let best = -1, most = 0;
-    boxes.forEach((b, k)=>{ const ov = Math.max(0, Math.min(cc.x1 + 1, b.x1) - Math.max(cc.x0, b.x0))*Math.max(0, Math.min(cc.y1 + 1, b.y1) - Math.max(cc.y0, b.y0)); if (ov > most){ most = ov; best = k; } });
+    // (a box drawn inside another — a garage inside the sheet-wide box of the house's ground floor — overlaps a piece
+    // just as much as the outer one does: the inner, smaller box is the one that means it)
+    const barea = b => (b.x1 - b.x0)*(b.y1 - b.y0);
+    boxes.forEach((b, k)=>{ const ov = Math.max(0, Math.min(cc.x1 + 1, b.x1) - Math.max(cc.x0, b.x0))*Math.max(0, Math.min(cc.y1 + 1, b.y1) - Math.max(cc.y0, b.y0));
+      const within = (p, q) => p.x0 >= q.x0 - 2 && p.y0 >= q.y0 - 2 && p.x1 <= q.x1 + 2 && p.y1 <= q.y1 + 2 && barea(p) < barea(q);
+      if (best >= 0 && within(boxes[best], b) && most >= 0.6*a) return; // already held by a box inside this one
+      if (ov > most*1.05 || (best >= 0 && within(b, boxes[best]) && ov >= 0.6*a)){ most = Math.max(most, ov); best = k; } });
     if (best >= 0 && most >= 0.5*a) owner[cc.id] = best;
   });
   // A whole floor's drawing that Claude's boxes split between them (a box drawn too tall takes in the top of the
@@ -4203,10 +4256,11 @@ function wallCutters(floor = activeFloor(), withDoors = true){
   const out = withDoors ? floor.boxes.filter(b => b.kind === "door") : [];
   floor.walls.forEach(w=>{
     if ((w.type||"wall") !== "window") return;
-    out.push({x: (w.x1 + w.x2)/2, y: (w.y1 + w.y2)/2, wCm: worldToCm(Math.hypot(w.x2 - w.x1, w.y2 - w.y1)), window: true});
+    const L = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1, ux = (w.x2 - w.x1)/L, uy = (w.y2 - w.y1)/L; // (its direction: it only cuts a wall it runs along)
+    out.push({x: (w.x1 + w.x2)/2, y: (w.y1 + w.y2)/2, wCm: worldToCm(Math.hypot(w.x2 - w.x1, w.y2 - w.y1)), window: true, ux, uy});
     if (w.bowCm){
       const pts = windowCenterlinePoints(w), m = windowMidpoint(w);
-      out.push({x: m.x, y: m.y, wCm: worldToCm(polylineCumLengths(pts).at(-1)), window: true});
+      out.push({x: m.x, y: m.y, wCm: worldToCm(polylineCumLengths(pts).at(-1)), window: true, ux, uy});
     }
   });
   return out;
@@ -6495,6 +6549,9 @@ function doorSpansOnWall(wall, doors){
     const perp = relx*perpx + rely*perpy;
     if (d < -20 || d > length+20) return; // not along this wall
     if (Math.abs(perp) > perpTolerance) return; // not near this wall
+    // a window runs along the wall it's in: one in a wall meeting this one at a corner, near enough on a coarse plan
+    // (the margin is in image pixels), mustn't cut a gap in this one
+    if (door.window && door.ux != null && Math.abs(door.ux*diry - door.uy*dirx) > 0.5) return;
     const halfWidthPx = door.window ? cmToWorld(door.wCm)/2 : Math.max(20, cmToWorld(door.wCm||DOOR_DEFAULT.wCm)/2);
     spans.push({start: d-halfWidthPx, end: d+halfWidthPx});
   });

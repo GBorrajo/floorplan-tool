@@ -1851,3 +1851,33 @@ Re-reading every multi-floor test plan with enlarged crops (10 plans, about 22 f
 
 The two lower fits are not misplacements. In the overlays the outer walls coincide; the new readings trace more of
 the upper floors (plan 20's room over the garage, plan 19's upstairs partitions) with nothing below them to match.
+
+### The last open rooms: loose ends, thin rims, corner windows, nested boxes (2026-11-15)
+
+- **Loose ends joined.** In `closeRoomShells`, two run ends that touch nothing, within 1.2 m of each other, are
+  joined when drawn lines run between them. "Run end" means the far end of a run of pieces on one line, a wall and
+  the window in it counting as one run. The limit rises to 2 m if lines cover 75% of the way, and to 2.5 m for two
+  ends on the same line. The join is a window where the lines are thin (glazing) and a wall where they're solid. A
+  same-line gap is a wall unless Claude saw a window there. This closes:
+  - plan 13's first-floor bay, whose glazed side was missing;
+  - plan 20's gym end, where a window and a short stretch of slanted wall were missed.
+- **Thin rims.** Step 2 now joins two outer wall pieces of similar thickness (no more than 1.8× apart) up to 4 m apart,
+  when a single thin line runs the whole way between them: the house's edge drawn thin beside a stair. This closes
+  plan 20's hallway.
+- **A window cuts only its own wall.** `doorSpansOnWall` cut a wall wherever a window sat within the wall's
+  half-thickness plus 15 image pixels. On a coarse plan (3 cm per pixel) that reached a perpendicular wall at the
+  corner and cut a slit in it, opening plan 20's middle bedroom. Window cutters now carry their direction and only cut
+  walls running the same way. This is an app-wide fix: drawing and room areas both use it.
+- **Nested boxes.** In `refineFloorBoxes`, when Claude's box for a separate building lies inside a floor's box (plan 20's
+  garage inside floor 1's), the drawing goes to the inner box once it covers 60% of the drawing, whatever the box
+  order. Before, floor 1 traced the garage as one of its rooms, and the garage's own crop came out blank. Only that
+  plan's crops change.
+- Tried and dropped: a loose end running on along any drawn line, up to 2.5 m. It added 3–4 m junk walls along
+  marking lines on plans 06 and 24.
+
+Results:
+- Every room closes on every floor of all ten multi-floor test plans, through Trace the house. Plan 13 is at
+  4/4, 6/6, 6/6. Plan 20 is at 11/11, 16/16, and 1/1 for its garage.
+- Single-floor batch: 200/234 rooms closed. Kitchens within 25%: 22/23.
+- Stack fits held, apart from small shifts. Plan 01 went from 0.95 to 0.91: its corner walls are no longer cut by
+  windows, which changes the samples the fit compares.
