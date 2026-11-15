@@ -11827,8 +11827,9 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
     const pts = wallCenterlinePoints(w), A = pts[0], B = pts.at(-1), T = (w.thicknessCm || WALL_THICKNESS_CM)/100;
     if (!underAbove({x: (A.x + B.x)/2, y: (A.y + B.y)/2})) return;
     const fin = floorExterior(floor), mat = !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : v3Mat(fin, {roughness: 0.95});
-    const L = Math.hypot(B.x - A.x, B.y - A.y)*k, m = v3Slab(group, A.x*k, A.y*k, B.x*k, B.y*k, 0, L, H, H + over, T, mat, null);
-    if (m) v3WallUVs(m, 0);
+    // on past each end by half its thickness, into the wall either side — closing any small gap where they were traced
+    const L = Math.hypot(B.x - A.x, B.y - A.y)*k, m = v3Slab(group, A.x*k, A.y*k, B.x*k, B.y*k, -T/2, L + T/2, H, H + over, T, mat, null);
+    if (m) v3WallUVs(m, -T/2);
   });
   if (cut >= H) floor.boxes.forEach(b => { if (b.kind === "door") v3Door(group, b, k, H); }); // with the walls cut down, the doors go too
 }
@@ -13331,6 +13332,37 @@ function roofWingFacets(m){
     return {plane: p, poly};
   }).filter(f => f.poly.length >= 3 && Math.abs(polyAreaUV(f.poly)) > 1e-4);
 }
+// A roof section's edges on the walls under it. Built from a 10cm grid (or dragged by hand), an edge can sit a
+// little in or out from the house wall it's over — then a gable's brick stands proud of the wall below, or the eaves
+// overhang more on one side. Each edge with an outside wall of this floor running along under it (parallel, within
+// 60cm, along a fair part of it, nothing but outside beyond it) moves onto that wall's outside face. Returns a copy.
+function roofWingOnWalls(floor, w, k){
+  const L = w.lenCm/100, W = w.widCm/100, areas = getRoomAreasForFloor(floor);
+  const pieces = [];
+  floor.walls.forEach(o => { const pts = wallCenterlinePoints(o); if (pts.length !== 2) return; pieces.push({a: planToWing(w, k, pts[0].x, pts[0].y), b: planToWing(w, k, pts[1].x, pts[1].y), T: (o.thicknessCm || WALL_THICKNESS_CM)/100}); });
+  const face = (axis, sg, at, span)=>{ // axis "u": the edge at u = at, running along v over [-span, span]
+    let best = null;
+    pieces.forEach(({a, b, T})=>{
+      const A = axis === "u" ? a.u : a.v, B = axis === "u" ? b.u : b.v, a2 = axis === "u" ? a.v : a.u, b2 = axis === "u" ? b.v : b.u;
+      const len = Math.abs(b2 - a2);
+      if (len < 0.3 || Math.abs(B - A) > 0.02*len) return; // not running along this edge
+      const lo = Math.max(-span, Math.min(a2, b2)), hi = Math.min(span, Math.max(a2, b2));
+      if (hi - lo < Math.min(0.3, span)) return;
+      const f = (A + B)/2 + sg*T/2, d = Math.abs(f - at);
+      if (d > 0.6) return;
+      const mid = (lo + hi)/2, beyond = axis === "u" ? wingToPlan(w, k, f + sg*0.15, mid) : wingToPlan(w, k, mid, f + sg*0.15);
+      if (roomAtWorld(areas, beyond.x, beyond.y)) return; // a room past it: an inside wall
+      if (!best || d < best.d) best = {f, d};
+    });
+    return best ? best.f : at;
+  };
+  const u0 = face("u", -1, -L/2, W/2), u1 = face("u", 1, L/2, W/2), v0 = face("v", -1, -W/2, L/2), v1 = face("v", 1, W/2, L/2);
+  if (u0 === -L/2 && u1 === L/2 && v0 === -W/2 && v1 === W/2) return w;
+  const c = wingToPlan(w, k, (u0 + u1)/2, (v0 + v1)/2), nW = v1 - v0;
+  const out = {...w, cx: c.x, cy: c.y, lenCm: (u1 - u0)*100, widCm: nW*100};
+  if (!w.flat && w.ridge > 0.01 && w.ridge < 0.99) out.ridge = Math.max(0.02, Math.min(0.98, (-W/2 + (w.ridge ?? 0.5)*W - v0)/nW)); // the spine stays put
+  return out;
+}
 // The part of convex polygon `poly` inside convex polygon `region` (both {u, v} points).
 function clipToConvex(poly, region){
   const cu = region.reduce((s, q) => s + q.u, 0)/region.length, cv = region.reduce((s, q) => s + q.v, 0)/region.length;
@@ -13342,18 +13374,37 @@ function clipToConvex(poly, region){
   }
   return poly;
 }
-// A section carried on into another to meet it in valleys (w.joins = [{host, x, y, end}] from autoRoofWings: (x, y)
-// the plan point on its spine where it reaches that one's wall) is only wanted, past that point, under the other's
-// roof — otherwise its eaves overhang runs on past the other's gable as a strip of roof and a white soffit. Its
-// rectangle as convex regions: its own part, and each carried-on part cut down to the other's rectangle.
+// A section carried on into another to meet it in valleys (see roofWingJoinsLive) is only wanted, past where it
+// reaches that one's walls, under the other's roof — otherwise its eaves overhang runs on past the other's gable as a
+// strip of roof and a white soffit. Its rectangle as convex regions: its own part, and each carried-on part cut down
+// to the other's rectangle.
+// Which other sections this one is carried on into, worked out from where they are (so a hand-placed or older roof
+// gets it too): an end of it well inside another's walls. `cut` is where its spine enters that one's walls (its own
+// u, metres) — beyond that it's only wanted under the other's roof.
+function roofWingJoinsLive(roof, w, k){
+  const out = [], L = w.lenCm/100;
+  roof.wings.forEach(host=>{
+    if (host === w) return;
+    const inside = (u, m) => { const p = wingToPlan(w, k, u, 0), q = planToWing(host, k, p.x, p.y); return Math.abs(q.u) < host.lenCm/200 - m && Math.abs(q.v) < host.widCm/200 - m; };
+    const inHost = u => inside(u, 0.2), inWalls = u => inside(u, 0); // well inside (not just touching its edge); within its walls
+    [0, 1].forEach(end=>{
+      const sg = end ? 1 : -1;
+      if (!inHost(sg*(L/2 - 0.15)) || inHost(-sg*(L/2 - 0.15))) return; // this end in there, the other out of it
+      let u = sg*(L/2 - 0.15);
+      while (sg*u > -L/2 + 0.02 && inWalls(u - sg*0.02)) u -= sg*0.02; // back along it to where it leaves that one's walls
+      out.push({host, end, cut: u});
+    });
+  });
+  return out;
+}
 function roofWingRegions(roof, w, m, k){
   const rect = [{u: m.u0, v: m.v0}, {u: m.u1, v: m.v0}, {u: m.u1, v: m.v1}, {u: m.u0, v: m.v1}];
-  const joins = (w.joins || []).map(j => ({j, host: roof.wings.find(o => o.id === j.host)})).filter(x => x.host);
+  const joins = roofWingJoinsLive(roof, w, k);
   if (!joins.length) return [rect];
   const ov = roofOverhang(roof), out = [];
   let own = rect;
-  joins.forEach(({j, host})=>{
-    const cut = planToWing(w, k, j.x, j.y).u, sg = j.end ? 1 : -1;
+  joins.forEach(({host, end, cut})=>{
+    const sg = end ? 1 : -1;
     own = clipHalfPlane(own, sg, 0, -sg*cut);
     // the other's rectangle — out to its eaves, but only to its walls at a gable (its verge is just tiles)
     const hm = roofWingModel(host, ov), lim = side => hm.kind[side] === "eave" ? {u0: hm.u0, u1: hm.u1, vA: hm.v0, vB: hm.v1}[side] : {u0: -hm.L/2, u1: hm.L/2, vA: -hm.W/2, vB: hm.W/2}[side];
@@ -13367,9 +13418,8 @@ function roofWingRegions(roof, w, m, k){
 }
 // roofWingFacets, cut to roofWingRegions
 function roofWingPieces(roof, w, m, k){
-  const facets = roofWingFacets(m);
-  if (!(w.joins || []).length) return facets;
-  const regions = roofWingRegions(roof, w, m, k), out = [];
+  const facets = roofWingFacets(m), regions = roofWingRegions(roof, w, m, k), out = [];
+  if (regions.length === 1 && regions[0].length === 4) return facets;
   facets.forEach(f => regions.forEach(r => { const poly = clipToConvex(f.poly, r); if (poly.length >= 3 && Math.abs(polyAreaUV(poly)) > 1e-4) out.push({plane: f.plane, poly}); }));
   return out;
 }
@@ -13525,7 +13575,6 @@ function autoRoofWings(f){
         if (Math.abs(hu.x*u.x + hu.y*u.y) > 0.3) return; // parallel wings: leave them be
         const q = planToWing(host, k, w.cx + u.x*endM/k, w.cy + u.y*endM/k), spineV = -host.widCm/200 + (host.ridge == null ? 0.5 : host.ridge)*host.widCm/100;
         const extra = Math.abs(spineV - q.v);
-        (w.joins = w.joins || []).push({host: host.id, end: e, x: w.cx + u.x*endM/k, y: w.cy + u.y*endM/k}); // where it meets that one's wall — see roofWingRegions
         w.lenCm += Math.round(extra*100);
         w.cx += u.x*sgn*extra/2/k; w.cy += u.y*sgn*extra/2/k;
         w.riseCm = Math.min(w.riseCm, host.riseCm - 5); // a lower ridge, tucked under the main one
@@ -13700,8 +13749,8 @@ function v3BuildBayCaps(group, floor, k, H){
 }
 function v3BuildRoof(group, floor, k, H){
   v3BuildBayCaps(group, floor, k, H);
-  const roof = floor.roof;
-  if (!roof || !roof.wings.length) return;
+  if (!floor.roof || !floor.roof.wings.length) return;
+  const roof = {...floor.roof, wings: floor.roof.wings.map(w => roofWingOnWalls(floor, w, k))}; // edges on the walls' faces
   const ov = (roof.overhangCm == null ? 30 : roof.overhangCm)/100, trim = M3.paint(roof.trim || "#f3f1ec");
   const fin = floorExterior(floor), extMat = !fin ? V3.wall() : isExt(fin) ? v3ExtMat(fin) : v3Mat(fin, {roughness: 0.95});
   const models = roof.wings.map(w => ({w, m: roofWingModel(w, ov)}));
@@ -13754,7 +13803,10 @@ function v3BuildRoof(group, floor, k, H){
       }
     });
     // the soffit underneath, at the wall tops
-    roofWingRegions(roof, w, m, k).forEach(r=>{
+    // (only under the eaves: at a gable or a high side the wall carries on up, so it stops at the wall's face)
+    const lim = side => m.kind[side] === "eave" ? null : {u0: -m.L/2, u1: m.L/2, vA: -m.W/2, vB: m.W/2}[side];
+    const sofRect = [{u: lim("u0") ?? m.u0, v: lim("vA") ?? m.v0}, {u: lim("u1") ?? m.u1, v: lim("vA") ?? m.v0}, {u: lim("u1") ?? m.u1, v: lim("vB") ?? m.v1}, {u: lim("u0") ?? m.u0, v: lim("vB") ?? m.v1}];
+    roofWingRegions(roof, w, m, k).map(r => clipToConvex(r, sofRect)).filter(r => r.length >= 3).forEach(r=>{
       const pos = [], idx = [];
       r.forEach(q => pos.push(q.u, 0.001, q.v));
       for (let i = 1; i < r.length - 1; i++) idx.push(0, i, i + 1);
@@ -13764,7 +13816,7 @@ function v3BuildRoof(group, floor, k, H){
     // its windows: each on whichever wing is highest under it
     (roof.windows || []).forEach(win=>{
       const at = roofAt(floor, win.x, win.y);
-      if (at && at.w === w) v3RoofWindow(wg, win, m, at.plane, at.u, at.v, roof, extMat);
+      if (at && at.w.id === w.id){ const q = planToWing(w, k, win.x, win.y), pl = m.planes.reduce((b, p) => (p.a*q.u + p.b*q.v + p.c) < (b.a*q.u + b.b*q.v + b.c) ? p : b); v3RoofWindow(wg, win, m, pl, q.u, q.v, roof, extMat); }
     });
   });
 }
@@ -13881,7 +13933,7 @@ function roofPointerDown(mw, ms){
 function roofPointerMove(mw, shift){
   const f = activeFloor(), k = metersPerWorldUnitForFloor(f), w = drag.w;
   if (drag.type === "roof-win"){ drag.win.x = mw.x + drag.dx; drag.win.y = mw.y + drag.dy; }
-  else if (drag.type === "roof-move"){ const ddx = mw.x + drag.dx - w.cx, ddy = mw.y + drag.dy - w.cy; (w.joins || []).forEach(j => { j.x += ddx; j.y += ddy; }); w.cx += ddx; w.cy += ddy; drag.winStart.forEach(s => { s.x.x = w.cx + s.ox; s.x.y = w.cy + s.oy; }); }
+  else if (drag.type === "roof-move"){ w.cx = mw.x + drag.dx; w.cy = mw.y + drag.dy; drag.winStart.forEach(s => { s.x.x = w.cx + s.ox; s.x.y = w.cy + s.oy; }); }
   else if (drag.type === "roof-spine"){
     // where across the wing the pointer is: 0 at the A edge, 1 at the B edge — snapping to the edges and the middle
     const q = planToWing(w, k, mw.x, mw.y), W = w.widCm/100;
@@ -13996,7 +14048,7 @@ function renderRoofPanel(force){
     }
     el.append(h("div", {className: "roofSize"}, num("Length ", w.lenCm, " cm", v => w.lenCm = v, 100, 3000, 5), num("Width ", w.widCm, " cm", v => w.widCm = v, 100, 2000, 5)));
     const row = h("div", {className: "row"});
-    row.append(btn("↻ Turn 90°", "Turn this section so its spine runs the other way", () => edit(() => { delete w.joins; w.rot = (w.rot || 0) + Math.PI/2; [w.lenCm, w.widCm] = [w.widCm, w.lenCm]; if (!w.flat && roofShapeOf(w) !== "lean") w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2); })));
+    row.append(btn("↻ Turn 90°", "Turn this section so its spine runs the other way", () => edit(() => { w.rot = (w.rot || 0) + Math.PI/2; [w.lenCm, w.widCm] = [w.widCm, w.lenCm]; if (!w.flat && roofShapeOf(w) !== "lean") w.riseCm = Math.round(Math.tan(ROOF_PITCH_DEG*Math.PI/180)*w.widCm/2); })));
     row.append(btn("＋ Add a turn", "A new section at right angles off this one's end, for an L or T-shaped roof — then drag it into place", () => edit(()=>{
       // square off this one's far end: from its spine, out past its side by about a room's depth
       const k = metersPerWorldUnitForFloor(f), W = w.widCm/100, wid = Math.round(w.widCm*0.8), out = Math.max(3, W*0.8), vr = -W/2 + (w.ridge == null ? 0.5 : w.ridge)*W;
