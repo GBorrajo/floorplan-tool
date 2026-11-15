@@ -974,7 +974,9 @@ function smartTraceGeometry(src, ai){
   const W = Math.max(1, Math.round(src.width*f)), H = Math.max(1, Math.round(src.height*f)), N = W*H;
   const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
   const cx = cv.getContext("2d", {willReadFrequently: true});
-  cx.imageSmoothingQuality = "high"; cx.drawImage(src, 0, 0, W, H);
+  cx.imageSmoothingQuality = "high";
+  cx.fillStyle = "#fff"; cx.fillRect(0, 0, W, H); // a transparent background (some PNG plans) is paper, not black
+  cx.drawImage(src, 0, 0, W, H);
   const px = cx.getImageData(0, 0, W, H).data;
   const R = i => px[i*4], G = i => px[i*4 + 1], B = i => px[i*4 + 2];
   const lum = new Uint8Array(N);
@@ -2991,6 +2993,7 @@ function render(){
     const p0 = toScreen(0,0), p1 = toScreen(f.worldWidth, f.worldHeight);
     ctx.save();
     ctx.globalAlpha = bgOpacity;
+    ctx.fillStyle = "#fff"; ctx.fillRect(p0.x, p0.y, p1.x-p0.x, p1.y-p0.y); // paper behind a transparent plan
     ctx.drawImage(imgEl, p0.x, p0.y, p1.x-p0.x, p1.y-p0.y);
     ctx.restore();
   } else if (f.calibration) {

@@ -1574,3 +1574,4 @@ Fixes from a terraced plan with solid black walls, chimney breasts, an open-plan
 - A wall merged from pieces counts as outside if any piece was, so windows beside French doors still find it.
 - A corner joins across up to 70 cm of solid drawing (a corner cut off at an angle). A wall end left loose near another wall, with drawing rather than floor between and no opening Claude saw there, is joined by a short angled wall.
 - Two of Claude's rooms that turn out to be one open space keep one name: the bigger room's.
+- Plans saved as PNG with a transparent background (Foxtons, for one) are put on white paper before measuring, and shown on white in the 2D view. They used to read as solid black, so the whole page counted as wall.
