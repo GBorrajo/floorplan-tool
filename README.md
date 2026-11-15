@@ -1608,3 +1608,21 @@ A floor can now sit below the garden.
 - **Floors of the house panel.** Floors are grouped under 🏠 The house and 🏚 <name> (separate building). ▲▼ only swap floors within a building. Each row's 🏚 button turns a floor into a separate building, or back into the house. A floor turned separate joins the separate building listed just before it, if there is one (an annex's second floor); otherwise it becomes a new building named after the floor.
 - **3D.** Whole house shows every building. Hiding the floors above cuts every building at the current floor's height.
 - **Tracing.** "Trace the house from its image" now traces separate buildings too, instead of leaving them out. Claude names each one (`buildingName`), and each building's floors become floor tabs after the house's. The cache key moved to `houseSplit2`, so old cached floor-finding runs once more.
+
+### Angled walls (2026-11-15)
+
+`smartTraceGeometry` only measures level and upright walls, so a wing built at an angle, or a whole plan drawn skewed, used to come out as a staircase of short pieces. `smartTraceAngled` wraps it, and "Trace the house" uses it for every floor.
+
+1. **Find the angled rooms.** Each room's direction is read from its traced floor (`edgeAngle`). Every edge point's local direction goes into a histogram, and the strongest direction that isn't level or upright wins if at least 15% of the edges run that way. Rooms under 4 m² are skipped, because their edges are mostly fittings. Rooms within 3° of each other are grouped.
+2. **Trace each group square.** The image is turned so the group is square (`rotatedCanvas`), and Claude's reading is turned with it (`rotateReading`). Each angled room's tight box is solved back from Claude's level box: a rectangle turned by θ has a level box of a·cosθ + b·sinθ by a·sinθ + b·cosθ. Using the loose box instead lets a white-floored room spill into the paper corners. Only the angled rooms are traced, at the same scale.
+3. **Choose between the two versions** of every wall round those rooms:
+   - Each is checked against the drawing's ink: ink anywhere across its thickness, and ink right on its centre line.
+   - A turned wall measured off-centre slides sideways onto the middle of its ink. (Kitchen units against a wall can make the tracer think the units are part of it.)
+   - The best are kept first. A later wall that is mostly a copy of one already kept (running the same way) is dropped, or cut back to its own clear stretch if that's at least 30 cm and sits on ink.
+4. **Tidy.**
+   - Pieces of one angled wall with drawn wall between them become one wall.
+   - Loose ends run on to the wall they should meet: up to 60 cm, or up to 2.5 m if the whole way is drawn as wall. An overshoot is cut back, up to 1 m, if it isn't drawn as wall.
+   - Two loose ends with wall drawn straight between them get joined (a cut-off corner).
+   - Doors and windows follow the walls they sit on.
+
+**Tested** on the 28-plan batch: plan 10's angled garage went from 3/5 to 4/5 rooms; plan 13's skewed terrace and plan 23's angled kitchen and bedroom wings are traced at the right angle (23's ground floor went from 2/4 to 3/4); no other plan changed. Curved buildings (plan 09) aren't handled: their edges don't settle on one angle.

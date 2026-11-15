@@ -1679,6 +1679,311 @@ function applySmartTrace(floor, res, ai, opts = {}){
 }
 
 // ---------------------------------------------------------------------------
+// Angled walls. smartTraceGeometry only measures level and upright walls, so a wing built at an angle (or a whole
+// plan drawn a little skewed) comes out as a staircase of short pieces. Each room's own angle is read off its traced
+// floor (the turn that fits the tightest box round it); rooms sharing an angle are traced again on the image turned
+// square to them, and every wall around those rooms — from either tracing — is kept only where it sits on the
+// drawing's ink, the better of two overlapping versions winning. Loose ends are then run on to meet the wall they
+// stop short of.
+// ---------------------------------------------------------------------------
+// the angle (radians, −45°..45°) that fits the smallest box round a set of points; with how much smaller that box is than the level one
+function minBoxAngle(pts){
+  if (pts.length < 3) return {a: 0, gain: 1};
+  // convex hull (monotone chain) — the box only depends on it
+  const P = pts.slice().sort((p, q) => p.x - q.x || p.y - q.y), cr = (o, a, b) => (a.x - o.x)*(b.y - o.y) - (a.y - o.y)*(b.x - o.x);
+  const lo = [], hi = [];
+  for (const p of P){ while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = P.length - 1; i >= 0; i--){ const p = P[i]; while (hi.length >= 2 && cr(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); }
+  const hull = lo.slice(0, -1).concat(hi.slice(0, -1));
+  const area = a => { const c = Math.cos(a), sn = Math.sin(a); let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    hull.forEach(p => { const u = p.x*c + p.y*sn, v = -p.x*sn + p.y*c; if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; });
+    return (u1 - u0)*(v1 - v0); };
+  let best = 0, ba = area(0);
+  for (let d = -44.5; d <= 45; d += 0.5){ const a = d*Math.PI/180, ar = area(a); if (ar < ba - 1e-9){ ba = ar; best = a; } }
+  for (let d = -0.5; d <= 0.5; d += 0.1){ const a = best + d*Math.PI/180, ar = area(a); if (ar < ba){ ba = ar; best = a; } }
+  return {a: best, gain: area(0)/Math.max(1e-9, ba)};
+}
+// The way a room's edges run: each edge point's local direction (from the edge points round it) into a histogram,
+// folded to −45°..45°. Returns the strongest direction and how strongly the edges run that way rather than level/upright
+// (an L-shaped hall's edges are all level and upright, whatever its tightest box says).
+function edgeAngle(pts){
+  const R = 6, key = (x, y) => (x >> 3)*65536 + (y >> 3), grid = new Map();
+  pts.forEach(p => { const k = key(p.x, p.y); if (!grid.has(k)) grid.set(k, []); grid.get(k).push(p); });
+  const hist = new Float64Array(90);
+  pts.forEach(p=>{
+    let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    for (let gx = (p.x - R) >> 3; gx <= (p.x + R) >> 3; gx++) for (let gy = (p.y - R) >> 3; gy <= (p.y + R) >> 3; gy++){
+      const cell = grid.get(gx*65536 + gy); if (!cell) continue;
+      for (const q of cell){ const dx = q.x - p.x, dy = q.y - p.y; if (dx*dx + dy*dy > R*R) continue; n++; sx += dx; sy += dy; sxx += dx*dx; syy += dy*dy; sxy += dx*dy; }
+    }
+    if (n < 6) return;
+    const cxx = sxx/n - (sx/n)**2, cyy = syy/n - (sy/n)**2, cxy = sxy/n - (sx/n)*(sy/n);
+    const tr = cxx + cyy, det = cxx*cyy - cxy*cxy, l1 = tr/2 + Math.sqrt(Math.max(0, tr*tr/4 - det)), l2 = tr - l1;
+    if (l1 < 4*Math.max(l2, 1e-6)) return; // a corner or a blob, not a straight edge
+    let d = 0.5*Math.atan2(2*cxy, cxx - cyy)*180/Math.PI; d = ((d % 90) + 135) % 90 - 45; // −45..45
+    hist[Math.min(89, Math.max(0, Math.floor(d + 45)))]++;
+  });
+  const sm = i => hist[(i + 89) % 90] + hist[i] + hist[(i + 1) % 90];
+  // the strongest direction that isn't level/upright (a trapezoid room has both)
+  let best = 0; for (let i = 0; i < 90; i++) if (Math.abs(i - 45) >= 3 && (Math.abs(best - 45) < 3 || sm(i) > sm(best))) best = i;
+  const level = sm(45) + hist[43] + hist[47], peak = sm(best); // bins round 0°
+  // the peak's centre of mass, for a finer angle
+  const w = [-1, 0, 1].map(o => hist[(best + o + 90) % 90]), tot = w[0] + w[1] + w[2] || 1, fine = best - 45 + 0.5 + (w[2] - w[0])/tot;
+  return {a: fine*Math.PI/180, strength: peak/Math.max(1, level), share: peak/Math.max(1, hist.reduce((a, b) => a + b, 0))};
+}
+// draws an image turned by phi (radians, canvas sense) about its middle, on white, onto a canvas just big enough
+function rotatedCanvas(src, phi){
+  const W = src.naturalWidth || src.width, H = src.naturalHeight || src.height, c = Math.abs(Math.cos(phi)), sn = Math.abs(Math.sin(phi));
+  const W2 = Math.ceil(W*c + H*sn), H2 = Math.ceil(W*sn + H*c), cv = document.createElement("canvas"); cv.width = W2; cv.height = H2;
+  const g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, W2, H2);
+  g.imageSmoothingQuality = "high"; g.translate(W2/2, H2/2); g.rotate(phi); g.drawImage(src, -W/2, -H/2, W, H);
+  const cs = Math.cos(phi), ss = Math.sin(phi);
+  return {canvas: cv, W, H, W2, H2,
+    fwd: (x, y) => { const dx = x - W/2, dy = y - H/2; return {x: dx*cs - dy*ss + W2/2, y: dx*ss + dy*cs + H2/2}; },   // original px → turned px
+    back: (x, y) => { const dx = x - W2/2, dy = y - H2/2; return {x: dx*cs + dy*ss + W/2, y: -dx*ss + dy*cs + H/2}; }}; // turned px → original px
+}
+// Claude's reading moved into the turned image (fractions of its size); a box becomes the level box round its turned
+// corners. With `only` (room indexes) and the turn `a`, just those rooms are kept, each with its own tight box: Claude's
+// level box round a room turned by a is a·cos + b·sin by a·sin + b·cos, solved back for the room's own sides a × b —
+// the level box's corners are paper outside the room's walls, which a white-floored room would otherwise spill into.
+function rotateReading(ai, R, only, a){
+  const F = (fx, fy) => { const p = R.fwd(fx*R.W, fy*R.H); return {x: p.x/R.W2, y: p.y/R.H2}; };
+  const box = b => { if (!b) return b; const cs = [F(b.x0, b.y0), F(b.x1, b.y0), F(b.x0, b.y1), F(b.x1, b.y1)];
+    return {x0: Math.min(...cs.map(c => c.x)), y0: Math.min(...cs.map(c => c.y)), x1: Math.max(...cs.map(c => c.x)), y1: Math.max(...cs.map(c => c.y))}; };
+  const o = JSON.parse(JSON.stringify(ai));
+  (o.rooms || []).forEach((r, j)=>{
+    r._j = j;
+    const orig = r.box, p = F(r.labelX, r.labelY); r.labelX = p.x; r.labelY = p.y; r.box = box(orig);
+    if (!only || !orig) return;
+    const c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), c2 = c*c - sn*sn;
+    const bw = Math.abs(orig.x1 - orig.x0)*R.W, bh = Math.abs(orig.y1 - orig.y0)*R.H;
+    const A = (bw*c - bh*sn)/c2, B = (bh*c - bw*sn)/c2;
+    if (!(c2 > 0.2 && A > 0.25*bw && B > 0.25*bh)) return; // too steep, or not a rectangle-ish room: keep the loose box
+    const m = R.fwd((orig.x0 + orig.x1)/2*R.W, (orig.y0 + orig.y1)/2*R.H);
+    r.box = {x0: (m.x - A/2)/R.W2, x1: (m.x + A/2)/R.W2, y0: (m.y - B/2)/R.H2, y1: (m.y + B/2)/R.H2};
+  });
+  if (only) o.rooms = (o.rooms || []).filter(r => only.has(r._j));
+  (o.openings || []).forEach(d => { const p = F(d.x, d.y); d.x = p.x; d.y = p.y; if (d.hingeX != null){ const h = F(d.hingeX, d.hingeY); d.hingeX = h.x; d.hingeY = h.y; } });
+  (o.windows || []).forEach(w => { const a = F(w.x1, w.y1), b = F(w.x2, w.y2); w.x1 = a.x; w.y1 = a.y; w.x2 = b.x; w.y2 = b.y; });
+  (o.stairs || []).forEach(st => { st.box = box(st.box); });
+  (o.furniture || []).forEach(it => { const p = F(it.x, it.y); it.x = p.x; it.y = p.y; });
+  return o;
+}
+function smartTraceAngled(src, ai, opts = {}){
+  const res0 = smartTraceGeometry(src, ai, opts);
+  const w0 = res0.work, f0 = w0.f, L0 = w0.label, W0 = w0.W, H0 = w0.H, mpp = res0.mPerPx; // mpp: metres per image px
+  const M = m => m/mpp; // metres → image px
+  // each room's angle, from its traced floor
+  const roomIdx = new Map((ai.rooms || []).map((r, j) => [r, j]));
+  const angles = [];
+  w0.rooms.forEach(r=>{
+    if (!r.area || r.area*(mpp/f0)**2 < 4 || r.ai.outside) return; // (a small room's edges are mostly its fittings)
+    const pts = [];
+    for (let y = r.ey0; y <= r.ey1; y++) for (let x = r.ex0; x <= r.ex1; x++){
+      const i = y*W0 + x; if (L0[i] !== r.id) continue;
+      if (L0[i - 1] !== r.id || L0[i + 1] !== r.id || L0[i - W0] !== r.id || L0[i + W0] !== r.id) pts.push({x, y});
+    }
+    // its edges must mostly run at the angle (not level/upright), and the tightest box round it agree
+    const e = edgeAngle(pts), {a: ba, gain} = minBoxAngle(pts), deg = e.a*180/Math.PI;
+    if (Math.abs(deg) >= 3 && e.share > 0.15 && (e.strength > 1.2 || (gain > 1.04 && Math.abs(ba - e.a) < 4*Math.PI/180)))
+      angles.push({j: roomIdx.get(r.ai), id: r.id, a: e.a, deg, area: r.area, name: r.name});
+  });
+  if (!angles.length) return {...res0, angled: []};
+  // rooms within 3° of each other share a turn (the biggest room's angle leads)
+  angles.sort((p, q) => q.area - p.area);
+  const groups = [];
+  angles.forEach(t => { const g = groups.find(g => Math.abs(g.a - t.a) < 3*Math.PI/180); if (g) g.rooms.push(t); else groups.push({a: t.a, rooms: [t]}); });
+
+  // where the drawing is ink, at the work size, to check every candidate wall against
+  const ink = new Uint8Array(W0*H0);
+  { const c = document.createElement("canvas"); c.width = W0; c.height = H0; const g = c.getContext("2d", {willReadFrequently: true});
+    g.fillStyle = "#fff"; g.fillRect(0, 0, W0, H0); g.drawImage(src, 0, 0, W0, H0);
+    const d = g.getImageData(0, 0, W0, H0).data;
+    for (let i = 0; i < W0*H0; i++){ const r = d[i*4], gg = d[i*4 + 1], b = d[i*4 + 2]; ink[i] = 0.3*r + 0.59*gg + 0.11*b < 150 ? 1 : 0; } }
+  const inkAt = (x, y) => { const X = Math.round(x*f0), Y = Math.round(y*f0); return X >= 0 && Y >= 0 && X < W0 && Y < H0 && ink[Y*W0 + X]; };
+  const geo = w => { const dx = w.x2 - w.x1, dy = w.y2 - w.y1, L = Math.hypot(dx, dy) || 1; return {L, ux: dx/L, uy: dy/L, nx: -dy/L, ny: dx/L, t: Math.max(w.tM/mpp, 2/f0)}; };
+  // the share of a wall's length with ink somewhere across its thickness (a doorway counts as covered); with `centre`,
+  // ink right on its centre line — a line slanting along a thick straight wall stays in it but wanders off its middle
+  const coverage = (w, doors, centre) => {
+    const g = geo(w), n = Math.max(3, Math.round(g.L*f0)), half = centre ? Math.max(1/f0, g.t/6) : g.t/2 + 1.5/f0; let hit = 0;
+    for (let i = 0; i <= n; i++){
+      const x = w.x1 + g.ux*g.L*i/n, y = w.y1 + g.uy*g.L*i/n;
+      if (doors.some(d => Math.hypot(d.x - x, d.y - y) < d.lenM/mpp/2 + 1/f0)){ hit++; continue; }
+      for (let o = -half; o <= half; o += 0.7/f0) if (inkAt(x + g.nx*o, y + g.ny*o)){ hit++; break; }
+    }
+    return hit/(n + 1);
+  };
+  // does a wall have one of these rooms (ids in label L at scale f, mapped through toL) on either side?
+  const borders = (w, ids, L, Wl, Hl, f, toL) => {
+    const g = geo(w), off = g.t/2 + M(0.12);
+    for (const s of [0.25, 0.5, 0.75]) for (const sd of [-1, 1]){
+      const p = toL(w.x1 + g.ux*g.L*s + g.nx*off*sd, w.y1 + g.uy*g.L*s + g.ny*off*sd), X = Math.round(p.x*f), Y = Math.round(p.y*f);
+      if (X >= 0 && Y >= 0 && X < Wl && Y < Hl && ids.has(L[Y*Wl + X])) return true;
+    }
+    return false;
+  };
+  const distTo = (x, y, w) => { const g = geo(w), s = Math.max(0, Math.min(g.L, (x - w.x1)*g.ux + (y - w.y1)*g.uy)); return Math.hypot(x - w.x1 - g.ux*s, y - w.y1 - g.uy*s); };
+  const mostlyNear = (w, o) => { const g = geo(w), go = geo(o), n = 8; let k = 0;
+    for (let i = 0; i <= n; i++) if (distTo(w.x1 + g.ux*g.L*i/n, w.y1 + g.uy*g.L*i/n, o) <= go.t/2 + M(0.35)) k++;
+    return k >= 0.6*(n + 1); };
+  const angOf = w => Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
+  const angDiff = (a, b) => { let d = Math.abs(a - b) % Math.PI; if (d > Math.PI/2) d = Math.PI - d; return d; };
+
+  let walls = res0.walls.slice(), doors = res0.doors.slice(), windows = res0.windows.slice();
+  const angled = [];
+  groups.forEach(gp=>{
+    const R = rotatedCanvas(src, -gp.a), aiR = rotateReading(ai, R, new Set(gp.rooms.map(t => t.j)), gp.a);
+    let resR; try { resR = smartTraceGeometry(R.canvas, aiR, {mPerPx: mpp}); } catch(e){ console.warn("angled trace failed", e); return; }
+    const back = (x, y) => R.back(x, y), wR = resR.work;
+    const idsR = new Set(wR.rooms.filter(r => gp.rooms.some(t => t.j === r.ai._j)).map(r => r.id)); // (the turned reading has only these rooms)
+    const ids0 = new Set(gp.rooms.map(t => t.id));
+    if (!idsR.size) return;
+    // the turned tracing's walls, doors and windows, back in the plan's own pixels
+    const wallsR = resR.walls.map(w => { const a = back(w.x1, w.y1), b = back(w.x2, w.y2); return {...w, x1: a.x, y1: a.y, x2: b.x, y2: b.y, fromR: true}; });
+    const doorsR = resR.doors.map(d => { const p = back(d.x, d.y); return {...d, x: p.x, y: p.y, rot: d.rot + gp.a}; });
+    const winsR = resR.windows.map(w => { const a = back(w.x1, w.y1), b = back(w.x2, w.y2); return {...w, x1: a.x, y1: a.y, x2: b.x, y2: b.y}; });
+    const toR = (x, y) => R.fwd(x, y), id0 = (x, y) => ({x, y});
+    const candA = walls.filter(w => borders(w, ids0, L0, W0, H0, f0, id0));
+    const candB = wallsR.filter(w => borders(w, idsR, wR.label, wR.W, wR.H, wR.f, toR));
+    const allDoors = doors.concat(doorsR);
+    // a turned wall measured off-centre (kitchen units against it can make the tracer take them for wall) slides
+    // sideways, up to its thickness, onto the middle of its drawing
+    const recentred = w => {
+      const g = geo(w), base = coverage(w, allDoors, true); let best = {o: 0, m: base};
+      for (let o = -g.t; o <= g.t; o += 1/f0){
+        const v = {...w, x1: w.x1 + g.nx*o, y1: w.y1 + g.ny*o, x2: w.x2 + g.nx*o, y2: w.y2 + g.ny*o}, m = coverage(v, allDoors, true);
+        if (m > best.m + 1e-6) best = {o, m};
+      }
+      return best.m > base + 0.15 ? {...w, x1: w.x1 + g.nx*best.o, y1: w.y1 + g.ny*best.o, x2: w.x2 + g.nx*best.o, y2: w.y2 + g.ny*best.o} : w;
+    };
+    const cands = candA.map(w => ({w, A: true})).concat(candB.map(w => ({w: recentred(w), A: false})));
+    cands.forEach(c => { c.cov = coverage(c.w, allDoors); c.mid = coverage(c.w, allDoors, true); c.len = geo(c.w).L; });
+    // best first — on the ink, then centred on it; a wall is kept unless it's mostly on top of one already kept (or its
+    // ink is too patchy to be a wall)
+    cands.sort((p, q) => (q.cov + q.mid) - (p.cov + p.mid) || q.len - p.len);
+    // a wall partly on top of one already kept is cut back to its longest stretch clear of it (kept if that's
+    // at least 30cm and drawn as wall); mostly on top, dropped
+    const trimmed = (c) => {
+      const g = geo(c.w), n = 20, near = [];
+      for (let i = 0; i <= n; i++){ const x = c.w.x1 + g.ux*g.L*i/n, y = c.w.y1 + g.uy*g.L*i/n; near.push(kept.some(k => angDiff(angOf(k.w), angOf(c.w)) < 35*Math.PI/180 && distTo(x, y, k.w) <= geo(k.w).t/2 + M(0.2))); } // (a wall crossing it isn't a copy of it)
+      const k = near.filter(Boolean).length;
+      if (k <= 1) return c;
+      let best = null;
+      for (let i = 0; i <= n; ){ if (near[i]){ i++; continue; } let j = i; while (j < n && !near[j + 1]) j++; if (!best || j - i > best.j - best.i) best = {i, j}; i = j + 1; }
+      if (!best) return null;
+      // reach a little into the covered part either side, so it still meets the wall it's cut back to
+      const s0 = Math.max(0, best.i/n*g.L - (best.i ? g.L/n : 0)), s1 = Math.min(g.L, best.j/n*g.L + (best.j < n ? g.L/n : 0));
+      if (s1 - s0 < M(0.3)) return null;
+      const w = {...c.w, x1: c.w.x1 + g.ux*s0, y1: c.w.y1 + g.uy*s0, x2: c.w.x1 + g.ux*s1, y2: c.w.y1 + g.uy*s1};
+      const cov = coverage(w, allDoors), mid = coverage(w, allDoors, true);
+      return cov >= 0.7 && mid >= 0.6 ? {...c, w, cov, len: s1 - s0, orig: c.w} : null;
+    };
+    const kept = [];
+    cands.forEach(c => { if (c.cov < 0.55) return; const t = trimmed(c); if (t) kept.push(t); });
+    // a short piece kept early that lies along a longer kept wall at another angle: a step of the staircase
+    const keep = kept.filter(c => !kept.some(k => k !== c && k.len > c.len*1.5 && angDiff(angOf(k.w), angOf(c.w)) > 4*Math.PI/180 && mostlyNear(c.w, k.w)));
+    const dropped = new Set(candA.filter(w => !keep.some(c => c.w === w && !c.orig))); // (a trimmed one goes in as new)
+    keep.forEach(c => { if (c.orig && c.A) c.A = false; });
+    if (opts.debug) opts.debug.push(cands.map(c => ({A: c.A, cov: +c.cov.toFixed(2), mid: +c.mid.toFixed(2), len: Math.round(c.len), deg: Math.round(angOf(c.w)*180/Math.PI), x1: Math.round(c.w.x1), y1: Math.round(c.w.y1), x2: Math.round(c.w.x2), y2: Math.round(c.w.y2), kept: keep.includes(c)})));
+    walls = walls.filter(w => !dropped.has(w)).concat(keep.filter(c => !c.A).map(c => c.w));
+    // doors and windows: each where a kept wall is (the turned tracing's for the turned walls)
+    const onWall = (x, y, a, ws) => ws.some(w => { const g = geo(w); const s = (x - w.x1)*g.ux + (y - w.y1)*g.uy;
+      return s > -M(0.1) && s < g.L + M(0.1) && distTo(x, y, w) <= g.t/2 + M(0.12) && angDiff(angOf(w), a) < 6*Math.PI/180; });
+    const turned = keep.filter(c => !c.A).map(c => c.w);
+    doors = doors.filter(d => !dropped.size || onWall(d.x, d.y, d.rot, walls))
+      .concat(doorsR.filter(d => onWall(d.x, d.y, d.rot, turned) && !doors.some(e => Math.hypot(e.x - d.x, e.y - d.y) < M(0.4))));
+    const mid = w => ({x: (w.x1 + w.x2)/2, y: (w.y1 + w.y2)/2});
+    windows = windows.filter(w => { const m = mid(w); return !dropped.size || onWall(m.x, m.y, angOf(w), walls); })
+      .concat(winsR.filter(w => { const m = mid(w); return onWall(m.x, m.y, angOf(w), turned) && !windows.some(e => { const n = mid(e); return Math.hypot(n.x - m.x, n.y - m.y) < M(0.4); }); }));
+    angled.push({deg: Math.round(gp.a*1800/Math.PI)/10, rooms: gp.rooms.map(t => t.name), walls: turned.length, replaced: dropped.size});
+  });
+  // pieces of one straight angled wall with a gap between them that's drawn as wall (the tracer skips the stretch behind
+  // kitchen units, say): one wall
+  if (angled.length){
+    const square = a => angDiff(a, 0) < 2*Math.PI/180 || angDiff(a, Math.PI/2) < 2*Math.PI/180;
+    for (let merged = true; merged;){
+      merged = false;
+      for (let i = 0; i < walls.length && !merged; i++) for (let j = i + 1; j < walls.length && !merged; j++){
+        const a = walls[i], b = walls[j];
+        if (square(angOf(a)) && square(angOf(b))) continue;
+        if (angDiff(angOf(a), angOf(b)) > 3*Math.PI/180) continue;
+        const g = geo(a), t = Math.max(g.t, geo(b).t);
+        const off = p => Math.abs((p.x - a.x1)*g.nx + (p.y - a.y1)*g.ny), along = p => (p.x - a.x1)*g.ux + (p.y - a.y1)*g.uy;
+        const pb = [{x: b.x1, y: b.y1}, {x: b.x2, y: b.y2}];
+        if (pb.some(p => off(p) > t/2 + 2/f0)) continue;
+        const sb = pb.map(along).sort((p, q) => p - q), lo = Math.min(0, sb[0]), hi = Math.max(g.L, sb[1]);
+        const gap = sb[0] > g.L ? sb[0] - g.L : sb[1] < 0 ? -sb[1] : 0;
+        if (gap > M(2.5)) continue;
+        if (gap > 0){
+          const s0 = sb[0] > g.L ? g.L : sb[1], at = s => ({x: a.x1 + g.ux*s, y: a.y1 + g.uy*s}), p0 = at(s0), p1 = at(s0 + gap);
+          if (coverage({x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, tM: t*mpp}, doors) < 0.7) continue;
+        }
+        const P = s => ({x: a.x1 + g.ux*s, y: a.y1 + g.uy*s}), q0 = P(lo), q1 = P(hi);
+        walls[i] = {...a, x1: q0.x, y1: q0.y, x2: q1.x, y2: q1.y, tM: Math.max(a.tM, b.tM), outer: a.outer || b.outer};
+        walls.splice(j, 1); merged = true;
+      }
+    }
+  }
+  // loose ends: a wall end not on any other wall, within 60cm of where its line would meet one, is run on (or cut back)
+  // to it — or up to 2.5m on, where all the way there is drawn as wall
+  if (angled.length){
+    const isAt = (p, w0) => walls.some(w => w !== w0 && distTo(p.x, p.y, w) <= geo(w).t/2 + 1/f0);
+    walls = walls.map(w => ({...w}));
+    walls.forEach(w => [0, 1].forEach(end=>{
+      const p = end ? {x: w.x2, y: w.y2} : {x: w.x1, y: w.y1};
+      if (isAt(p, w)) return;
+      const g = geo(w); let best = null;
+      const square = a => angDiff(a, 0) < 2*Math.PI/180 || angDiff(a, Math.PI/2) < 2*Math.PI/180;
+      walls.forEach(o=>{
+        if (o === w || angDiff(angOf(o), angOf(w)) < 10*Math.PI/180) return;
+        if (square(angOf(w)) && square(angOf(o))) return; // only where an angled wall's involved — level/upright corners were settled by the tracer
+        const go = geo(o), den = g.ux*go.uy - g.uy*go.ux; if (Math.abs(den) < 1e-6) return;
+        const t = ((o.x1 - w.x1)*go.uy - (o.y1 - w.y1)*go.ux)/den, u = ((o.x1 - w.x1)*g.uy - (o.y1 - w.y1)*g.ux)/den; // along w, along o
+        if (u < -go.t - M(0.15) || u > go.L + go.t + M(0.15)) return;
+        const move = end ? t - g.L : -t; // + = run on past the end, − = cut back
+        if (move > M(2.5)) return;
+        if (move < -M(0.3)){ // cutting back more than 30cm: only off a stretch that isn't drawn as wall, and never past a metre
+          if (move < -M(1)) return;
+          const P = s => ({x: w.x1 + g.ux*s, y: w.y1 + g.uy*s}), a0 = P(end ? t : 0), a1 = P(end ? g.L : t);
+          if (coverage({x1: a0.x, y1: a0.y, x2: a1.x, y2: a1.y, tM: w.tM}, doors, true) >= 0.5) return;
+        }
+        if ((end ? t : g.L - t) < M(0.1)) return; // would leave nothing of it
+        if (move > M(0.6)){
+          const a0 = end ? g.L : t, a1 = end ? t : 0, P = s => ({x: w.x1 + g.ux*s, y: w.y1 + g.uy*s}), p0 = P(Math.min(a0, a1)), p1 = P(Math.max(a0, a1));
+          const ext = {x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, tM: w.tM};
+          if (coverage(ext, doors) < 0.8 || coverage(ext, doors, true) < 0.75) return;
+        }
+        if (!best || Math.abs(move) < Math.abs(best.move)) best = {move, t};
+      });
+      if (!best) return;
+      const q = {x: w.x1 + g.ux*best.t, y: w.y1 + g.uy*best.t};
+      if (doors.some(d => distTo(d.x, d.y, {x1: p.x, y1: p.y, x2: q.x, y2: q.y, tM: 0}) < d.lenM/mpp/2)) return; // a doorway there: leave it open
+      if (end){ w.x2 = q.x; w.y2 = q.y; } else { w.x1 = q.x; w.y1 = q.y; }
+    }));
+  }
+  // two loose ends close together with wall drawn straight between them (a corner cut off at an angle): joined
+  if (angled.length){
+    const loose = [];
+    walls.forEach(w => [0, 1].forEach(end => { const p = end ? {x: w.x2, y: w.y2} : {x: w.x1, y: w.y1}; if (!walls.some(o => o !== w && distTo(p.x, p.y, o) <= geo(o).t/2 + 1/f0)) loose.push({p, w}); }));
+    const used = new Set();
+    loose.forEach((a, i) => {
+      if (used.has(i)) return;
+      let best = null;
+      loose.forEach((b, j) => {
+        if (j <= i || used.has(j) || b.w === a.w) return;
+        const d = Math.hypot(b.p.x - a.p.x, b.p.y - a.p.y); if (d < M(0.15) || d > M(1.5)) return;
+        const tM = Math.min(a.w.tM, b.w.tM), link = {x1: a.p.x, y1: a.p.y, x2: b.p.x, y2: b.p.y, tM};
+        if (doors.some(o => distTo(o.x, o.y, link) < o.lenM/mpp/2)) return;
+        if (coverage(link, doors, true) < 0.7) return;
+        if (!best || d < best.d) best = {j, d, link};
+      });
+      if (best){ used.add(i); used.add(best.j); walls.push({...best.link, outer: a.w.outer || loose[best.j].w.outer}); }
+    });
+  }
+  return {...res0, walls, doors, windows, angled};
+}
+
+// ---------------------------------------------------------------------------
 // The whole house from one image: estate-agent plans almost always show every floor side by side.
 // Claude first says where each floor is drawn and which storey it is; each floor is cropped out (snapped to
 // its actual drawing), read and traced on its own; the printed sizes on every floor together give one scale
@@ -1822,7 +2127,7 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
   const mpp = pooledScale(main.map(i => first[i].ratiosPx)) || pooledScale(first.map(r => r.ratiosPx));
   // a floor whose own sizes clearly disagree (an annex drawn at another scale on the same sheet) keeps its own
   const agrees = r => !r.ratioCount || Math.abs(r.mPerPx - mpp)/mpp < 0.08;
-  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: mpp && agrees(first[i]) ? smartTraceGeometry(imgs[i], reads[i].ai, {mPerPx: mpp}) : first[i]}));
+  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: mpp && agrees(first[i]) ? mpp : first[i].mPerPx})})); // (angled walls: see smartTraceAngled)
   const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
   // separate buildings, each its floors bottom to top (named by Claude, or failing that by the label less "Floor 1")
   const bname = t => (t.buildingName || "").trim() || (t.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || "Outbuilding";
