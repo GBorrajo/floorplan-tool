@@ -1984,6 +1984,248 @@ function smartTraceAngled(src, ai, opts = {}){
 }
 
 // ---------------------------------------------------------------------------
+// Closing the rooms. The app's rooms are the spaces the walls fully enclose, so one missing stretch of wall leaks a
+// room (and every room open to it) out to the garden. The tracer finds most walls by looking across from a room to
+// the paper beyond, which fails where there's no paper: a garden drawn hatched right up to the house, wardrobes or a
+// bath against the wall, a staircase drawn into it. But the tracer's rooms themselves are good — they stop at the
+// drawn walls. So: (1) wherever a room's traced floor stops against drawn wall that no traced wall covers, a wall goes
+// there, as thick as the drawing; where it stops against another room with no drawing between, that's a doorway and
+// stays open. (2) Pieces of one straight wall with a gap between them that's drawn as wall, or holds a door, join up.
+// ---------------------------------------------------------------------------
+function closeRoomShells(src, res, ai){
+  const w0 = res.work; if (!w0 || !w0.label) return res;
+  const f = w0.f, W = w0.W, H = w0.H, L = w0.label, mppW = res.mPerPx/f; // metres per work px
+  const Mw = m => m/mppW; // metres → work px
+  const ink = new Uint8Array(W*H), line = new Uint8Array(W*H); // line: any drawn line, thin and grey ones too
+  { const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d", {willReadFrequently: true});
+    g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.drawImage(src, 0, 0, W, H);
+    const d = g.getImageData(0, 0, W, H).data;
+    // "drawn wall" is ink as dark as the walls already traced (their middles, sampled) — not grey worktops, red
+    // lettering, hatched gardens a shade lighter
+    const lum = i => 0.3*d[i*4] + 0.59*d[i*4 + 1] + 0.11*d[i*4 + 2], samples = [];
+    res.walls.forEach(w => { if ((w.type || "wall") !== "wall") return; const n = Math.max(2, Math.round(Math.hypot(w.x2 - w.x1, w.y2 - w.y1)*f/4));
+      for (let k = 1; k < n; k++){ const X = Math.round((w.x1 + (w.x2 - w.x1)*k/n)*f), Y = Math.round((w.y1 + (w.y2 - w.y1)*k/n)*f); if (X >= 0 && Y >= 0 && X < W && Y < H) samples.push(lum(Y*W + X)); } });
+    const dark = samples.filter(v => v < 200).sort((p, q) => p - q); // not the door gaps walls are drawn across
+    var wallLum = dark.length >= 20 ? dark[dark.length >> 1] : 100;
+    var cut = Math.min(160, Math.max(60, wallLum + 45));
+    for (let i = 0; i < W*H; i++){ ink[i] = lum(i) < cut ? 1 : 0; line[i] = lum(i) < 170 ? 1 : 0; } }
+  let walls = res.walls.map(w => ({...w}));
+  const geo = w => { const dx = w.x2 - w.x1, dy = w.y2 - w.y1, Ln = Math.hypot(dx, dy) || 1; return {L: Ln, ux: dx/Ln, uy: dy/Ln, nx: -dy/Ln, ny: dx/Ln, t: w.tM/res.mPerPx}; };
+  // the share of a line (image px) that's drawn
+  const inkCover = (x1, y1, x2, y2, m = ink) => { const n = Math.max(3, Math.round(Math.hypot(x2 - x1, y2 - y1)*f)); let k = 0;
+    for (let i = 0; i <= n; i++){ const X = Math.round((x1 + (x2 - x1)*i/n)*f), Y = Math.round((y1 + (y2 - y1)*i/n)*f); if (X >= 0 && Y >= 0 && X < W && Y < H && m[Y*W + X]) k++; }
+    return k/(n + 1); };
+  const distTo = (x, y, w) => { const g = geo(w), s = Math.max(0, Math.min(g.L, (x - w.x1)*g.ux + (y - w.y1)*g.uy)); return Math.hypot(x - w.x1 - g.ux*s, y - w.y1 - g.uy*s); };
+  // a point (image px) is covered when it's inside a traced wall or window's drawn thickness (plus a little)
+  const wins = (res.windows || []).map(w => ({...w}));
+  const covered = (x, y) => walls.concat(wins).some(w => distTo(x, y, w) <= geo(w).t/2 + 2/f);
+  // no wall put in is thicker than this plan's thick walls (a dark slab — a fitted unit, a hatched step — is not a wall
+  // a metre thick)
+  const tms = res.walls.map(w => w.tM).sort((p, q) => p - q), tMax = Math.max(0.12, Math.min(0.6, 1.6*(tms[Math.floor(tms.length*0.75)] || 0.3)));
+  const added = [], loosePts = []; // loosePts: middles of drawn wall behind short, uncovered bits of room edge (for angled walls)
+  const outsideIds = new Set(w0.rooms.filter(r => r.ai && r.ai.outside).map(r => r.id));
+  // (1) each room's edges, level and upright, in runs
+  w0.rooms.forEach(r=>{
+    if (!r.area || outsideIds.has(r.id)) return;
+    const own = (x, y) => x >= 0 && y >= 0 && x < W && y < H && L[y*W + x] === r.id;
+    for (const vert of [true, false]) for (const dir of [-1, 1]){
+      // edge pixels: own, with the neighbour on side `dir` (across x for upright edges, y for level) not own
+      const runs = new Map(); // line coordinate → sorted along-coordinates
+      for (let y = r.ey0; y <= r.ey1; y++) for (let x = r.ex0; x <= r.ex1; x++){
+        if (!own(x, y)) continue;
+        if (vert ? own(x + dir, y) : own(x, y + dir)) continue;
+        const c = vert ? x : y, a = vert ? y : x;
+        if (!runs.has(c)) runs.set(c, []); runs.get(c).push(a);
+      }
+      runs.forEach((as, c)=>{
+        as.sort((p, q) => p - q);
+        let i0 = 0;
+        for (let i = 1; i <= as.length; i++){
+          if (i < as.length && as[i] - as[i - 1] <= 2) continue;
+          const a0 = as[i0], a1 = as[i - 1]; i0 = i;
+          // across the edge, outward: past any thin line and unclaimed floor (a bath, a wardrobe's inside) to the drawn
+          // wall — at least 5cm of solid ink — within a metre. Another room met first: a doorway, nothing to add.
+          const probe = (a, strict) => {
+            let d = 1, run = 0, start = -1;
+            for (; d <= Mw(1.0); d++){
+              const X = vert ? c + dir*d : a, Y = vert ? a : c + dir*d;
+              if (X < 0 || Y < 0 || X >= W || Y >= H) return null;
+              const id = L[Y*W + X];
+              if (id && id !== r.id && !outsideIds.has(id) && run === 0) return null;
+              if (ink[Y*W + X]){ if (!run) start = d; run++; }
+              else {
+                // solid enough for a wall; for the short bits (strict) not just a stroke of something drawn on this
+                // room's own floor either — a letter, an arrow, a fitting, with this room again straight past it
+                if (run >= Math.max(3, Mw(0.05)) && (!strict || L[Y*W + X] !== r.id)) return {face: start, t: run};
+                run = 0;
+              }
+              if (run >= Mw(0.6)) return {face: start, t: run}; // solid as far as a wall goes: take it
+            }
+            return run >= Math.max(3, Mw(0.05)) ? {face: start, t: run} : null;
+          };
+          if (a1 - a0 < Mw(0.4)){ // a short bit of edge (a slanted wall's edge comes in steps): kept for the line fitting below
+            for (let a = a0; a <= a1; a++){ const p = probe(a, true); if (!p) continue; const o = c + dir*(p.face + Math.min(p.t, Mw(tMax))/2), q = vert ? {x: o/f, y: a/f} : {x: a/f, y: o/f};
+              if (!covered(q.x, q.y)) loosePts.push({...q, t: Math.min(p.t, Mw(tMax))}); }
+            continue;
+          }
+          const step = Math.max(1, Math.round((a1 - a0)/24)), got = [];
+          for (let a = a0; a <= a1; a += step){ const p = probe(a); got.push(p ? {a, ...p} : null); }
+          // each stretch of the edge that has drawn wall behind it and isn't covered yet
+          const mid = p => { const o = c + dir*(p.face + p.t/2); return vert ? {x: o/f, y: p.a/f} : {x: p.a/f, y: o/f}; };
+          let seg = [];
+          const flush = ()=>{
+            if (seg.length >= 3 && (seg[seg.length - 1].a - seg[0].a) >= Mw(0.3)){
+              const faces = seg.map(p => p.face).sort((p, q) => p - q), ts = seg.map(p => p.t).sort((p, q) => p - q);
+              const face = faces[faces.length >> 1], t = Math.min(Mw(tMax), ts[ts.length >> 1]), o = (c + dir*(face + t/2))/f;
+              const s0 = (seg[0].a - t/2)/f, s1 = (seg[seg.length - 1].a + t/2)/f;
+              const w = vert ? {x1: o, y1: s0, x2: o, y2: s1} : {x1: s0, y1: o, x2: s1, y2: o};
+              // outer when what's past it, along the stretch, is mostly no room at all
+              let none = 0; seg.forEach(p => { const d = Math.round(face + t + 3), X = vert ? c + dir*d : p.a, Y = vert ? p.a : c + dir*d;
+                const id = X >= 0 && Y >= 0 && X < W && Y < H ? L[Y*W + X] : 0; if (!id || outsideIds.has(id)) none++; });
+              added.push({...w, tM: Math.max(0.05, t*mppW), outer: none > seg.length/2, closing: true});
+            }
+            seg = [];
+          };
+          got.forEach(p => { if (p && !covered(mid(p).x, mid(p).y)) seg.push(p); else flush(); });
+          flush();
+        }
+      });
+    }
+  });
+  // slanted walls: straight lines through the loose points (each angle tried; the line most points sit on wins), kept
+  // where at least 80cm of points run along it close together
+  { let pts = loosePts.filter(p => !walls.concat(added).some(w => distTo(p.x, p.y, w) <= geo(w).t/2 + 2/f));
+    for (let round = 0; round < 12 && pts.length >= 8; round++){
+      let best = null;
+      for (let deg = -89; deg <= 90; deg++){
+        if (Math.abs(deg) < 2 || Math.abs(Math.abs(deg) - 90) < 2) continue; // level/upright: done above
+        const a = deg*Math.PI/180, nx = -Math.sin(a), ny = Math.cos(a), bins = new Map(), bw = 3/f;
+        pts.forEach(p => { const k = Math.round((p.x*nx + p.y*ny)/bw); bins.set(k, (bins.get(k) || 0) + 1); });
+        bins.forEach((n, k) => { const tot = n + (bins.get(k - 1) || 0) + (bins.get(k + 1) || 0); if (!best || tot > best.n) best = {n: tot, a, rho: k*bw}; });
+      }
+      if (!best || best.n < 8) break;
+      const ux = Math.cos(best.a), uy = Math.sin(best.a), nx = -uy, ny = ux;
+      const on = pts.filter(p => Math.abs(p.x*nx + p.y*ny - best.rho) <= 4.5/f).map(p => ({...p, s: p.x*ux + p.y*uy})).sort((p, q) => p.s - q.s);
+      pts = pts.filter(p => Math.abs(p.x*nx + p.y*ny - best.rho) > 4.5/f);
+      // runs of points without a gap over 30cm
+      let i0 = 0;
+      for (let i = 1; i <= on.length; i++){
+        if (i < on.length && on[i].s - on[i - 1].s <= 0.3/res.mPerPx) continue;
+        const run = on.slice(i0, i); i0 = i;
+        const s0 = run[0].s, s1 = run[run.length - 1].s;
+        if (s1 - s0 < 0.8/res.mPerPx || run.length < (s1 - s0)*f*0.4) continue;
+        const ts = run.map(p => p.t).sort((p, q) => p - q), t = ts[ts.length >> 1];
+        const at = s => ({x: ux*s + nx*best.rho, y: uy*s + ny*best.rho}), A = at(s0 - t/f/2), B = at(s1 + t/f/2);
+        if (inkCover(A.x, A.y, B.x, B.y) < 0.7) continue;
+        added.push({x1: A.x, y1: A.y, x2: B.x, y2: B.y, tM: Math.max(0.05, t*mppW), outer: false, closing: true});
+      }
+    }
+  }
+  // the same wall can be found from the rooms either side: keep one
+  added.forEach(a => { if (!walls.some(w => { const g = geo(a), n = 6; let k = 0; for (let i = 0; i <= n; i++) if (distTo(a.x1 + g.ux*g.L*i/n, a.y1 + g.uy*g.L*i/n, w) <= geo(w).t/2 + 3/f) k++; return k >= 5; })) walls.push(a); });
+  // (2) straight pieces of one wall with a gap between them that's drawn as wall or holds a door: joined
+  const doors = res.doors;
+
+  for (let merged = true; merged;){
+    merged = false;
+    for (let i = 0; i < walls.length && !merged; i++) for (let j = 0; j < walls.length && !merged; j++){
+      if (i === j) continue;
+      const a = walls[i], b = walls[j]; if ((a.type || "wall") !== "wall" || (b.type || "wall") !== "wall") continue;
+      const ga = geo(a), gb = geo(b);
+      if (Math.abs(ga.ux*gb.uy - ga.uy*gb.ux) > 0.02) continue; // not parallel
+      const off = Math.abs((b.x1 - a.x1)*ga.nx + (b.y1 - a.y1)*ga.ny); if (off > Math.max(ga.t, gb.t)/2) continue;
+      const along = (x, y) => (x - a.x1)*ga.ux + (y - a.y1)*ga.uy, sb = [along(b.x1, b.y1), along(b.x2, b.y2)].sort((p, q) => p - q);
+      if (sb[0] < ga.L) continue; // b must lie past a's far end (each pair is looked at both ways round)
+      const gap = sb[0] - ga.L; if (gap <= 0 || gap > 2.5/res.mPerPx) continue;
+      const p0 = {x: a.x1 + ga.ux*ga.L, y: a.y1 + ga.uy*ga.L}, p1 = {x: a.x1 + ga.ux*sb[0], y: a.y1 + ga.uy*sb[0]};
+      const door = doors.some(d => { const s = along(d.x, d.y); return s > ga.L - 2/f && s < sb[0] + 2/f && Math.abs((d.x - a.x1)*ga.nx + (d.y - a.y1)*ga.ny) < Math.max(ga.t, gb.t); });
+      if (wins.some(o => distTo((p0.x + p1.x)/2, (p0.y + p1.y)/2, o) <= geo(o).t/2 + 2/f)) continue; // a window there already
+      if (!door && inkCover(p0.x, p0.y, p1.x, p1.y) < 0.75){
+        // not solid: drawn as a window — two lines along the wall's faces, light between — fills it as a window
+        const tt = Math.max(ga.t, gb.t), covAt = k => inkCover(p0.x + ga.nx*k, p0.y + ga.ny*k, p1.x + ga.nx*k, p1.y + ga.ny*k, line), ks = [];
+        for (let k = -tt*0.8; k <= tt*0.8; k += 1/f) ks.push({k, c: covAt(k)});
+        const lines = ks.filter(q => q.c >= 0.7);
+        const twoLines = lines.length >= 2 && lines[lines.length - 1].k - lines[0].k >= Math.max(2/f, tt*0.4)
+          && ks.some(q => q.k > lines[0].k && q.k < lines[lines.length - 1].k && q.c < 0.4);
+        if (!twoLines || sb[0] - ga.L > 2.5/res.mPerPx) continue;
+        wins.push({x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, tM: Math.max(a.tM, b.tM), bowM: 0, o: "h", closing: true});
+        continue;
+      }
+      const q1 = {x: a.x1 + ga.ux*sb[1], y: a.y1 + ga.uy*sb[1]};
+      walls[i] = {...a, x2: q1.x, y2: q1.y, tM: Math.max(a.tM, b.tM), outer: a.outer || b.outer};
+      walls.splice(j, 1); merged = true;
+    }
+  }
+  const isWall = w => (w.type || "wall") === "wall";
+  const doorOn = (p, q) => doors.some(d => distTo(d.x, d.y, {x1: p.x, y1: p.y, x2: q.x, y2: q.y, tM: 0}) < d.lenM/res.mPerPx/2);
+  // (3a) a loose end runs straight on to the first wall it meets within a metre, where the way there is drawn
+  const touches = (p, w) => walls.some(o => o !== w && distTo(p.x, p.y, o) <= geo(o).t/2 + 2/f);
+  walls.forEach(w=>{
+    if (!isWall(w)) return;
+    for (const end of [0, 1]){
+      const g = geo(w), p = end ? {x: w.x2, y: w.y2} : {x: w.x1, y: w.y1}, ux = end ? g.ux : -g.ux, uy = end ? g.uy : -g.uy;
+      if (touches(p, w)) continue;
+      let hit = null;
+      walls.forEach(o=>{
+        if (o === w || !isWall(o)) return;
+        const go = geo(o), den = ux*go.uy - uy*go.ux; if (Math.abs(den) < 0.3) return; // nearly parallel: not a meeting
+        const qx = o.x1 - p.x, qy = o.y1 - p.y, tt = (qx*go.uy - qy*go.ux)/den, ss = (qx*uy - qy*ux)/den;
+        if (tt <= 0 || ss < -go.t/2 || ss > go.L + go.t/2) return;
+        const reach = tt + go.t/2/Math.abs(den);
+        if (!hit || reach < hit.d) hit = {d: reach, far: tt};
+      });
+      if (!hit || hit.d > 1.0/res.mPerPx) continue;
+      const q = {x: p.x + ux*hit.far, y: p.y + uy*hit.far}, q2 = {x: p.x + ux*hit.d, y: p.y + uy*hit.d};
+      if (doorOn(p, q) || inkCover(p.x, p.y, q.x, q.y) < 0.6) continue;
+      if (end){ w.x2 = q2.x; w.y2 = q2.y; } else { w.x1 = q2.x; w.y1 = q2.y; }
+    }
+  });
+  // (3c) a loose wall end — a wall stepping across where the plan is drawn a degree or two skewed, a corner the tracer
+  // didn't finish — joins the nearest loose end (within 60cm) or wall (within 40cm), where the join is drawn as wall
+  // and isn't a doorway
+  // (3b) two loose ends whose lines cross within a metre of both — an unfinished corner — both run on to the corner
+  { const ends = [];
+    walls.forEach(w => { if (!isWall(w)) return; const g = geo(w);
+      [0, 1].forEach(end => { const p = end ? {x: w.x2, y: w.y2} : {x: w.x1, y: w.y1}; if (!touches(p, w)) ends.push({w, end, p, ux: end ? g.ux : -g.ux, uy: end ? g.uy : -g.uy}); }); });
+    const done = new Set();
+    ends.forEach((a, i) => ends.forEach((b, j)=>{
+      if (j <= i || done.has(i) || done.has(j) || a.w === b.w) return;
+      const den = a.ux*b.uy - a.uy*b.ux; if (Math.abs(den) < 0.5) return;
+      const qx = b.p.x - a.p.x, qy = b.p.y - a.p.y, ta = (qx*b.uy - qy*b.ux)/den, tb = (qx*a.uy - qy*a.ux)/den;
+      const lim = 1.0/res.mPerPx; if (ta < -2/f || tb < -2/f || ta > lim || tb > lim) return;
+      const c = {x: a.p.x + a.ux*ta, y: a.p.y + a.uy*ta};
+      if (doorOn(a.p, c) || doorOn(b.p, c)) return;
+      if ((ta > 3/f && inkCover(a.p.x, a.p.y, c.x, c.y) < 0.6) || (tb > 3/f && inkCover(b.p.x, b.p.y, c.x, c.y) < 0.6)) return;
+      [a, b].forEach(e => { if (e.end){ e.w.x2 = c.x; e.w.y2 = c.y; } else { e.w.x1 = c.x; e.w.y1 = c.y; } });
+      done.add(i); done.add(j);
+    })); }
+  const looseEnds = [];
+  walls.forEach(w => { if (!isWall(w)) return; [0, 1].forEach(end => { const p = end ? {x: w.x2, y: w.y2} : {x: w.x1, y: w.y1}; if (!walls.some(o => o !== w && distTo(p.x, p.y, o) <= geo(o).t/2 + 2/f)) looseEnds.push({p, w}); }); });
+  const links = [], usedEnd = new Set();
+  looseEnds.forEach((e, i)=>{
+    if (usedEnd.has(i)) return;
+    let best = null;
+    looseEnds.forEach((o, j)=>{
+      if (j === i || usedEnd.has(j) || o.w === e.w) return;
+      const d = Math.hypot(o.p.x - e.p.x, o.p.y - e.p.y); if (d < 1/f || d > 0.6/res.mPerPx) return;
+      if (!best || d < best.d) best = {d, q: o.p, j};
+    });
+    walls.forEach(o=>{
+      if (o === e.w || !isWall(o)) return;
+      const g = geo(o), s0 = Math.max(0, Math.min(g.L, (e.p.x - o.x1)*g.ux + (e.p.y - o.y1)*g.uy)), q = {x: o.x1 + g.ux*s0, y: o.y1 + g.uy*s0};
+      const d = Math.hypot(q.x - e.p.x, q.y - e.p.y) - g.t/2; if (d < 1/f || d > 0.4/res.mPerPx) return;
+      if (!best || d < best.d - 1/f) best = {d, q, j: -1};
+    });
+    if (!best || doorOn(e.p, best.q)) return;
+    if (inkCover(e.p.x, e.p.y, best.q.x, best.q.y) < 0.6) return;
+    usedEnd.add(i); if (best.j >= 0) usedEnd.add(best.j);
+    links.push({x1: e.p.x, y1: e.p.y, x2: best.q.x, y2: best.q.y, tM: e.w.tM, outer: !!e.w.outer, closing: true});
+  });
+  walls = walls.concat(links);
+  return {...res, walls, windows: wins, closed: added.length + links.length, closeInfo: {wallLum, cut, loose: loosePts.length, added: added.length, links: links.length}};
+}
+
+// ---------------------------------------------------------------------------
 // The whole house from one image: estate-agent plans almost always show every floor side by side.
 // Claude first says where each floor is drawn and which storey it is; each floor is cropped out (snapped to
 // its actual drawing), read and traced on its own; the printed sizes on every floor together give one scale
@@ -2127,7 +2369,7 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
   const mpp = pooledScale(main.map(i => first[i].ratiosPx)) || pooledScale(first.map(r => r.ratiosPx));
   // a floor whose own sizes clearly disagree (an annex drawn at another scale on the same sheet) keeps its own
   const agrees = r => !r.ratioCount || Math.abs(r.mPerPx - mpp)/mpp < 0.08;
-  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: mpp && agrees(first[i]) ? mpp : first[i].mPerPx})})); // (angled walls: see smartTraceAngled)
+  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: closeRoomShells(imgs[i], smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: mpp && agrees(first[i]) ? mpp : first[i].mPerPx}), reads[i].ai)})); // (angled walls: see smartTraceAngled)
   const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
   // separate buildings, each its floors bottom to top (named by Claude, or failing that by the label less "Floor 1")
   const bname = t => (t.buildingName || "").trim() || (t.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || "Outbuilding";
@@ -2228,7 +2470,7 @@ async function runSmartTrace(ev){
     statusEl.textContent = "Measuring the walls from the image…";
     await new Promise(r => setTimeout(r, 20));
     const img = await loadImageEl(floor.image.dataURL);
-    const res = smartTraceGeometry(img, ai);
+    const res = closeRoomShells(img, smartTraceAngled(img, ai), ai); // angled walls, then the rooms closed (see each)
     if (!res.walls.length) throw new Error("Couldn't find any walls to trace — is this a floor plan with the rooms coloured or outlined?");
     applySmartTrace(floor, res, ai);
     updateScaleStatus(); render();

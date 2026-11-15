@@ -1626,3 +1626,24 @@ A floor can now sit below the garden.
    - Doors and windows follow the walls they sit on.
 
 **Tested** on the 28-plan batch: plan 10's angled garage went from 3/5 to 4/5 rooms; plan 13's skewed terrace and plan 23's angled kitchen and bedroom wings are traced at the right angle (23's ground floor went from 2/4 to 3/4); no other plan changed. Curved buildings (plan 09) aren't handled: their edges don't settle on one angle.
+
+### Closing the rooms (2026-11-15)
+
+The app's rooms are the spaces the walls fully enclose. One missing stretch of wall leaks a room, and every room open to it, out to the garden, so it gets no floor, no area and no ceiling. The tracer finds most walls by looking across from a room to the paper beyond. That fails where there's no paper: a garden hatched right up to the house, wardrobes or a bath against the wall, a staircase drawn into it, a window drawn as thin lines. `closeRoomShells` runs after tracing (both Smart trace and Trace the house; the single-floor button now also gets angled walls):
+
+1. **Walls where rooms stop.** Each traced room's edges are walked. Across each edge, outward, it looks for drawn wall within a metre: past thin lines and unclaimed floor (a bath, a wardrobe's inside). If it meets another room first, that's a doorway, and nothing is added. A stretch of edge with drawn wall behind it and no traced wall on it gets a wall there, as thick as the drawing. It is capped at 1.6× the plan's thicker walls. It's marked outer when there's no room past it.
+   - "Drawn wall" means ink as dark as the walls already traced (their median tone, door gaps left out), so grey worktops and red lettering don't count.
+   - Short, stepped edges (a slanted wall's) are collected as points instead. Straight lines are fitted through them at every angle, and the line most points sit on is kept where 80 cm or more of them run together over ink.
+2. **Gaps in one straight wall.** Pieces with a gap that's drawn as wall, or holds a door, become one wall. A gap drawn as two thin lines with light between gets a window.
+3. **Loose ends.**
+   - A loose end runs straight on to the first wall it meets within a metre, where the way is drawn.
+   - Two loose ends whose lines cross within a metre of both (an unfinished corner) both run on to the corner.
+   - Then the nearest loose end (within 60 cm) or wall (within 40 cm) is joined over ink, unless a door sits there.
+
+**Tested:**
+- On the 28-plan batch, each whole image read as one floor: 84 → 146 of 214 named rooms closed. No plan closed fewer.
+- Through Trace the house on 10 multi-floor plans: 102 of 158 → 131 of 168. Plans 01, 06, 19, 23 (except one floor) and 29 close completely.
+- Still open:
+  - The Foxtons-style plans (11, 13), whose walls are drawn skewed and broken by bays.
+  - The guesthouse ground floor (18), where Claude's room labels sit in the wrong rooms.
+  - A farmhouse window drawn in grey lines too faint to count.
