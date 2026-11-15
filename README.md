@@ -1543,3 +1543,21 @@ Every room closes up on both, and the areas match the printed sizes. On the firs
 The Model choice now lists Opus 5.5, Sonnet 5.5 and Haiku 5.5.
 
 **Debugging:** `test-plans/` is git-ignored and holds sample plans plus `dbg.js`. Running `__dbg(file)` on localhost draws the masks, walls, doors and windows over the image, using Claude's cached answer from `localStorage "smartTest:<file>"`.
+
+### Smart trace: brick-strip fixes (2026-11-15)
+
+Thin brick strips showed indoors on traced plans. Each one came from walls overlapping or stopping just short of each other. Fixes:
+
+**In the tracer (`smartTraceGeometry`)**
+- An outside wall with chimney breasts comes out as pieces of different thickness on one outer face. The pieces are now set to exactly that face, and the slits between them are filled at the thinner piece's thickness.
+- A wall end stops short of a thick wall when what lies between is solid drawing (no room). It is now carried on to meet that wall.
+- Same-wall pieces join across slots narrower than any doorway (under 20 cm).
+- Duplicate side-by-side copies of a wall are folded together, before and after corners are joined. Pieces left end-to-end after joining are merged.
+- Room names are nudged into the actual room if they land inside a wall's thickness.
+
+**In the 3D builder (affects hand-drawn plans too)**
+- Some notches are filled solid by the room finder but are open air to the exact wall geometry. A wall face beside one indoors no longer reads it as "outside": see `roomRasterWallAt`, which is indoor-only because outside corners get filled too.
+- A wall standing proud of the one it runs into on the room side (a breast) gets the room finish on that step face.
+- A wall end flush with the far face of a wall it runs into takes the finish of what's beyond it.
+- An inside wall whose end is flush with the outside takes the outside finish. This is checked out to 30 cm, so a hallway's ragged raster edge doesn't count as outside.
+- A piece with no room on either side that is short, or buried on one face (behind a breast, or under a thicker copy), gets a plain top instead of a brick one fighting the neighbouring wall tops.

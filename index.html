@@ -1236,6 +1236,16 @@ function smartTraceGeometry(src, ai){
   (ai.openings || []).forEach(d => marks.push({x: d.x*W, y: d.y*H, w: M(Math.max(0.5, d.widthM || 0.8)), kind: "door"}));
   (ai.windows || []).forEach(w => marks.push({x: (w.x1 + w.x2)/2*W, y: (w.y1 + w.y2)/2*H, w: Math.hypot((w.x2 - w.x1)*W, (w.y2 - w.y1)*H), kind: "window"}));
   const along = (sg, x, y) => sg.o === "v" ? y : x, across = (sg, x, y) => sg.o === "v" ? x : y;
+  const solidBetween = (sg, a, b)=>{ // along sg's line from a to b, nothing but drawing — no room's floor
+    const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)), q = Math.max(1, Math.round(sg.t/4));
+    let room = 0, n = 0;
+    for (let s = lo; s <= hi; s++) for (const t of [-q, 0, q]){
+      const u = Math.round(sg.c + t), x = sg.o === "v" ? u : s, y = sg.o === "v" ? s : u;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      n++; if (label[y*W + x]) room++;
+    }
+    return n > 0 && room <= n*0.05;
+  };
 
   // 4) tidy: join pieces of one wall (across a door or window gap too), carry walls through doorways that
   //    have no wall drawn either side, meet corners and T-junctions exactly
@@ -1247,10 +1257,10 @@ function smartTraceGeometry(src, ai){
       for (let i = 0; i < segs.length && !changed; i++) for (let j = i + 1; j < segs.length; j++){
         const A = segs[i], Bq = segs[j];
         if (A.o !== Bq.o) break;
-        if (Math.abs(A.c - Bq.c) > Math.max(1.5, 0.2*Math.min(A.t, Bq.t))) { if (Bq.c - A.c > TMAX) break; continue; }
+        if (Math.abs(A.c - Bq.c) > Math.max(2, 0.3*Math.min(A.t, Bq.t))) { if (Bq.c - A.c > TMAX) break; continue; }
         if (Math.abs(A.t - Bq.t) > Math.max(2, 0.35*Math.max(A.t, Bq.t))) continue;
         const lo = A.s1 <= Bq.s0 ? A : Bq, hi = lo === A ? Bq : A, gap = hi.s0 - lo.s1;
-        let ok = gap <= Math.max(2, M(0.12));
+        let ok = gap <= Math.max(2, M(0.2)); // a slot narrower than any doorway is the same wall
         if (!ok && gap <= M(2.2)) ok = marks.some(mk => { const s = along(A, mk.x, mk.y), t = across(A, mk.x, mk.y); return s > lo.s1 - M(0.1) && s < hi.s0 + M(0.1) && Math.abs(t - A.c) < A.t/2 + M(0.35); });
         if (!ok) continue;
         const la = A.s1 - A.s0, lb = Bq.s1 - Bq.s0;
@@ -1290,7 +1300,7 @@ function smartTraceGeometry(src, ai){
   mergeRuns();
   // the same wall found twice, side by side (a thick block read as two thinner bands): the shorter copy goes,
   // the longer takes in its length
-  for (let changed = true; changed;){
+  const foldCopies = ()=>{ for (let changed = true; changed;){
     changed = false;
     for (const A of segs){ for (const Bq of segs){
       if (A === Bq || A.o !== Bq.o || (Bq.s1 - Bq.s0) > (A.s1 - A.s0)) continue;
@@ -1300,7 +1310,44 @@ function smartTraceGeometry(src, ai){
       A.s0 = Math.min(A.s0, Bq.s0); A.s1 = Math.max(A.s1, Bq.s1); A.pairs = A.pairs.concat(Bq.pairs);
       segs.splice(segs.indexOf(Bq), 1); changed = true; break;
     } if (changed) break; }
-  }
+  } };
+  foldCopies();
+  // an outside wall with chimney breasts (or a nib) along it comes out as pieces of different thickness that
+  // share one outer face, with slits between: the slits are filled, each piece keeping its own thickness
+  const outSide = sg => { let p = 0, n = 0; sg.pairs.forEach(([a, b]) => { if (b === -1) p++; if (a === -1) n++; }); return p > n ? 1 : n > p ? -1 : 0; };
+  ["v", "h"].forEach(o => [1, -1].forEach(side=>{
+    const list = segs.filter(sg => sg.o === o && sg.outer && outSide(sg) === side).map(sg => ({sg, face: sg.c + side*sg.t/2}));
+    list.sort((a, b) => a.face - b.face || a.sg.s0 - b.sg.s0);
+    const used = new Set();
+    list.forEach(first=>{
+      if (used.has(first)) return;
+      const chain = [first]; used.add(first);
+      for (let grew = true; grew;){
+        grew = false;
+        const lo = Math.min(...chain.map(c => c.sg.s0)), hi = Math.max(...chain.map(c => c.sg.s1));
+        for (const q of list){
+          if (used.has(q) || Math.abs(q.face - first.face) > Math.max(2, M(0.06))) continue;
+          if (q.sg.s0 > hi + M(0.5) || q.sg.s1 < lo - M(0.5)) continue;
+          chain.push(q); used.add(q); grew = true;
+        }
+      }
+      if (chain.length < 2) return;
+      // one outer face, exactly: each piece is set to it, so the brick runs on without a seam
+      const faceAt = chain.reduce((a, c) => a + c.face*(c.sg.s1 - c.sg.s0), 0)/chain.reduce((a, c) => a + (c.sg.s1 - c.sg.s0), 0);
+      chain.forEach(c => { c.face = faceAt; c.sg.c = faceAt - side*c.sg.t/2; });
+      // each slit between neighbouring pieces is filled at the thinner one's thickness, its outer face on the line
+      chain.sort((a, b) => a.sg.s0 - b.sg.s0);
+      let reach = chain[0];
+      for (let i = 1; i < chain.length; i++){
+        const B = chain[i], A = reach;
+        if (B.sg.s0 > A.sg.s1){
+          const t = Math.min(A.sg.t, B.sg.t), face = (A.face + B.face)/2;
+          segs.push({o, c: face - side*t/2, t, s0: A.sg.s1 - 1, s1: B.sg.s0 + 1, pairs: A.sg.pairs.concat(B.sg.pairs), outer: true});
+        }
+        if (B.sg.s1 > A.sg.s1) reach = B;
+      }
+    });
+  }));
   // corners and T-junctions: each end meets the centre line of the wall across it (scraps too small to be a
   // wall — a stray mark under the plan — dropped first, so nothing reaches out to meet them)
   segs = segs.filter(sg => sg.s1 - sg.s0 >= M(0.2));
@@ -1311,7 +1358,8 @@ function smartTraceGeometry(src, ai){
       if (p === sg || p.o === sg.o) return;
       if (sg.c < p.s0 - sg.t - M(0.3) || sg.c > p.s1 + sg.t + M(0.3)) return;
       const d = Math.abs(e - p.c);
-      if (d > p.t/2 + sg.t/2 + M(0.15)) return;
+      // near enough — or a little further on past this end, where what lies between is all drawing (no room): one solid block of wall
+      if (d > p.t/2 + sg.t/2 + M(0.15) && !(d <= p.t/2 + sg.t/2 + M(0.6) && (end ? p.c > e : p.c < e) && solidBetween(sg, e, p.c + Math.sign(e - p.c)*p.t/2))) return;
       if (!best || d < best.d) best = {p, d};
     });
     if (!best) return;
@@ -1322,6 +1370,8 @@ function smartTraceGeometry(src, ai){
     if (sg.c > p.s1 && sg.c - p.s1 < sg.t + M(0.35)) p.s1 = sg.c;
   }));
   segs = segs.filter(sg => sg.s1 - sg.s0 >= M(0.15));
+  foldCopies(); // joining corners can stretch one piece over another copy of the same wall
+  mergeRuns(); // and can bring pieces of one wall end to end (either side of a T), which then join
   const segEnds = sg => sg.o === "v" ? [{x: sg.c, y: sg.s0}, {x: sg.c, y: sg.s1}] : [{x: sg.s0, y: sg.c}, {x: sg.s1, y: sg.c}];
 
   // 5) doors and windows, each on the wall it sits in, its exact span found where that wall's drawing breaks
@@ -1448,9 +1498,18 @@ function smartTraceGeometry(src, ai){
     rooms: rooms.filter(r => r.area).map(r => ({name: r.name, x: r.cx*k, y: r.cy*k, inside: label[Math.round(r.cy)*W + Math.round(r.cx)] === r.id, id: r.id})),
     findPointIn: (id)=>{ // a point that's surely inside room id (its centre if that is, else its pixel nearest the centre)
       const r = byId.get(id); if (!r || !r.area) return null;
-      let best = null;
-      for (let y = r.ey0; y <= r.ey1; y += 2) for (let x = r.ex0; x <= r.ex1; x += 2) if (label[y*W + x] === id){ const d = (x - r.cx)**2 + (y - r.cy)**2; if (!best || d < best.d) best = {d, x, y}; }
-      return best && {x: best.x*k, y: best.y*k};
+      // well clear of its edges (the drawn wall's thickness starts there), the clearance eased off for a tiny room
+      const own = (x, y) => x >= 0 && y >= 0 && x < W && y < H && label[y*W + x] === id;
+      for (const clear of [M(0.4), M(0.25), M(0.12), 0]){
+        let best = null;
+        for (let y = r.ey0; y <= r.ey1; y += 2) for (let x = r.ex0; x <= r.ex1; x += 2){
+          if (!own(x, y)) continue;
+          if (clear && ![[1,0],[-1,0],[0,1],[0,-1],[0.7,0.7],[-0.7,0.7],[0.7,-0.7],[-0.7,-0.7]].every(([dx, dy]) => own(Math.round(x + dx*clear), Math.round(y + dy*clear)))) continue;
+          const d = (x - r.cx)**2 + (y - r.cy)**2; if (!best || d < best.d) best = {d, x, y};
+        }
+        if (best) return {x: best.x*k, y: best.y*k};
+      }
+      return null;
     },
   };
 }
@@ -1501,7 +1560,17 @@ function applySmartTrace(floor, res, ai){
     });
     // names, each on a point surely inside its room
     floor.roomNames = [];
-    res.rooms.forEach(r=>{ const p = res.findPointIn(r.id); if (p && r.name) floor.roomNames.push({x: p.x, y: p.y, name: r.name}); });
+    const areas = getRoomAreasForFloor(floor), step = Math.max(2, 0.1/res.mPerPx); // 10cm
+    res.rooms.forEach(r=>{
+      let p = res.findPointIn(r.id); if (!p || !r.name) return;
+      // the traced walls are a touch fuller than the coloured floor: a point at its very edge can land inside a
+      // wall, so it moves to the nearest spot that's in a room (rings out to a metre)
+      if (!roomAtWorld(areas, p.x, p.y)) for (let ring = 1, found = null; ring <= 10 && !found; ring++){
+        for (let a = 0; a < 16 && !found; a++){ const q = {x: p.x + Math.cos(a*Math.PI/8)*ring*step, y: p.y + Math.sin(a*Math.PI/8)*ring*step}; if (roomAtWorld(areas, q.x, q.y)) found = q; }
+        if (found) p = found;
+      }
+      floor.roomNames.push({x: p.x, y: p.y, name: r.name});
+    });
     if (!floor.roomNames.length) delete floor.roomNames;
   } finally { suppressHistory = was; }
   scheduleAutosave();
@@ -8682,6 +8751,22 @@ function drawFlooringSwatch(canvas, matId){
 
 // --- rooms <-> flooring ----------------------------------------------------------
 // The room (from getRoomAreasForFloor's result) containing a world point, or null.
+// True where the room finder filled the raster solid indoors: a wall, or a gap too narrow to be part of any room.
+function roomRasterWallAt(areas, x, y){
+  const ra = areas.raster;
+  if (!ra) return false;
+  const px = Math.floor(x-ra.ox), py = Math.floor(y-ra.oy);
+  if (!(px >= 0 && py >= 0 && px < ra.w && py < ra.h && ra.labels[py*ra.w+px] === -1)) return false;
+  // indoors only: a filled corner of the outside (where the house steps in) has open air right beside it
+  const r = ROOM_GAP_CLOSE_PX + 2;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++){
+    const qx = px + dx, qy = py + dy;
+    if (qx < 0 || qy < 0 || qx >= ra.w || qy >= ra.h) return false;
+    const l = ra.labels[qy*ra.w+qx];
+    if (l !== -1 && !areas.roomByLabel.has(l)) return false;
+  }
+  return true;
+}
 function roomAtWorld(areas, x, y){
   const ra = areas.raster;
   if (!ra) return null;
@@ -12671,14 +12756,17 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
         for (let d = 0.05; d <= 0.2; d += 0.05){ const p = at(sM, sd), r = roomAtWorld(areas, p.x + nx*sd*d/k, p.y + ny*sd*d/k); if (r) return r; }
         return null;
       };
+      // a notch narrower than the room finder's gap-closing (where a thinner wall butts into a thicker one) is
+      // filled solid when rooms are worked out: it counts as wall here too, not as a scrap of outside
+      const inWall = p => pointInWallOf(floor, p.x, p.y, 0.01, w) || roomRasterWallAt(areas, p.x, p.y);
       const sideRoom = (sM, sd)=>{
         const q = at(sM, sd), r = roomAtWorld(areas, q.x, q.y);
         if (r) return r;
-        if (!pointInWallOf(floor, q.x, q.y, 0.01, w)) return further(sM, sd);
+        if (!inWall(q)) return further(sM, sd);
         for (let d = 0.05; d <= 0.6; d += 0.05) for (const s of [sM + d, sM - d]){
           if (s < -T || s > L + T) continue;
           const p = at(s, sd);
-          if (!pointInWallOf(floor, p.x, p.y, 0.01, w)) return roomAtWorld(areas, p.x, p.y) || further(s, sd);
+          if (!inWall(p)) return roomAtWorld(areas, p.x, p.y) || further(s, sd);
         }
         return null;
       };
@@ -12726,9 +12814,36 @@ function v3BuildStructure(group, floor, k, H, cut, over = 0, above = null){
             // a window's own end against a wall is buried in that wall but for a sliver seen from the room (a bay's
             // first and last panes leave the wall line at an angle) — plaster, like the reveal it is
             if ((o.type||"wall") === "window" || end.reveal || isWin) return inside;
+            // this wall stands proud of the one it runs into on the room side (a chimney breast on an outside wall):
+            // the step faces the room
+            const sdIn = inside === mats[0] ? 1 : -1, q = {x: p.x + nx*sdIn*(T/2 - 0.02)/k, y: p.y + ny*sdIn*(T/2 - 0.02)/k};
+            if (!pointInWallOf(floor, q.x, q.y, 0, w)) return inside;
+            // run on into a wall, the end lies flush with that wall's far face: it takes what's beyond — a room there,
+            // the room's finish (else the two fight, a stripe of brick down an indoor wall)
+            const sg = sM < 0 ? -1 : 1, beyond = sM + sg*0.04;
+            if (roomAtWorld(areas, a.x + ux*beyond/k, a.y + uy*beyond/k)) return inside;
             return end.e > 0.005 && end.convex ? sideMat(end.convex) : outside;
           };
-          const edges = !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6, s0 - 0.04), s1: endMat(end1, s1 >= L + e1 - 1e-6, s1 + 0.04), top: inside};
+          // a stretch with no room either side that's short (a corner block where walls overlap) or has a face buried
+          // in another wall (the wall behind a chimney breast): its top lies level with theirs, so it's capped plain
+          // like them. A long free one is a garden wall, brick or render all over.
+          const buried = sd => { const q = at(sm, sd); return pointInWallOf(floor, q.x, q.y, -0.01, w); };
+          const block = !rooms[1] && !rooms[-1] && !band && (cuts[j] - cuts[j-1] < 0.6 || buried(1) || buried(-1));
+          // an inside wall (rooms both sides) run on to an outside wall can end flush with that wall's outer face:
+          // there its end is part of the outside, and takes the outside finish
+          const flushOut = (end, atEnd, sM)=>{
+            if (!atEnd) return null;
+            // (sM is already just past the end face) on out from it, right across the end: nothing but open air
+            const sg = sM < 0 ? -1 : 1;
+            for (const d of [0.06, 0.15, 0.3]) for (const c of [-T/3, 0, T/3]){
+              const b = sM + sg*d, p = {x: a.x + ux*b/k + nx*c/k, y: a.y + uy*b/k + ny*c/k};
+              if (roomAtWorld(areas, p.x, p.y) || pointInWallOf(floor, p.x, p.y, 0, w)) return null;
+            }
+            const fin = floorExterior(floor);
+            return !fin ? null : isExt(fin) ? v3ExtMat(fin) : isPaper(fin) ? v3PaperMat(fin) : v3Mat(fin, {roughness: 0.95});
+          };
+          const both = rooms[1] && rooms[-1] && !band, fo0 = both && flushOut(end0, s0 <= -e0 + 1e-6, s0 - 0.04), fo1 = both && flushOut(end1, s1 >= L + e1 - 1e-6, s1 + 0.04);
+          const edges = block ? {s0: mats[0], s1: mats[0], top: V3.wall()} : (fo0 || fo1) ? {s0: fo0 || mats[0], s1: fo1 || mats[0], top: mats[0]} : !inside ? null : band ? outside : {s0: endMat(end0, s0 <= -e0 + 1e-6, s0 - 0.04), s1: endMat(end1, s1 >= L + e1 - 1e-6, s1 + 0.04), top: inside};
           const m = v3Slab(group, ax, az, bx, bz, s0, s1, y0, y1, T, mats, capMat, edges);
           if (m){ m.userData.wall = {id: w.id, ax: a.x, ay: a.y, nx, ny, off, rooms}; v3WallUVs(m, along + cuts[j-1]); }
         }
