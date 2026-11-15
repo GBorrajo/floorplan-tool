@@ -1522,7 +1522,9 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
   });
   const windows = [];
   // a bay's mouth: no wall was measured across it (the bay's own drawing was left out above), so one is made,
-  // on the line of the outside wall either side of the bay, running out to the walls at the corners
+  // on the line of the outside wall either side of the bay, running out to the walls at the corners. Claude gives
+  // the bay's ends along the main wall, so that wall is looked for at Claude's line first (a little either side);
+  // a reading that gave the bay's front instead finds it a bay's depth further in
   const bayMouth = (w, ax, ay, bx, by)=>{
     const o = Math.abs(bx - ax) >= Math.abs(by - ay) ? "h" : "v";
     const line = o === "h" ? (ay + by)/2 : (ax + bx)/2, a = Math.min(o === "h" ? ax : ay, o === "h" ? bx : by), b = Math.max(o === "h" ? ax : ay, o === "h" ? bx : by);
@@ -1532,13 +1534,13 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
     segs.forEach(sg=>{
       if (sg.o !== o || !sg.outer) return;
       const off = (sg.c - line)*inward; // how far in from the bay's front
-      if (off < M(0.15) || off > depth + M(0.6)) return;
+      if (off < -M(0.3) || off > depth + M(0.6)) return;
       const gap = sg.s1 < a ? a - sg.s1 : sg.s0 > b ? sg.s0 - b : 0;
       if (gap > M(1.5)) return;
-      const score = Math.abs(sg.c - want) + gap*0.5;
+      const score = Math.min(Math.abs(sg.c - line), Math.abs(sg.c - want)) + gap*0.5;
       if (!best || score < best.score) best = {sg, score};
     });
-    const c = best ? best.sg.c : want, t = best ? best.sg.t : M(0.3);
+    const c = best ? best.sg.c : line, t = best ? best.sg.t : M(0.3);
     let s0 = a, s1 = b;
     segs.forEach(sg=>{ // out to the collinear pieces beside it, and to the corner walls
       if (sg.o === o && Math.abs(sg.c - c) < Math.max(sg.t, t)/2){ if (sg.s1 < a && a - sg.s1 < M(1.5)) s0 = Math.min(s0, sg.s0); if (sg.s0 > b && sg.s0 - b < M(1.5)) s1 = Math.max(s1, sg.s1); }
@@ -1579,7 +1581,11 @@ function smartTraceGeometry(src, ai, opts = {}){ // opts.mPerPx: a scale already
         if (x < 0 || y < 0 || x >= W || y >= H) break;
         if (outPaper[y*W + x]){ if (++run > BGRUN*3) break; } else { run = 0; last = k; } // (a window's white glass is the bay's, not outside)
       }
-      bow = out*Math.max(M(0.2), last - sg.t/2);
+      // no deeper than half as much again as Claude saw it (plus however far in from Claude's line the mouth is): past
+      // the bay a hatched path or drive isn't paper either, and the count would run on across it
+      const claudeLine = sg.o === "v" ? (ax + bx)/2 : (ay + by)/2, cap = w.bayDepthM > 0 ? M(w.bayDepthM*1.5) + Math.abs(sg.c - claudeLine) : Infinity;
+      const measured = last - sg.t/2; // run past half again Claude's depth: it ran on across something, so Claude's depth it is
+      bow = out*(measured > cap ? M(w.bayDepthM) + Math.abs(sg.c - claudeLine) : Math.max(M(0.2), measured));
     }
     windows.push({o: sg.o, c: sg.c, a, b, t: sg.t, bow, bay: w.bay});
   });

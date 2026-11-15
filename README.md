@@ -1668,3 +1668,20 @@ A tried-and-dropped idea: moving the line to the narrowest crossing (where the n
 - Plan 11's front reception room: its bay window is traced straight across the room, cutting the bay off.
 - A few same-colour rooms where Claude's boxes put the boundary in the wrong place.
 - Two bathrooms only just over the 25% limit.
+
+### Bay windows on the wall line (2026-11-15)
+
+Claude reports a bay's two ends along the main wall. When no traced wall crossed the bay, `bayMouth` treated that line as the bay's front. It stepped a whole bay depth into the room, and only accepted walls lying inward of Claude's line. Then the depth count ran on from there until it reached blank paper. A hatched drive or garden path isn't blank paper, so plans 11, 13, 17, 23 and 25 got bays set ~0.8 m inside the room and bowing out 1.2–2.35 m. The room stopped at that straight chord.
+
+Now:
+- **Where the mouth goes.** The mouth looks for the outside wall within 30 cm either side of Claude's line, as well as a bay's depth in (whichever is nearer), and falls back to Claude's line.
+- **How deep the bay is.** A measured depth more than 1.5× Claude's `bayDepthM` means the count ran on past the bay, so Claude's depth is used instead.
+
+**Tested:**
+- Every bay in the 28-plan batch now sits on the wall line: 0–0.36 m from Claude's line, where it used to be up to 0.9 m.
+- Bows came out within Claude's depth, or at most 1.5× it.
+- Rooms closed:
+  - 28 plans read as one floor: 177 → 180.
+  - Through Trace the house: 150 of 188 → 154 of 186.
+- Plan 11's front reception room went from 13.8 to 14.8 m², with the bay included. Its printed 5.26 × 3.99 m runs into the bay and the chimney recesses.
+- A canted bay is still drawn as a curve, which is how the app has always shaped bays.
