@@ -1775,7 +1775,10 @@ function edgeAngle(pts){
   const level = sm(45) + hist[43] + hist[47], peak = sm(best); // bins round 0°
   // the peak's centre of mass, for a finer angle
   const w = [-1, 0, 1].map(o => hist[(best + o + 90) % 90]), tot = w[0] + w[1] + w[2] || 1, fine = best - 45 + 0.5 + (w[2] - w[0])/tot;
-  return {a: fine*Math.PI/180, strength: peak/Math.max(1, level), share: peak/Math.max(1, hist.reduce((a, b) => a + b, 0))};
+  const total = Math.max(1, hist.reduce((a, b) => a + b, 0));
+  // shareAt(a): the share of edge running within a degree or so of angle a (for a lean seen on another floor)
+  const shareAt = a => { const i = Math.min(89, Math.max(0, Math.floor(a*180/Math.PI + 45))); return sm(i)/total; };
+  return {a: fine*Math.PI/180, strength: peak/Math.max(1, level), share: peak/total, shareAt};
 }
 // draws an image turned by phi (radians, canvas sense) about its middle, on white, onto a canvas just big enough
 function rotatedCanvas(src, phi){
@@ -1833,6 +1836,12 @@ function smartTraceAngled(src, ai, opts = {}){
     const e = edgeAngle(pts), {a: ba, gain} = minBoxAngle(pts), deg = e.a*180/Math.PI;
     if (Math.abs(deg) >= 3 && e.share > 0.15 && (e.strength > 1.2 || (gain > 1.04 && Math.abs(ba - e.a) < 4*Math.PI/180)))
       angles.push({j: roomIdx.get(r.ai), id: r.id, a: e.a, deg, area: r.area, name: r.name});
+    else {
+      // a lean another floor of this house has (opts.hintAngles): the floors stand on one another, so a room here
+      // with a fair share of its edges at that angle leans the same way, though its level edges outweigh them
+      const h = (opts.hintAngles || []).find(a => e.shareAt(a) >= 0.12);
+      if (h != null) angles.push({j: roomIdx.get(r.ai), id: r.id, a: h, deg: h*180/Math.PI, area: r.area, name: r.name});
+    }
   });
   if (!angles.length) return {...res0, angled: []};
   // rooms within 3° of each other share a turn (the biggest room's angle leads)
@@ -2613,7 +2622,16 @@ async function traceHousePlan(dataURL, apiKey, model, {fresh = false, onStatus =
     const mine = parts.map((q, j) => j).filter(j => bldOf(parts[j]) === b && trusted(first[j]));
     bldMpp.set(b, (mine.length && pooledScale(mine.map(j => first[j].ratiosPx))) || mpp); });
   const scaleFor = i => { const ref = bldOf(parts[i]) === "main" ? mpp : bldMpp.get(bldOf(parts[i])); return own(first[i], ref) ? first[i].mPerPx : (ref || first[i].mPerPx); };
-  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: closeRoomShells(imgs[i], smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: scaleFor(i)}), reads[i].ai)})); // (angled walls: see smartTraceAngled)
+  const angledOf = parts.map((p, i) => smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: scaleFor(i)}));
+  // a lean found on one floor is looked for on the others of the same building (a sheared terrace leans on every floor,
+  // but only a long room shows it plainly)
+  parts.forEach((p, i)=>{
+    const hint = [];
+    parts.forEach((q, j) => { if (j !== i && bldOf(q) === bldOf(p)) (angledOf[j].angled || []).forEach(g => { const a = g.deg*Math.PI/180; if (!hint.some(h => Math.abs(h - a) < 2*Math.PI/180)) hint.push(a); }); });
+    const mine = (angledOf[i].angled || []).map(g => g.deg*Math.PI/180), extra = hint.filter(a => !mine.some(m => Math.abs(m - a) < 2*Math.PI/180));
+    if (extra.length){ try { angledOf[i] = smartTraceAngled(imgs[i], reads[i].ai, {mPerPx: scaleFor(i), hintAngles: extra}); } catch(e){ console.warn("hinted trace failed", e); } }
+  });
+  const traced = parts.map((p, i) => ({...p, ai: reads[i].ai, reused: reads[i].reused, res: closeRoomShells(imgs[i], angledOf[i], reads[i].ai)})); // (angled walls: see smartTraceAngled)
   const byLevel = (a, b) => a.level - b.level || a.crop.x0 - b.crop.x0;
   // separate buildings, each its floors bottom to top (named by Claude, or failing that by the label less "Floor 1")
   const bname = t => (t.buildingName || "").trim() || (t.label || "").replace(/\s*(floor|level|storey)\s*\d*\s*$/i, "").trim() || "Outbuilding";

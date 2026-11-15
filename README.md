@@ -1781,3 +1781,28 @@ Results with that added:
 | Plan 13 stack fits (first / second floor) | 0.42 / 0.63 (was 0.39 / 0.48) |
 | Plan 18 ground floor | 5/12 (was 2/12) |
 | Plan 20 second floor | 14/14 (was 8/12) |
+
+### A lean shared across floors (2026-11-15)
+
+Plan 13 is a sheared terrace: its side walls lean about 6° while its cross walls stay level, on every floor. Angle
+detection works per room. It caught the lean in the long ground-floor kitchen, but the squarer rooms upstairs have
+mostly level edges, so their leaning walls were traced as staircases of short upright pieces.
+
+Now `traceHousePlan` traces every floor, then gives each floor the leans found on the other floors of the same
+building as `opts.hintAngles`. With a hint, `smartTraceAngled` accepts any room with at least 12% of its edges at that
+angle. To support this, `edgeAngle` now also returns `shareAt(a)`.
+
+Results on plan 13:
+
+| Floor | Before | After |
+| --- | --- | --- |
+| First floor rooms closed | 3/3 (only 3 rooms found) | 5/7 named rooms |
+| First floor stack fit | 0.42 | 0.40 |
+| Second floor stack fit | 0.63 | 0.59 |
+
+The first floor's left wall now follows the ground floor's lean. The overlay shows the floors already line up: front
+walls, bay and side walls coincide. The fit stays near 0.4 because the first floor's rear wing stands over the open
+kitchen, where there are no walls below to match.
+
+The hint fired on no other test plan. Plans 18 and 20 give different room counts from one run to the next, with or
+without this change.
